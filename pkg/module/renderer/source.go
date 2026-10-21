@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
+
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
 )
 
@@ -141,6 +143,23 @@ func Capture(ctx context.Context, document config.Document) (*Snapshot, error) {
 	}
 
 	return snapshot, nil
+}
+
+// CaptureRequest captures the contained renderer inputs of document
+// and builds the framework reconciliation request that renders from
+// the snapshot instead of the original tree. Backend wrappers invoke
+// the framework actions over that request; the returned snapshot must
+// be closed by the caller on every exit path.
+func CaptureRequest(ctx context.Context, document config.Document) (*Snapshot, *types.ReconciliationRequest, error) {
+	snapshot, err := Capture(ctx, document)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	snapshotDocument := document
+	snapshotDocument.RendererEntry = snapshot.Entry()
+
+	return snapshot, NewRequest(snapshotDocument), nil
 }
 
 // captureFunc returns the backend capture walk for a manifest format.
