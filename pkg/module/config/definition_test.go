@@ -11,6 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	. "github.com/onsi/gomega"
+
+	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
 )
 
 // validDefinition returns a definition that passes Normalize for the
@@ -22,11 +24,11 @@ func validDefinition(format Format) PlatformModuleDefinition {
 		Kind:       Kind,
 		Metadata:   Metadata{Name: "synthetic"},
 		Spec: Spec{
-			Type: Type{GroupVersionKind: schema.GroupVersionKind{
+			Instance: Instance{Type: Type{GroupVersionKind: schema.GroupVersionKind{
 				Group:   "components.platform.opendatahub.io",
 				Version: "v1alpha1",
 				Kind:    "SyntheticModule",
-			}},
+			}}},
 			RelatedImages: []string{"RELATED_IMAGE_SYNTHETIC_OPERAND"},
 			Controller: Controller{
 				Deployment: Deployment{
@@ -82,10 +84,12 @@ const definitionJSON = `{
 	"kind": "PlatformModuleDefinition",
 	"metadata": {"name": "synthetic"},
 	"spec": {
-		"type": {
-			"group": "components.platform.opendatahub.io",
-			"version": "v1alpha1",
-			"kind": "SyntheticModule"
+		"instance": {
+			"type": {
+				"group": "components.platform.opendatahub.io",
+				"version": "v1alpha1",
+				"kind": "SyntheticModule"
+			}
 		},
 		"manifests": {
 			"format": "kustomize",
@@ -149,6 +153,104 @@ func TestNormalizeDefaultsOmittedMainContainerName(t *testing.T) {
 	g.Expect(definition.Spec.Controller.Deployment.Container.Name).To(BeNil())
 }
 
+func TestNormalizeDefaultsNamesIndependently(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		instanceName  *string
+		containerName *string
+		wantInstance  string
+		wantContainer string
+	}{
+		{
+			name:          "both names omitted",
+			wantInstance:  "synthetic",
+			wantContainer: DefaultMainContainerName,
+		},
+		{
+			name:          "instance name omitted",
+			containerName: new("custom-manager"),
+			wantInstance:  "synthetic",
+			wantContainer: "custom-manager",
+		},
+		{
+			name:          "container name omitted",
+			instanceName:  new("trainer"),
+			wantInstance:  "trainer",
+			wantContainer: DefaultMainContainerName,
+		},
+		{
+			name:          "both names authored",
+			instanceName:  new("trainer"),
+			containerName: new("custom-manager"),
+			wantInstance:  "trainer",
+			wantContainer: "custom-manager",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := NewWithT(t)
+
+			definition := validDefinition(FormatHelm)
+			definition.Spec.Instance.Name = test.instanceName
+			definition.Spec.Controller.Deployment.Container.Name = test.containerName
+
+			normalized, err := definition.Normalize()
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(*normalized.Spec.Instance.Name).To(Equal(test.wantInstance))
+			g.Expect(*normalized.Spec.Controller.Deployment.Container.Name).To(Equal(test.wantContainer))
+
+			// Neither default aliases storage back into the caller.
+			g.Expect(definition.Spec.Instance.Name).To(Equal(test.instanceName))
+			g.Expect(definition.Spec.Controller.Deployment.Container.Name).To(Equal(test.containerName))
+
+			// Normalization is idempotent.
+			repeated, err := normalized.Normalize()
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(repeated).To(Equal(normalized))
+		})
+	}
+}
+
+func TestNormalizeRejectsInheritedInvalidInstanceName(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	// The Kustomize backend tolerates a metadata name that is not a
+	// valid object name, but an omitted instance name inherits it and
+	// is still validated.
+	definition := validDefinition(FormatKustomize)
+	definition.Metadata.Name = "Synthetic_Module"
+
+	_, err := definition.Normalize()
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(fieldPaths(err)).To(ConsistOf("spec.instance.name"))
+}
+
+func TestNormalizeAggregatesInstanceAndTypeProblems(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	definition := validDefinition(FormatKustomize)
+	definition.Spec.Instance.Type = Type{}
+	definition.Spec.Instance.Name = new("")
+
+	_, err := definition.Normalize()
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(fieldPaths(err)).To(ConsistOf(
+		"spec.instance.name",
+		"spec.instance.type.group",
+		"spec.instance.type.version",
+		"spec.instance.type.kind",
+	))
+}
+
 func TestNormalizePreservesAuthoredValues(t *testing.T) {
 	t.Parallel()
 
@@ -156,15 +258,18 @@ func TestNormalizePreservesAuthoredValues(t *testing.T) {
 
 	definition := validDefinition(FormatKustomize)
 	definition.Spec.Controller.Deployment.Container.Name = new("custom-manager")
-	// A name that would not be a valid Helm release name is fine for
-	// the Kustomize backend.
+	// A name that would not be a valid object name is fine for the
+	// Kustomize backend as long as an explicit instance name avoids
+	// inheriting it.
 	definition.Metadata.Name = "Synthetic_Module"
+	definition.Spec.Instance.Name = new("synthetic-module")
 
 	normalized, err := definition.Normalize()
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(*normalized.Spec.Controller.Deployment.Container.Name).To(Equal("custom-manager"))
 	g.Expect(*normalized.Spec.Controller.Deployment.InitContainer.Name).To(Equal("copy-manifests"))
 	g.Expect(normalized.Metadata.Name).To(Equal("Synthetic_Module"))
+	g.Expect(*normalized.Spec.Instance.Name).To(Equal("synthetic-module"))
 	g.Expect(normalized.Spec.Manifests.Kustomize.Path).To(Equal("./manifests/controller/overlays/development"))
 
 	// Replacement references stay opaque, and an explicit empty env
@@ -197,12 +302,15 @@ func TestNormalizeRejectsInvalidDefinitions(t *testing.T) {
 			paths:  []string{"metadata.name"},
 		},
 		{
+			// The uppercase name is both an invalid Helm release name
+			// and, inherited as the instance name, an invalid object
+			// name.
 			name: "helm release name with uppercase",
 			mutate: func(d *PlatformModuleDefinition) {
 				d.Spec.Manifests = Manifests{Format: FormatHelm, Helm: &HelmManifests{Path: "./chart"}}
 				d.Metadata.Name = "Synthetic"
 			},
-			paths: []string{"metadata.name"},
+			paths: []string{"metadata.name", "spec.instance.name"},
 		},
 		{
 			name: "helm release name too long",
@@ -215,9 +323,23 @@ func TestNormalizeRejectsInvalidDefinitions(t *testing.T) {
 		{
 			name: "missing type",
 			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.Type = Type{}
+				d.Spec.Instance.Type = Type{}
 			},
-			paths: []string{"spec.type.group", "spec.type.version", "spec.type.kind"},
+			paths: []string{"spec.instance.type.group", "spec.instance.type.version", "spec.instance.type.kind"},
+		},
+		{
+			name: "invalid explicit instance name",
+			mutate: func(d *PlatformModuleDefinition) {
+				d.Spec.Instance.Name = new("Synthetic_Module")
+			},
+			paths: []string{"spec.instance.name"},
+		},
+		{
+			name: "overlength instance name",
+			mutate: func(d *PlatformModuleDefinition) {
+				d.Spec.Instance.Name = new(strings.Repeat("a", 254))
+			},
+			paths: []string{"spec.instance.name"},
 		},
 		{
 			name:   "unknown manifest format",
@@ -407,6 +529,274 @@ func TestContainerDefinitionJSONDecoding(t *testing.T) {
 	}
 }
 
+// The instance wire members shared by the JSON decoding tests.
+const (
+	instanceTypeJSON = `"type": {
+		"group": "components.platform.opendatahub.io",
+		"version": "v1alpha1",
+		"kind": "SyntheticModule"
+	}`
+
+	instanceJSONOmittedName = `{
+	` + instanceTypeJSON + `
+}`
+
+	instanceJSONNullName = `{
+	"name": null,
+	` + instanceTypeJSON + `
+}`
+
+	instanceJSONEmptyName = `{
+	"name": "",
+	` + instanceTypeJSON + `
+}`
+
+	instanceJSONValidName = `{
+	"name": "trainer",
+	` + instanceTypeJSON + `
+}`
+
+	instanceJSONNonStringName = `{
+	"name": 42,
+	` + instanceTypeJSON + `
+}`
+
+	instanceJSONUnknownMember = `{
+	"namespace": "opendatahub",
+	` + instanceTypeJSON + `
+}`
+
+	instanceJSONCaseMismatch = `{
+	"Name": "trainer",
+	` + instanceTypeJSON + `
+}`
+
+	instanceJSONDuplicateName = `{
+	"name": "trainer",
+	"name": "other",
+	` + instanceTypeJSON + `
+}`
+)
+
+func TestInstanceJSONDecoding(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		json    string
+		want    *string
+		wantErr bool
+	}{
+		{name: "omitted name", json: instanceJSONOmittedName},
+		{name: "null name", json: instanceJSONNullName, want: new("")},
+		{name: "empty name", json: instanceJSONEmptyName, want: new("")},
+		{name: "valid name", json: instanceJSONValidName, want: new("trainer")},
+		{name: "non-string name", json: instanceJSONNonStringName, wantErr: true},
+		{name: "unknown member", json: instanceJSONUnknownMember, wantErr: true},
+		{name: "case-mismatched member", json: instanceJSONCaseMismatch, wantErr: true},
+		{name: "duplicate member", json: instanceJSONDuplicateName, wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := NewWithT(t)
+
+			var instance Instance
+			err := jsonv2.Unmarshal([]byte(test.json), &instance, jsonv2.RejectUnknownMembers(true))
+
+			if test.wantErr {
+				g.Expect(err).To(HaveOccurred())
+				return
+			}
+
+			g.Expect(err).NotTo(HaveOccurred())
+			if test.want == nil {
+				g.Expect(instance.Name).To(BeNil())
+			} else {
+				g.Expect(instance.Name).To(Equal(test.want))
+			}
+			g.Expect(instance.Type.Kind).To(Equal("SyntheticModule"))
+		})
+	}
+}
+
+// definitionJSONLegacyType is a definition that places the module type
+// at the superseded top-level spec.type location.
+const definitionJSONLegacyType = `{
+	"apiVersion": "config.opendatahub.io/v1",
+	"kind": "PlatformModuleDefinition",
+	"metadata": {"name": "synthetic"},
+	"spec": {
+		"type": {
+			"group": "components.platform.opendatahub.io",
+			"version": "v1alpha1",
+			"kind": "SyntheticModule"
+		},
+		"manifests": {
+			"format": "kustomize",
+			"kustomize": {"path": "./manifests/controller"}
+		},
+		"controller": {
+			"deployment": {
+				"name": "synthetic-controller",
+				"container": {"image": "quay.io/example/controller:v1"}
+			}
+		}
+	}
+}`
+
+// definitionJSONLegacyAndNestedType adds the legacy location to the
+// nested layout: both distinct old and new fields appear together.
+const definitionJSONLegacyAndNestedType = `{
+	"apiVersion": "config.opendatahub.io/v1",
+	"kind": "PlatformModuleDefinition",
+	"metadata": {"name": "synthetic"},
+	"spec": {
+		"type": {
+			"group": "components.platform.opendatahub.io",
+			"version": "v1alpha1",
+			"kind": "SyntheticModule"
+		},
+		"instance": {
+			"type": {
+				"group": "components.platform.opendatahub.io",
+				"version": "v1alpha1",
+				"kind": "SyntheticModule"
+			}
+		},
+		"manifests": {
+			"format": "kustomize",
+			"kustomize": {"path": "./manifests/controller"}
+		},
+		"controller": {
+			"deployment": {
+				"name": "synthetic-controller",
+				"container": {"image": "quay.io/example/controller:v1"}
+			}
+		}
+	}
+}`
+
+func TestDefinitionJSONRejectsLegacySpecType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		json string
+	}{
+		{name: "legacy location only", json: definitionJSONLegacyType},
+		{name: "legacy and nested locations", json: definitionJSONLegacyAndNestedType},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := NewWithT(t)
+
+			var definition PlatformModuleDefinition
+			err := jsonv2.Unmarshal([]byte(test.json), &definition, jsonv2.RejectUnknownMembers(true))
+
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(`unknown object member name "type"`))
+		})
+	}
+}
+
+// definitionJSONNullInstance replaces the instance block with an
+// explicit null; definitionJSONNullType replaces only its type.
+const (
+	definitionJSONNullInstance = `{
+	"apiVersion": "config.opendatahub.io/v1",
+	"kind": "PlatformModuleDefinition",
+	"metadata": {"name": "synthetic"},
+	"spec": {
+		"instance": null,
+		"manifests": {
+			"format": "kustomize",
+			"kustomize": {"path": "./manifests/controller"}
+		},
+		"controller": {
+			"deployment": {
+				"name": "synthetic-controller",
+				"container": {"image": "quay.io/example/controller:v1"}
+			}
+		}
+	}
+}`
+
+	definitionJSONNullType = `{
+	"apiVersion": "config.opendatahub.io/v1",
+	"kind": "PlatformModuleDefinition",
+	"metadata": {"name": "synthetic"},
+	"spec": {
+		"instance": {
+			"type": null
+		},
+		"manifests": {
+			"format": "kustomize",
+			"kustomize": {"path": "./manifests/controller"}
+		},
+		"controller": {
+			"deployment": {
+				"name": "synthetic-controller",
+				"container": {"image": "quay.io/example/controller:v1"}
+			}
+		}
+	}
+}`
+)
+
+func TestDefinitionJSONRejectsMissingInstance(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		json string
+	}{
+		{name: "null instance", json: definitionJSONNullInstance},
+		{name: "null type", json: definitionJSONNullType},
+		{name: "omitted instance", json: `{
+	"apiVersion": "config.opendatahub.io/v1",
+	"kind": "PlatformModuleDefinition",
+	"metadata": {"name": "synthetic"},
+	"spec": {
+		"manifests": {
+			"format": "kustomize",
+			"kustomize": {"path": "./manifests/controller"}
+		},
+		"controller": {
+			"deployment": {
+				"name": "synthetic-controller",
+				"container": {"image": "quay.io/example/controller:v1"}
+			}
+		}
+	}
+}`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := NewWithT(t)
+
+			var definition PlatformModuleDefinition
+			err := jsonv2.Unmarshal([]byte(test.json), &definition)
+			if err == nil {
+				_, err = definition.Normalize()
+			}
+
+			// A missing or null instance cannot yield a valid
+			// definition, whether the decoder or structural
+			// validation reports it.
+			g.Expect(err).To(HaveOccurred())
+		})
+	}
+}
+
 func TestDefinitionJSONDecoding(t *testing.T) {
 	t.Parallel()
 
@@ -421,6 +811,8 @@ func TestDefinitionJSONDecoding(t *testing.T) {
 	g.Expect(normalized.APIVersion).To(Equal(APIVersion))
 	g.Expect(normalized.Kind).To(Equal(Kind))
 	g.Expect(normalized.Metadata.Name).To(Equal("synthetic"))
+	g.Expect(normalized.Spec.Instance.Type.Kind).To(Equal("SyntheticModule"))
+	g.Expect(*normalized.Spec.Instance.Name).To(Equal("synthetic"))
 	g.Expect(normalized.Spec.Manifests.Format).To(Equal(FormatKustomize))
 	g.Expect(normalized.Spec.Manifests.Kustomize.Path).To(Equal("./manifests/controller"))
 	g.Expect(*normalized.Spec.Controller.Deployment.Container.Name).To(Equal(DefaultMainContainerName))
@@ -434,11 +826,24 @@ func TestDefinitionJSONRoundTrip(t *testing.T) {
 
 	g := NewWithT(t)
 
-	normalized, err := validDefinition(FormatHelm).Normalize()
+	definition := validDefinition(FormatHelm)
+	normalized, err := definition.Normalize()
 	g.Expect(err).NotTo(HaveOccurred())
 
 	encoded, err := jsonv2.Marshal(normalized)
 	g.Expect(err).NotTo(HaveOccurred())
+
+	// The wire format carries the instance identity exactly once, with
+	// lower-case group, version, and kind members, and no legacy
+	// top-level spec.type location.
+	g.Expect(string(encoded)).To(SatisfyAll(
+		jq.Match(`.spec.instance.name == "synthetic"`),
+		jq.Match(`.spec.instance.type == {`+
+			`"group":"components.platform.opendatahub.io",`+
+			`"version":"v1alpha1",`+
+			`"kind":"SyntheticModule"}`),
+		jq.Match(`.spec | has("type") | not`),
+	))
 
 	var decoded PlatformModuleDefinition
 	err = jsonv2.Unmarshal(encoded, &decoded)

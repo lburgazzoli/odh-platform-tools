@@ -19,10 +19,11 @@ kind: PlatformModuleDefinition
 metadata:
   name: synthetic
 spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
   manifests:
     format: helm
     helm:
@@ -45,10 +46,11 @@ kind: PlatformModuleDefinition
 metadata:
   name: synthetic
 spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
   manifests:
     format: kustomize
     kustomize:
@@ -72,10 +74,12 @@ const definitionJSON = `{
   "kind": "PlatformModuleDefinition",
   "metadata": {"name": "synthetic"},
   "spec": {
-    "type": {
-      "group": "components.platform.opendatahub.io",
-      "version": "v1alpha1",
-      "kind": "SyntheticModule"
+    "instance": {
+      "type": {
+        "group": "components.platform.opendatahub.io",
+        "version": "v1alpha1",
+        "kind": "SyntheticModule"
+      }
     },
     "manifests": {"format": "helm", "helm": {"path": "./manifests/chart"}},
     "controller": {
@@ -104,6 +108,52 @@ runtime:
     kind: SyntheticModule
 `
 
+	// legacySpecTypeYAML places the module type at the superseded
+	// top-level spec.type location.
+	legacySpecTypeYAML = `apiVersion: config.opendatahub.io/v1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  type:
+    group: components.platform.opendatahub.io
+    version: v1alpha1
+    kind: SyntheticModule
+  manifests:
+    format: helm
+    helm:
+      path: ./manifests/chart
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        image: quay.io/example/controller:v1
+`
+
+	// instanceNameDefinitionYAML is the Helm definition with an
+	// explicit instance name different from the module name.
+	instanceNameDefinitionYAML = `apiVersion: config.opendatahub.io/v1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  instance:
+    name: synthetic-trainer
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: helm
+    helm:
+      path: ./manifests/chart
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        image: quay.io/example/controller:v1
+`
+
 	metadataNamespaceYAML = `apiVersion: config.opendatahub.io/v1
 kind: PlatformModuleDefinition
 metadata:
@@ -120,10 +170,11 @@ metadata:
   name: synthetic
   name: duplicate
 spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
   manifests:
     format: helm
     helm:
@@ -211,10 +262,11 @@ kind: PlatformModuleDefinition
 metadata:
   name: synthetic
 spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
   manifests:
     format: helm
     helm:
@@ -231,10 +283,11 @@ kind: Module
 metadata:
   name: synthetic
 spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
   manifests:
     format: helm
     helm:
@@ -251,10 +304,11 @@ kind: PlatformModuleDefinition
 metadata:
   name: synthetic
 spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
   manifests:
     format: helm
   controller:
@@ -269,10 +323,11 @@ kind: PlatformModuleDefinition
 metadata:
   name: synthetic
 spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
   manifests:
     format: helm
     helm:
@@ -291,10 +346,11 @@ kind: PlatformModuleDefinition
 metadata:
   name: synthetic
 spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
   manifests:
     format: helm
     helm:
@@ -311,10 +367,11 @@ kind: PlatformModuleDefinition
 metadata:
   name: synthetic
 spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
   manifests:
     format: helm
     helm:
@@ -418,6 +475,26 @@ func TestLoadHelmDefinition(t *testing.T) {
 
 	// Placement defaults are applied.
 	g.Expect(*definition.Spec.Controller.Deployment.Container.Name).To(Equal(config.DefaultMainContainerName))
+
+	// The omitted instance name defaults to the module name.
+	g.Expect(*definition.Spec.Instance.Name).To(Equal("synthetic"))
+}
+
+// TestLoadKeepsExplicitInstanceName proves the nested instance name
+// reaches the normalized config unchanged.
+func TestLoadKeepsExplicitInstanceName(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeModuleFile(t, root, "definition.yaml", instanceNameDefinitionYAML)
+	writeModuleFile(t, root, "manifests/chart/Chart.yaml", chartYAML)
+
+	definition, err := Load(t.Context(), os.DirFS(root), "definition.yaml")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(*definition.Spec.Instance.Name).To(Equal("synthetic-trainer"))
+	g.Expect(definition.Metadata.Name).To(Equal("synthetic"))
 }
 
 func TestLoadKustomizeDefinitionWithSiblingBase(t *testing.T) {
@@ -509,6 +586,11 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 			name:        "legacy module wrapper",
 			content:     legacyModuleWrapperYAML,
 			errContains: `unknown object member name "module"`,
+		},
+		{
+			name:        "legacy spec.type",
+			content:     legacySpecTypeYAML,
+			errContains: `unknown object member name "type"`,
 		},
 		{
 			name:        "unsupported metadata",
@@ -648,10 +730,11 @@ kind: PlatformModuleDefinition
 metadata:
   name: synthetic
 spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
   manifests:
     format: kustomize
     kustomize:

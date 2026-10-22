@@ -157,20 +157,35 @@ func TestCLIChainFindingsExitFailure(t *testing.T) {
 func TestCLIChainDefinitionErrorExitUsage(t *testing.T) {
 	t.Parallel()
 
-	g := NewWithT(t)
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "incomplete instance type", content: invalidDefinitionYAML},
+		{name: "legacy spec.type", content: legacyTypeDefinitionYAML},
+		{name: "invalid instance name", content: invalidInstanceNameDefinitionYAML},
+	}
 
-	root := t.TempDir()
-	writeModuleFile(t, root, "definition.yaml", invalidDefinitionYAML)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-	stdout, stderr, exitCode := runCLI(root, "--output", "json")
+			g := NewWithT(t)
 
-	g.Expect(exitCode).To(Equal(lint.ExitUsage))
-	g.Expect(stderr).To(ContainSubstring(lint.FailureDefinition))
+			root := t.TempDir()
+			writeModuleFile(t, root, "definition.yaml", test.content)
 
-	var report lint.Report
-	g.Expect(jsonUnmarshalReport([]byte(stdout), &report)).To(Succeed())
-	g.Expect(report.Status).To(Equal(lint.StatusFailed))
-	g.Expect(report.Failure.Category).To(Equal(lint.FailureDefinition))
+			stdout, stderr, exitCode := runCLI(root, "--output", "json")
+
+			g.Expect(exitCode).To(Equal(lint.ExitUsage))
+			g.Expect(stderr).To(ContainSubstring(lint.FailureDefinition))
+
+			var report lint.Report
+			g.Expect(jsonUnmarshalReport([]byte(stdout), &report)).To(Succeed())
+			g.Expect(report.Status).To(Equal(lint.StatusFailed))
+			g.Expect(report.Failure.Category).To(Equal(lint.FailureDefinition))
+		})
+	}
 }
 
 func TestCLIChainRenderErrorExitFailure(t *testing.T) {

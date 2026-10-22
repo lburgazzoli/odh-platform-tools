@@ -5,6 +5,7 @@ go 1.27.3
 require (
 	github.com/itchyny/gojq v0.12.18
 	github.com/k8s-manifest-kit/renderer-helm v0.3.1-0.20260303100010-977618f3f59b
+	github.com/lburgazzoli/gomega-matchers v0.4.1-0.20260219145423-4061a5fb8799
 	github.com/onsi/gomega v1.44.0
 	github.com/opendatahub-io/odh-platform-utilities/framework v0.2.1-0.20261021162150-201e66e4e90a
 	github.com/spf13/cobra v1.10.2

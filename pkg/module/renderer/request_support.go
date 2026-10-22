@@ -33,12 +33,15 @@ type ModuleInstance struct {
 var _ api.PlatformObject = (*ModuleInstance)(nil)
 
 // NewInstance returns the in-memory module instance for a definition,
-// with the custom resource type from spec.type and the module name.
+// with the custom resource type from spec.instance.type and the module
+// name. The configured instance name is deliberately not used here: it
+// is reserved for future custom resource creation and lookup, while
+// rendering stays metadata.name-based.
 func NewInstance(definition config.PlatformModuleDefinition) *ModuleInstance {
 	return &ModuleInstance{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: definition.Spec.Type.Group + "/" + definition.Spec.Type.Version,
-			Kind:       definition.Spec.Type.Kind,
+			APIVersion: definition.Spec.Instance.Type.Group + "/" + definition.Spec.Instance.Type.Version,
+			Kind:       definition.Spec.Instance.Type.Kind,
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name: definition.Metadata.Name,

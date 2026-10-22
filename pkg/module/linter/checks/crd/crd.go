@@ -51,14 +51,14 @@ func (CRD) Validate(
 		match, err := jq.Matchesf(
 			object,
 			`.spec.group == %q and .spec.names.kind == %q`,
-			definition.Spec.Type.Group,
-			definition.Spec.Type.Kind,
+			definition.Spec.Instance.Type.Group,
+			definition.Spec.Instance.Type.Kind,
 		)
 
 		if err != nil {
 			return nil, fmt.Errorf("match CustomResourceDefinition %q against module type %q: %w",
 				object.GetName(),
-				definition.Spec.Type.String(),
+				definition.Spec.Instance.Type.String(),
 				err,
 			)
 		}
@@ -74,14 +74,14 @@ func (CRD) Validate(
 
 	diagnostic := linter.Diagnostic{
 		Severity: linter.SeverityError,
-		GVK:      definition.Spec.Type.GroupVersionKind,
+		GVK:      definition.Spec.Instance.Type.GroupVersionKind,
 	}
 
 	switch len(matches) {
 	case 0:
 		diagnostic.ID = Missing
 		diagnostic.Message = fmt.Sprintf(
-			"no CustomResourceDefinition for %q in the rendered set", definition.Spec.Type.String())
+			"no CustomResourceDefinition for %q in the rendered set", definition.Spec.Instance.Type.String())
 	default:
 		names := make([]string, 0, len(matches))
 		for _, match := range matches {
@@ -91,7 +91,7 @@ func (CRD) Validate(
 
 		diagnostic.ID = Duplicate
 		diagnostic.Message = fmt.Sprintf(
-			"multiple CustomResourceDefinitions for %q: %s", definition.Spec.Type.String(), strings.Join(names, ", "))
+			"multiple CustomResourceDefinitions for %q: %s", definition.Spec.Instance.Type.String(), strings.Join(names, ", "))
 	}
 
 	return []linter.Diagnostic{diagnostic}, nil

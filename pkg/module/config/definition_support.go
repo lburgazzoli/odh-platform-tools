@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 
+	"k8s.io/apimachinery/pkg/api/validation"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -56,7 +58,7 @@ func (c *ContainerDefinition) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 		return err
 	}
 
-	name, err := decodeContainerName(wire.Name)
+	name, err := decodeName(wire.Name)
 	if err != nil {
 		return err
 	}
@@ -68,11 +70,11 @@ func (c *ContainerDefinition) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 	return nil
 }
 
-// decodeContainerName converts the raw name member into a pointer: nil
+// decodeName converts a raw optional name member into a pointer: nil
 // for an omitted name, a pointer to the empty string for an explicit
 // null (invalid exactly like an empty name), and a pointer to the
-// decoded name otherwise.
-func decodeContainerName(raw jsontext.Value) (*string, error) {
+// decoded name otherwise. Container and instance names share it.
+func decodeName(raw jsontext.Value) (*string, error) {
 	switch {
 	case len(raw) == 0:
 		return nil, nil
@@ -85,6 +87,30 @@ func decodeContainerName(raw jsontext.Value) (*string, error) {
 		}
 		return new(name), nil
 	}
+}
+
+// UnmarshalJSONFrom decodes a module instance while distinguishing an
+// omitted name from an explicit null or empty one: an omitted name
+// leaves Name nil so Normalize defaults it to metadata.name, while
+// null decodes like an empty string, which validation rejects.
+func (i *Instance) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	var wire struct {
+		Name jsontext.Value `json:"name,omitzero"`
+		Type Type           `json:"type"`
+	}
+	if err := jsonv2.UnmarshalDecode(dec, &wire, dec.Options()); err != nil {
+		return err
+	}
+
+	name, err := decodeName(wire.Name)
+	if err != nil {
+		return err
+	}
+
+	i.Name = name
+	i.Type = wire.Type
+
+	return nil
 }
 
 // UnmarshalJSONFrom decodes a module type from its definition wire
@@ -101,11 +127,10 @@ func (t *Type) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 		return err
 	}
 
-	*t = Type{GroupVersionKind: schema.GroupVersionKind{
+	*t = Type{
 		Group:   wire.Group,
 		Version: wire.Version,
-		Kind:    wire.Kind,
-	}}
+		Kind:    wire.Kind}
 
 	return nil
 }
@@ -141,8 +166,9 @@ func (p problems) err() error {
 }
 
 // Normalize validates d and returns a copy with placement defaults
-// applied: an omitted main container name becomes
-// DefaultMainContainerName. The receiver is not mutated.
+// applied: an omitted instance name becomes metadata.name, and an
+// omitted main container name becomes DefaultMainContainerName. The
+// receiver is not mutated.
 //
 // On failure it returns an error matching errors.Is(err,
 // ErrInvalidDefinition) that aggregates one FieldError per independent
@@ -160,10 +186,26 @@ func (d PlatformModuleDefinition) Normalize() (PlatformModuleDefinition, error) 
 	return d, nil
 }
 
-// applyDefaults defaults the main container name in place. The
-// container is copied first because the value receiver of Normalize
-// shares pointer fields with the caller's definition.
+// applyDefaults defaults the omitted instance and main container names
+// in place. The two defaults are independent: neither may skip the
+// other. The receiver already belongs to Normalize's copy.
 func (d *PlatformModuleDefinition) applyDefaults() {
+	d.Spec.Instance.applyDefaultName(d.Metadata.Name)
+	d.applyDefaultContainerName()
+}
+
+// applyDefaultName fills an omitted instance name with the fallback
+// metadata name in place. An explicit name is never overwritten.
+func (i *Instance) applyDefaultName(fallbackName string) {
+	if i.Name == nil {
+		i.Name = new(fallbackName)
+	}
+}
+
+// applyDefaultContainerName defaults the main container name in place.
+// The container is copied first because the value receiver of Normalize
+// shares pointer fields with the caller's definition.
+func (d *PlatformModuleDefinition) applyDefaultContainerName() {
 	deployment := &d.Spec.Controller.Deployment
 	if deployment.Container == nil || deployment.Container.Name != nil {
 		return
@@ -189,7 +231,7 @@ func (d *PlatformModuleDefinition) validate(p *problems) {
 		d.validateHelmReleaseName(p)
 	}
 
-	d.Spec.validate(p)
+	d.Spec.validate(p, d.Metadata.Name)
 }
 
 // helmReleaseNamePattern is the release name constraint the Helm
@@ -213,25 +255,55 @@ func (d *PlatformModuleDefinition) validateHelmReleaseName(p *problems) {
 	}
 }
 
-// validate checks the spec sections and their cross-field rules.
-func (s *Spec) validate(p *problems) {
-	validateType(s.Type.GroupVersionKind, p)
+// validate checks the spec sections and their cross-field rules. The
+// metadata name is the fallback for an omitted instance name.
+func (s *Spec) validate(p *problems, fallbackName string) {
+	s.Instance.validate(p, fallbackName)
 	s.Manifests.validate(p)
 	s.Controller.Deployment.validate(p)
 	s.validateRelatedImages(p)
+}
+
+// validate checks the instance identity: the complete resource type
+// and the effective name, which is the explicit instance name or,
+// when omitted, the metadata name.
+func (i *Instance) validate(p *problems, fallbackName string) {
+	validateType(i.Type.GroupVersionKind, p)
+
+	name := i.Name
+	if name == nil {
+		// An omitted instance name inherits the metadata name. When
+		// that is missing too, the envelope validation already
+		// reports it and a fallback error would be redundant.
+		if fallbackName == "" {
+			return
+		}
+		name = &fallbackName
+	}
+
+	if *name == "" {
+		p.add("spec.instance.name", "must not be empty; omit it to default to metadata.name")
+		return
+	}
+
+	// The name must be a valid object name: a future runner creates
+	// and looks up the custom resource with it.
+	if messages := validation.NameIsDNSSubdomain(*name, false); len(messages) > 0 {
+		p.add("spec.instance.name", "%s", strings.Join(messages, "; "))
+	}
 }
 
 // validateType checks that the module type names a complete group,
 // version, and kind.
 func validateType(t schema.GroupVersionKind, p *problems) {
 	if t.Group == "" {
-		p.add("spec.type.group", "group is required")
+		p.add("spec.instance.type.group", "group is required")
 	}
 	if t.Version == "" {
-		p.add("spec.type.version", "version is required")
+		p.add("spec.instance.type.version", "version is required")
 	}
 	if t.Kind == "" {
-		p.add("spec.type.kind", "kind is required")
+		p.add("spec.instance.type.kind", "kind is required")
 	}
 }
 

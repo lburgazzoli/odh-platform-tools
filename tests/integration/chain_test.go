@@ -84,16 +84,45 @@ func TestLintChainHelmFindings(t *testing.T) {
 func TestLintChainInvalidDefinition(t *testing.T) {
 	t.Parallel()
 
-	g := NewWithT(t)
+	tests := []struct {
+		name     string
+		content  string
+		contains string
+	}{
+		{
+			name:     "incomplete instance type",
+			content:  invalidDefinitionYAML,
+			contains: "spec.instance.type.group",
+		},
+		{
+			name:     "legacy spec.type",
+			content:  legacyTypeDefinitionYAML,
+			contains: `unknown object member name "type"`,
+		},
+		{
+			name:     "invalid instance name",
+			content:  invalidInstanceNameDefinitionYAML,
+			contains: "spec.instance.name",
+		},
+	}
 
-	root := t.TempDir()
-	writeModuleFile(t, root, "definition.yaml", invalidDefinitionYAML)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-	result, err := runLint(t, root)
+			g := NewWithT(t)
 
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
-	g.Expect(result.Diagnostics).To(BeEmpty())
+			root := t.TempDir()
+			writeModuleFile(t, root, "definition.yaml", test.content)
+
+			result, err := runLint(t, root)
+
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
+			g.Expect(err.Error()).To(ContainSubstring(test.contains))
+			g.Expect(result.Diagnostics).To(BeEmpty())
+		})
+	}
 }
 
 func TestLintChainInvalidOptions(t *testing.T) {

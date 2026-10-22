@@ -52,11 +52,11 @@ func helmDefinition() config.PlatformModuleDefinition {
 		Kind:       config.Kind,
 		Metadata:   config.Metadata{Name: "synthetic"},
 		Spec: config.Spec{
-			Type: config.Type{GroupVersionKind: schema.GroupVersionKind{
+			Instance: config.Instance{Type: config.Type{GroupVersionKind: schema.GroupVersionKind{
 				Group:   "components.platform.opendatahub.io",
 				Version: "v1alpha1",
 				Kind:    "SyntheticModule",
-			}},
+			}}},
 			Manifests: config.Manifests{
 				Format: config.FormatHelm,
 				Helm:   &config.HelmManifests{Path: "./manifests/chart"},
@@ -128,6 +128,25 @@ func TestNewRequestHelm(t *testing.T) {
 	g.Expect(definition.Spec.Controller.Deployment.Container.Name).NotTo(BeNil())
 	instance.SetName("mutated")
 	g.Expect(definition.Metadata.Name).To(Equal("synthetic"))
+}
+
+func TestNewRequestIgnoresInstanceName(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	definition := helmDefinition()
+	definition.Spec.Instance.Name = new("synthetic-trainer")
+
+	request := NewRequest(definition, definitionFile)
+
+	// The configured instance name is reserved for future custom
+	// resource creation and lookup: the in-memory instance and the
+	// Helm release stay metadata.name-based, while the GVK comes from
+	// the instance type.
+	g.Expect(request.Instance.GetName()).To(Equal("synthetic"))
+	g.Expect(request.Instance.GetObjectKind().GroupVersionKind().Kind).To(Equal("SyntheticModule"))
+	g.Expect(request.HelmCharts[0].ReleaseName).To(Equal("synthetic"))
 }
 
 func TestNewRequestKustomize(t *testing.T) {

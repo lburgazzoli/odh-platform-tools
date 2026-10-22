@@ -3,10 +3,11 @@ kind: PlatformModuleDefinition
 metadata:
   name: example
 spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: Example
+  instance:                            # name omitted: it defaults to metadata.name
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: Example
   manifests:
     format: kustomize
     kustomize:

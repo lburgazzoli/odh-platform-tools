@@ -23,10 +23,11 @@ kind: PlatformModuleDefinition
 metadata:
   name: synthetic
 spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
   manifests:
     format: kustomize
     kustomize:
@@ -43,10 +44,11 @@ kind: PlatformModuleDefinition
 metadata:
   name: synthetic
 spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
   manifests:
     format: kustomize
     kustomize:
@@ -59,6 +61,30 @@ spec:
         env:
         - name: LOG_LEVEL
           value: debug
+`
+
+	// definitionWithInstanceNameYAML sets an explicit instance name
+	// different from the module name.
+	definitionWithInstanceNameYAML = `apiVersion: config.opendatahub.io/v1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  instance:
+    name: synthetic-trainer
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: kustomize
+    kustomize:
+      path: ./manifests/overlays/development
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        image: quay.io/example/controller:v1
 `
 
 	overlayKustomizationYAML = `apiVersion: kustomize.config.k8s.io/v1beta1
@@ -262,6 +288,30 @@ func TestRenderKustomizeIgnoresControllerDescriptor(t *testing.T) {
 
 	// Descriptor images and env entries never reach rendering.
 	g.Expect(first).To(Equal(second))
+}
+
+func TestRenderKustomizeIgnoresInstanceName(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	withoutName := t.TempDir()
+	writeKustomizeFixture(t, withoutName)
+
+	withName := t.TempDir()
+	writeKustomizeFixture(t, withName)
+	writeModuleFile(t, withName, "definition.yaml", definitionWithInstanceNameYAML)
+
+	omitted, err := Render(t.Context(), loadDefinition(t, withoutName), filepath.Join(withoutName, "definition.yaml"))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	explicit, err := Render(t.Context(), loadDefinition(t, withName), filepath.Join(withName, "definition.yaml"))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The configured instance name is reserved for future custom
+	// resource creation and lookup: the rendered resources are
+	// identical whether it is omitted or explicit.
+	g.Expect(explicit).To(Equal(omitted))
 }
 
 func TestRenderKustomizeIsStatelessAcrossCalls(t *testing.T) {

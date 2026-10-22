@@ -52,7 +52,7 @@ func (d Deployment) Validate(
 		return []linter.Diagnostic{{
 			ID:       id,
 			Severity: linter.SeverityError,
-			GVK:      definition.Spec.Type.GroupVersionKind,
+			GVK:      definition.Spec.Instance.Type.GroupVersionKind,
 			Message:  fmt.Sprintf("module must bundle exactly one Deployment, found %d", len(deployments)),
 		}}, nil
 	}

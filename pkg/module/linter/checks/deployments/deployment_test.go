@@ -28,11 +28,11 @@ func testDefinition() config.PlatformModuleDefinition {
 	return config.PlatformModuleDefinition{
 		Metadata: config.Metadata{Name: "synthetic"},
 		Spec: config.Spec{
-			Type: config.Type{GroupVersionKind: schema.GroupVersionKind{
+			Instance: config.Instance{Type: config.Type{GroupVersionKind: schema.GroupVersionKind{
 				Group:   "components.platform.opendatahub.io",
 				Version: "v1alpha1",
 				Kind:    "SyntheticModule",
-			}},
+			}}},
 		},
 	}
 }

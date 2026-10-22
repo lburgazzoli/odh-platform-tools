@@ -3,10 +3,12 @@ kind: PlatformModuleDefinition
 metadata:
   name: example
 spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: Example
+  instance:
+    name: default-example               # optional; defaults to metadata.name when omitted
+    type:                               # the Module custom resource the controller owns
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: Example
   manifests:
     format: helm
     helm:

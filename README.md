@@ -46,10 +46,12 @@ kind: PlatformModuleDefinition
 metadata:
   name: example                      # module identity; also the Helm release name
 spec:
-  type:                              # the Module custom resource the controller owns
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: Example
+  instance:                          # the module's custom resource identity
+    name: default-example            # optional; defaults to metadata.name when omitted
+    type:                            # the Module custom resource the controller owns
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: Example
   manifests:
     format: helm                     # helm | kustomize; exactly one backend block
     helm:
@@ -70,7 +72,8 @@ spec:
 
 | Field | Notes |
 | --- | --- |
-| `spec.type` | Group, version, and kind of the Module custom resource. All three are required. |
+| `spec.instance.type` | Group, version, and kind of the Module custom resource. All three are required. |
+| `spec.instance.name` | Optional name of the module's custom resource instance; defaults to `metadata.name` when omitted. Must be a valid object name (DNS subdomain). It is reserved for a future runner that creates and looks up the custom resource — it is not a rendering input. |
 | `spec.manifests.format` | `helm` or `kustomize`. The block matching the format is required; the other must be absent. |
 | `spec.manifests.helm.path` | Chart directory relative to the definition file. Must contain `Chart.yaml`. The release name is `metadata.name`; no repositories, credentials, or extra values are involved. Chart dependencies must be vendored under `charts/`. |
 | `spec.manifests.kustomize.path` | Directory containing `kustomization.yaml` (or `.yml`), relative to the definition file. Sibling bases and resource files are allowed; there is no `default/` fallback. |
@@ -79,6 +82,14 @@ spec:
 | `spec.controller.deployment.initContainer` | Optional init container; same type as `container` but requires an explicit `name`. There is no inheritance between the two placements. |
 | `spec.controller.deployment.*.env` | Explicit environment variables. `value` is required and non-null; an explicit empty string is valid. |
 | `spec.relatedImages` | Optional list of portable, unique environment-variable-style names. A future runner will inject them into both selected containers; lint only checks uniqueness and collision with explicit `env` names. |
+
+The instance identity is descriptive data: nothing in this delivery
+creates or looks up the custom resource, and rendering never uses
+`spec.instance.name` — the in-memory module instance and the Helm
+release name both come from `metadata.name`. Loading is strict about
+the layout: the superseded top-level `spec.type` location is rejected
+as an unknown member, including when it appears together with
+`spec.instance`.
 
 Lint neither resolves nor injects declarations: `{{VARIABLE}}` image
 references and `relatedImages` names are validated for shape only, and

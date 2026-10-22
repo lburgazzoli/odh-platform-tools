@@ -33,10 +33,11 @@ kind: PlatformModuleDefinition
 metadata:
   name: synthetic
 spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
   manifests:
     format: helm
     helm:
@@ -56,10 +57,11 @@ kind: PlatformModuleDefinition
 metadata:
   name: synthetic
 spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
   manifests:
     format: kustomize
     kustomize:
@@ -295,9 +297,56 @@ kind: PlatformModuleDefinition
 metadata:
   name: broken
 spec:
+  instance:
+    type:
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: kustomize
+    kustomize:
+      path: ./manifests
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        image: quay.io/example/controller:v1
+`
+
+	// legacyTypeDefinitionYAML uses the superseded top-level spec.type
+	// location.
+	legacyTypeDefinitionYAML = `apiVersion: config.opendatahub.io/v1
+kind: PlatformModuleDefinition
+metadata:
+  name: broken
+spec:
   type:
+    group: components.platform.opendatahub.io
     version: v1alpha1
     kind: SyntheticModule
+  manifests:
+    format: kustomize
+    kustomize:
+      path: ./manifests
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        image: quay.io/example/controller:v1
+`
+
+	// invalidInstanceNameDefinitionYAML declares an instance name that
+	// is not a valid object name.
+	invalidInstanceNameDefinitionYAML = `apiVersion: config.opendatahub.io/v1
+kind: PlatformModuleDefinition
+metadata:
+  name: broken
+spec:
+  instance:
+    name: Synthetic_Module
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
   manifests:
     format: kustomize
     kustomize:

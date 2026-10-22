@@ -1,6 +1,6 @@
 // Package config defines the module definition document that describes
-// an OpenDataHub module: its custom resource type, manifest source, and
-// controller deployment.
+// an OpenDataHub module: its custom resource instance identity, its
+// manifest source, and its controller deployment.
 //
 // The document is plain data with JSON tags. Loading it from a file is
 // the loader package's job; this package models the document shape,
@@ -50,13 +50,30 @@ type Metadata struct {
 	Name string `json:"name"`
 }
 
-// Spec is the module description: the custom resource type it owns, the
-// manifest backend that renders it, and the controller deployment.
+// Spec is the module description: the custom resource instance the
+// controller owns, the manifest backend that renders it, and the
+// controller deployment.
 type Spec struct {
-	Type          Type       `json:"type"`
+	Instance      Instance   `json:"instance"`
 	Manifests     Manifests  `json:"manifests"`
 	RelatedImages []string   `json:"relatedImages,omitzero"`
 	Controller    Controller `json:"controller"`
+}
+
+// Instance identifies the module's custom resource: the resource type
+// the controller owns and the instance name a future runner will use
+// to create and look up the resource. Neither is a rendering input:
+// the renderer names the in-memory module instance and the Helm
+// release after metadata.name.
+type Instance struct {
+	// Name is nil when the definition omits it; Normalize then
+	// defaults it to metadata.name. An explicit null or empty name is
+	// invalid, exactly like an empty container name. After Normalize
+	// the name is always set.
+	Name *string `json:"name,omitzero"`
+
+	// Type is the Module custom resource type the controller owns.
+	Type Type `json:"type"`
 }
 
 // Type identifies the Module custom resource the module controller
