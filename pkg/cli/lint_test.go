@@ -510,3 +510,67 @@ func TestExitCode(t *testing.T) {
 	g.Expect(ExitCode(fmt.Errorf("wrapped: %w",
 		&ExitError{Code: ExitFailure, Err: errors.New("render")}))).To(Equal(ExitFailure))
 }
+
+func TestLintCommandWriteFailuresExitAsExecutionFailures(t *testing.T) {
+	t.Parallel()
+
+	t.Run("report write failure preserves cancellation identity", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		recorder := &recordingRun{
+			err: fmt.Errorf("render manifests: %w", context.Canceled),
+		}
+
+		root := NewRootCommand(recorder.run)
+		root.SetOut(failingWriter{})
+		root.SetErr(&bytes.Buffer{})
+		root.SetArgs([]string{"module", "lint", "--config", "definition.yaml"})
+
+		err := root.ExecuteContext(t.Context())
+
+		g.Expect(ExitCode(err)).To(Equal(ExitFailure))
+		g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
+		g.Expect(err.Error()).To(ContainSubstring("write report"))
+	})
+
+	t.Run("report write failure on a successful action", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		recorder := &recordingRun{}
+
+		root := NewRootCommand(recorder.run)
+		root.SetOut(failingWriter{})
+		root.SetErr(&bytes.Buffer{})
+		root.SetArgs([]string{"module", "lint", "--config", "definition.yaml"})
+
+		err := root.ExecuteContext(t.Context())
+
+		g.Expect(ExitCode(err)).To(Equal(ExitFailure))
+		g.Expect(err.Error()).To(ContainSubstring("write report"))
+	})
+
+	t.Run("summary write failure preserves the action outcome", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		definitionFailure := config.NewDefinitionError(errors.New("bad spec"))
+
+		recorder := &recordingRun{err: definitionFailure}
+
+		root := NewRootCommand(recorder.run)
+		root.SetOut(&bytes.Buffer{})
+		root.SetErr(failingWriter{})
+		root.SetArgs([]string{"module", "lint", "--config", "definition.yaml"})
+
+		err := root.ExecuteContext(t.Context())
+
+		g.Expect(ExitCode(err)).To(Equal(ExitFailure))
+		g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
+		g.Expect(err.Error()).To(ContainSubstring("write failure summary"))
+	})
+}

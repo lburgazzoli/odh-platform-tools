@@ -126,16 +126,25 @@ func (o lintOptions) execute(command *cobra.Command, run LintRun) error {
 
 	report := newReport(o.config, result, failure)
 
+	// A report or summary write failure is an internal execution
+	// failure (exit 1), never a usage error, and keeps the action's
+	// outcome identity alongside it.
 	if writeErr := writeReport(command.OutOrStdout(), o.format.String(), report); writeErr != nil {
-		return writeErr
+		return &ExitError{
+			Code: ExitFailure,
+			Err:  errors.Join(err, fmt.Errorf("write report: %w", writeErr)),
+		}
 	}
 
 	// Execution failures are also summarized on stderr; findings are
 	// report content only.
 	if failure != nil {
-		if _, err := fmt.Fprintf(command.ErrOrStderr(), "module lint %s: %s: %s\n",
-			o.config, category, err); err != nil {
-			return fmt.Errorf("write failure summary: %w", err)
+		if _, writeErr := fmt.Fprintf(command.ErrOrStderr(), "module lint %s: %s: %s\n",
+			o.config, category, err); writeErr != nil {
+			return &ExitError{
+				Code: ExitFailure,
+				Err:  errors.Join(err, fmt.Errorf("write failure summary: %w", writeErr)),
+			}
 		}
 	}
 
