@@ -6,7 +6,7 @@ Offline lint tooling for OpenDataHub platform module definitions.
 manifest backend (Helm or Kustomize) with the actual platform framework
 actions, and validates the rendered objects against the packaging rules
 the ODH operator enforces at integration time — all without a cluster,
-credentials, network access, containers, or external renderer binaries.
+credentials, containers, or external renderer binaries.
 
 ## Quickstart
 
@@ -197,8 +197,8 @@ error `SINGLETON_EVIDENCE_MISSING`.
                      │ loader.New().Load                      │ helm.Render / kustomize.Render
      ┌───────────────▼──────────────┐        ┌────────────────▼───────────────────┐
      │ pkg/module/loader            │        │ pkg/module/renderer/{helm,kustomize}│
-     │ strict YAML → typed config,  │        │ source capture + containment guard,│
-     │ entry resolution, validation │        │ framework action wrappers          │
+     │ strict YAML → typed config,  │        │ framework render action wrappers,  │
+     │ entry resolution, validation │        │ engine-faithful, restrictions off   │
      └──────────────────────────────┘        └────────────────▼───────────────────┘
                                                              │ []unstructured.Unstructured
                                              ┌───────────────▼────────────────────┐
@@ -218,12 +218,14 @@ error `SINGLETON_EVIDENCE_MISSING`.
 - **Services stay reusable.** The loader and both renderer wrappers
   remain independently callable; the linter's pure validator accepts a
   context, the typed definition, and an object list.
-- **Offline by construction.** Transitive renderer inputs are captured
-  through root-contained reads and validated before the framework
-  actions run; escaping paths and symlinks, remote/Git/OCI sources,
-  external generators, exec plugins, and un-vendored chart dependencies
-  fail closed. Local-only inputs are the offline boundary; ordinary
-  framework rendering semantics are kept.
+- **Engine-faithful rendering.** The framework actions render the
+  configured entry directly with engine load restrictions off, so
+  rendering behaves like a plain `kustomize build` or `helm template`
+  over the same tree: sibling bases, patches, and generators load as
+  authored, and any input the engine rejects fails the lint with the
+  engine's own error. No Kubernetes client, cluster access, release
+  state, or action cache is attached; the definition's entry path is
+  still resolved and root-contained by the loader.
 
 ## Limits
 

@@ -18,7 +18,6 @@ import (
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
 
 // Module and chart inputs exercised through the real framework action.
@@ -73,14 +72,6 @@ dependencies:
 - name: vendored
   version: 1.2.3
   repository: https://charts.example.com
-`
-
-	chartWithMissingDependencyYAML = `apiVersion: v2
-name: synthetic
-version: 1.0.0
-dependencies:
-- name: absent
-  version: 1.0.0
 `
 
 	valuesYAML = `replicas: 1
@@ -220,14 +211,14 @@ func TestRenderHelmChart(t *testing.T) {
 	g.Expect(resources).NotTo(BeEmpty())
 
 	// The release name is the module name and chart values map from
-	// the captured defaults.
+	// the chart defaults.
 	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 	replicas, found, err := unstructured.NestedInt64(deployment.Object, "spec", "replicas")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(found).To(BeTrue())
 	g.Expect(replicas).To(Equal(int64(1)))
 
-	// Vendored dependency templates render from the snapshot archive.
+	// Vendored dependency templates render from the chart's charts/ archive.
 	g.Expect(findResource(t, resources, "Service", "synthetic-service")).NotTo(BeZero())
 }
 
@@ -295,22 +286,6 @@ func TestRenderHelmIsStatelessAcrossCalls(t *testing.T) {
 	// Repeated renders of the same module are identical: no state
 	// leaks between calls.
 	g.Expect(repeated).To(Equal(firstOutput))
-}
-
-func TestRenderHelmRejectsUnsafeSources(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	root := t.TempDir()
-	writeChartFixture(t, root)
-	writeModuleFile(t, root, "manifests/chart/Chart.yaml", chartWithMissingDependencyYAML)
-
-	resources, err := Render(t.Context(), loadDefinition(t, root))
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(resources).To(BeNil())
-	g.Expect(errors.Is(err, renderer.ErrUnsafeSource)).To(BeTrue())
-	g.Expect(err.Error()).To(ContainSubstring("helm backend for module synthetic"))
 }
 
 func TestRenderHelmPropagatesCancellation(t *testing.T) {

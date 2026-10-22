@@ -13,7 +13,6 @@ import (
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
 
 // Module and kustomization inputs exercised through the real framework
@@ -203,7 +202,7 @@ func TestRenderKustomize(t *testing.T) {
 	g.Expect(resources).NotTo(BeEmpty())
 
 	// Direct resource files, sibling bases, patches, and generators all
-	// load from the contained snapshot with relaxed restrictions.
+	// load with engine restrictions off, as in a plain kustomize build.
 	deployment := findResource(t, resources, "Deployment", "module-controller")
 	replicas, found, err := unstructured.NestedInt64(deployment.Object, "spec", "replicas")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -287,25 +286,6 @@ func TestRenderKustomizeIsStatelessAcrossCalls(t *testing.T) {
 	g.Expect(repeated).To(Equal(firstOutput))
 }
 
-func TestRenderKustomizeRejectsUnsafeSources(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	root := t.TempDir()
-	writeKustomizeFixture(t, root)
-	writeModuleFile(t, root, "manifests/overlays/development/kustomization.yaml", `apiVersion: kustomize.config.k8s.io/v1beta1
-resources:
-- https://example.com/base
-`)
-
-	resources, err := Render(t.Context(), loadDefinition(t, root))
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(resources).To(BeNil())
-	g.Expect(errors.Is(err, renderer.ErrUnsafeSource)).To(BeTrue())
-	g.Expect(err.Error()).To(ContainSubstring("kustomize backend for module synthetic"))
-}
-
 func TestRenderKustomizeRenderError(t *testing.T) {
 	t.Parallel()
 
@@ -313,8 +293,7 @@ func TestRenderKustomizeRenderError(t *testing.T) {
 
 	root := t.TempDir()
 	writeKustomizeFixture(t, root)
-	// A resource the capture accepts (it is a contained regular file)
-	// but the engine cannot build.
+	// A well-formed reference the engine cannot build.
 	writeModuleFile(t, root, "manifests/overlays/development/deployment.yaml", "not: [valid yaml\n")
 
 	resources, err := Render(t.Context(), loadDefinition(t, root))

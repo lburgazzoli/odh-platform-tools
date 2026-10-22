@@ -1,5 +1,5 @@
 // Package helm renders Helm-based module definitions through the
-// actual framework Helm action over captured, contained local inputs.
+// actual framework Helm action over the configured local chart.
 package helm
 
 import (
@@ -17,15 +17,15 @@ import (
 // Render renders the module described by document through the actual
 // framework Helm action and returns the rendered objects.
 //
-// The chart is first captured into a private, validated snapshot; the
-// action renders the snapshot, never the original tree, with caching
-// disabled and no client or release state attached. Chart strictness,
-// values schema validation, bundled CRDs, dependency handling, content
-// metadata, and output ordering all come from the framework action:
-// this wrapper only maps the contained chart path and the module name
-// as the Helm release name. It never resolves replacement strings,
-// never sets values, and never contacts remote repositories, so
-// descriptor images and environment entries cannot affect the output.
+// The action renders the configured chart directory directly, with
+// caching disabled and no client or release state attached. Chart
+// strictness, values schema validation, bundled CRDs, dependency
+// handling, content metadata, and output ordering all come from the
+// framework action: this wrapper only maps the chart path and the
+// module name as the Helm release name. It never resolves replacement
+// strings, never sets values, and never adds repository configuration,
+// so descriptor images and environment entries cannot affect the
+// output.
 //
 // The returned list contains every object the framework action
 // rendered for the chart; callers filtering it must not assume they
@@ -35,13 +35,9 @@ func Render(ctx context.Context, document config.Document) ([]unstructured.Unstr
 		return nil, err
 	}
 
-	snapshot, request, err := renderer.CaptureRequest(ctx, document)
-	if err != nil {
-		return nil, fmt.Errorf("helm backend for module %s: %w", document.Definition.Metadata.Name, err)
-	}
-	defer snapshot.Close() //nolint:errcheck // read-only snapshot
-
+	request := renderer.NewRequest(document)
 	action := fwhelm.NewAction(fwhelm.WithCache(false))
+
 	if err := action(ctx, request); err != nil {
 		return nil, fmt.Errorf("helm render for module %s: %w", document.Definition.Metadata.Name, err)
 	}

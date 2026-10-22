@@ -19,8 +19,8 @@ import (
 // NewRequest builds the framework reconciliation request for rendering
 // the module described by document.
 //
-// The request carries only authored module identity and the resolved,
-// already-contained local renderer paths from the document: one Helm
+// The request carries only authored module identity and the
+// loader-resolved local renderer paths from the document: one Helm
 // chart source for the Helm backend, or one manifest entry for the
 // Kustomize backend. No client, controller, conditions manager, or
 // release is attached, and the instance carries no cluster identity.

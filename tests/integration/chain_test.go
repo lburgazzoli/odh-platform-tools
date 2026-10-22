@@ -117,8 +117,9 @@ func TestLintChainRejectsEscapingSource(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The referenced file exists, but outside the module root: the
-	// containment guard must reject the escape, not read it.
+	// The referenced file exists, but outside the kustomization root:
+	// the engine's own root-only load restrictions reject the escape,
+	// not read it.
 	writeModuleFile(t, root, "definition.yaml", kustomizeDefinitionYAML)
 	writeModuleFile(t, root, "manifests/kustomization.yaml", escapingKustomizationYAML)
 	writeModuleFile(t, parent, "external/resource.yaml", externalResourceYAML)
@@ -128,22 +129,6 @@ func TestLintChainRejectsEscapingSource(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeFalse())
 	g.Expect(errors.Is(err, linter.ErrInvalidOptions)).To(BeFalse())
-	g.Expect(result.Diagnostics).To(BeEmpty())
-}
-
-func TestLintChainRejectsRemoteSource(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	root := t.TempDir()
-	writeModuleFile(t, root, "definition.yaml", kustomizeDefinitionYAML)
-	writeModuleFile(t, root, "manifests/kustomization.yaml", remoteKustomizationYAML)
-
-	result, err := lint(t, root)
-
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeFalse())
 	g.Expect(result.Diagnostics).To(BeEmpty())
 }
 

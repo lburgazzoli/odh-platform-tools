@@ -315,12 +315,6 @@ resources:
 - ../../external/resource.yaml
 `
 
-	remoteKustomizationYAML = `apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-- https://example.com/manifests
-`
-
 	externalResourceYAML = `apiVersion: v1
 kind: Secret
 metadata:

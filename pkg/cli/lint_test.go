@@ -173,7 +173,7 @@ func TestLintCommandClassification(t *testing.T) {
 		},
 		{
 			name:     "render error",
-			err:      errors.New("helm backend for module synthetic: unsafe renderer input"),
+			err:      errors.New("kustomize render for module synthetic: accumulate resources: accumulate"),
 			exitCode: ExitFailure,
 			status:   StatusFailed,
 			category: FailureRender,

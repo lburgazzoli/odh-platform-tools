@@ -6,7 +6,7 @@ require (
 	github.com/google/cel-go v0.29.2
 	github.com/k8s-manifest-kit/renderer-helm v0.3.1-0.20260303100010-977618f3f59b
 	github.com/onsi/gomega v1.44.0
-	github.com/opendatahub-io/odh-platform-utilities/framework v0.2.0
+	github.com/opendatahub-io/odh-platform-utilities/framework v0.2.1-0.20261021162150-201e66e4e90a
 	github.com/spf13/cobra v1.10.2
 	go.yaml.in/yaml/v3 v3.0.5
 	k8s.io/apiextensions-apiserver v0.37.1
