@@ -1,21 +1,15 @@
-// Package cli adapts the composed module lint action to the command
-// surface. It owns flag parsing, report formatting, and exit-code
-// classification only: no loading, rendering, or validation logic
-// lives here, and every business execution goes through the injected
-// action boundary.
+// Package cli wires the command tree of the binary. It owns the
+// root and group commands and the process exit-status mapping only:
+// the `module lint` command itself lives in pkg/lint, and every
+// business execution goes through the injected action boundary.
 package cli
 
 import (
 	"errors"
 
 	"github.com/spf13/cobra"
-)
 
-// Process exit statuses.
-const (
-	ExitSuccess = 0
-	ExitFailure = 1
-	ExitUsage   = 2
+	"github.com/lburgazzoli/odh-platform-tools/pkg/cli/lint"
 )
 
 // NewRootCommand returns the binary root command with exactly one
@@ -23,7 +17,7 @@ const (
 // `module run` are not stubbed: Cobra rejects them as unknown
 // commands, and legacy descriptor override flags are rejected as
 // unknown flags.
-func NewRootCommand(run LintRun) *cobra.Command {
+func NewRootCommand(run lint.Run) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "odh-platform-tools",
 		Short: "Offline platform module tooling",
@@ -40,7 +34,7 @@ func NewRootCommand(run LintRun) *cobra.Command {
 
 // NewModuleCommand returns the `module` command group with exactly
 // one registered subcommand, `lint`.
-func NewModuleCommand(run LintRun) *cobra.Command {
+func NewModuleCommand(run lint.Run) *cobra.Command {
 	group := &cobra.Command{
 		Use:   "module",
 		Short: "Offline platform module tooling",
@@ -57,7 +51,7 @@ func NewModuleCommand(run LintRun) *cobra.Command {
 		SilenceErrors: true,
 	}
 
-	group.AddCommand(NewLintCommand(run))
+	group.AddCommand(lint.NewLintCommand(run))
 
 	return group
 }
@@ -67,13 +61,13 @@ func NewModuleCommand(run LintRun) *cobra.Command {
 // other command or flag failure is a usage failure.
 func ExitCode(err error) int {
 	if err == nil {
-		return ExitSuccess
+		return lint.ExitSuccess
 	}
 
-	var exitErr *ExitError
+	var exitErr *lint.ExitError
 	if errors.As(err, &exitErr) {
 		return exitErr.Code
 	}
 
-	return ExitUsage
+	return lint.ExitUsage
 }

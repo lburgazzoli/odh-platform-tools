@@ -443,16 +443,16 @@ func writeKustomizeModule(t *testing.T, root string) {
 	writeModuleFile(t, root, "manifests/rolebinding.yaml", kustomizeRoleBindingYAML)
 }
 
-// lint runs the public composed action over one module root.
-func lint(t *testing.T, root string) (linter.Result, error) {
+// runLint runs the public composed action over one module root.
+func runLint(t *testing.T, root string) (linter.Result, error) {
 	t.Helper()
 
-	return lintContext(t.Context(), t, root)
+	return runLintContext(t.Context(), t, root)
 }
 
-// lintContext runs the public composed action with an explicit
+// runLintContext runs the public composed action with an explicit
 // context over one module root.
-func lintContext(
+func runLintContext(
 	ctx context.Context,
 	t *testing.T,
 	root string,

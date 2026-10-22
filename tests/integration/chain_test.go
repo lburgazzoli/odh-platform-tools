@@ -31,7 +31,7 @@ func TestLintChainHelmValidModule(t *testing.T) {
 	root := t.TempDir()
 	writeHelmModule(t, root)
 
-	result, err := lint(t, root)
+	result, err := runLint(t, root)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.Diagnostics).To(BeEmpty())
@@ -45,7 +45,7 @@ func TestLintChainKustomizeValidModule(t *testing.T) {
 	root := t.TempDir()
 	writeKustomizeModule(t, root)
 
-	result, err := lint(t, root)
+	result, err := runLint(t, root)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.Diagnostics).To(BeEmpty())
@@ -69,7 +69,7 @@ func TestLintChainHelmFindings(t *testing.T) {
 	writeModuleFile(t, root, "manifests/chart/templates/rolebinding.yaml",
 		unresolvedRoleBindingTemplateYAML)
 
-	result, err := lint(t, root)
+	result, err := runLint(t, root)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.HasErrors()).To(BeTrue())
@@ -89,7 +89,7 @@ func TestLintChainInvalidDefinition(t *testing.T) {
 	root := t.TempDir()
 	writeModuleFile(t, root, "definition.yaml", invalidDefinitionYAML)
 
-	result, err := lint(t, root)
+	result, err := runLint(t, root)
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
@@ -125,7 +125,7 @@ func TestLintChainRejectsEscapingSource(t *testing.T) {
 	writeModuleFile(t, root, "manifests/kustomization.yaml", escapingKustomizationYAML)
 	writeModuleFile(t, parent, "external/resource.yaml", externalResourceYAML)
 
-	result, err := lint(t, root)
+	result, err := runLint(t, root)
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeFalse())
@@ -144,7 +144,7 @@ func TestLintChainRenderError(t *testing.T) {
 	writeModuleFile(t, root, "manifests/chart/values.yaml", chartValuesYAML)
 	writeModuleFile(t, root, "manifests/chart/templates/broken.yaml", brokenTemplateYAML)
 
-	result, err := lint(t, root)
+	result, err := runLint(t, root)
 
 	// A failed render is an execution error, never a partial object
 	// set presented as a successful lint.
@@ -163,7 +163,7 @@ func TestLintChainCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	result, err := lintContext(ctx, t, root)
+	result, err := runLintContext(ctx, t, root)
 
 	g.Expect(err).To(MatchError(context.Canceled))
 	g.Expect(result.Diagnostics).To(BeEmpty())
@@ -182,7 +182,7 @@ func TestLintChainEnvironmentIndependence(t *testing.T) {
 	root := t.TempDir()
 	writeHelmModule(t, root)
 
-	result, err := lint(t, root)
+	result, err := runLint(t, root)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.Diagnostics).To(BeEmpty())

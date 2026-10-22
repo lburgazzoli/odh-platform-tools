@@ -1,4 +1,9 @@
-package cli
+// Package lint adapts the module lint action to the `module lint`
+// command surface. It owns flag parsing, report formatting, and
+// exit-code classification only: no loading, rendering, or
+// validation logic lives here, and every business execution goes
+// through the injected action boundary.
+package lint
 
 import (
 	"context"
@@ -11,10 +16,17 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 )
 
-// LintRun runs the composed module lint action once. The concrete
+// Process exit statuses.
+const (
+	ExitSuccess = 0
+	ExitFailure = 1
+	ExitUsage   = 2
+)
+
+// Run runs the composed module lint action once. The concrete
 // implementation is module.NewLinter().Run; command tests inject
 // fakes. It is the only business boundary the command touches.
-type LintRun func(ctx context.Context, options linter.Options) (linter.Result, error)
+type Run func(ctx context.Context, options linter.Options) (linter.Result, error)
 
 // ExitError carries the process exit status of one executed lint
 // invocation, so main can exit with the classified status without
@@ -79,7 +91,7 @@ type lintOptions struct {
 // required --config flag and the optional --output flag into a plain
 // action Options struct, forwards the command context, calls the
 // injected action exactly once, and formats one report.
-func NewLintCommand(run LintRun) *cobra.Command {
+func NewLintCommand(run Run) *cobra.Command {
 	options := lintOptions{format: FormatText}
 
 	command := &cobra.Command{
@@ -114,7 +126,7 @@ func NewLintCommand(run LintRun) *cobra.Command {
 // options and command context, classify the outcome, write exactly
 // one report to stdout, echo execution failures to stderr, and return
 // the classified exit outcome for main.
-func (o lintOptions) execute(command *cobra.Command, run LintRun) error {
+func (o lintOptions) execute(command *cobra.Command, run Run) error {
 	result, err := run(command.Context(), linter.Options{DefinitionFile: o.config})
 
 	category, code := classify(err)

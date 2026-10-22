@@ -14,11 +14,12 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/cli"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/cli/lint"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module"
 )
 
 // jsonUnmarshalReport decodes one executed JSON report document.
-func jsonUnmarshalReport(data []byte, report *cli.Report) error {
+func jsonUnmarshalReport(data []byte, report *lint.Report) error {
 	return jsonv2.Unmarshal(data, report)
 }
 
@@ -59,12 +60,12 @@ func TestCLIChainHelmValidModule(t *testing.T) {
 	stdout, stderr, err := runCLI(t.Context(), root, "--output", "json")
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(cli.ExitCode(err)).To(Equal(cli.ExitSuccess))
+	g.Expect(cli.ExitCode(err)).To(Equal(lint.ExitSuccess))
 	g.Expect(stderr).To(BeEmpty())
 
-	var report cli.Report
+	var report lint.Report
 	g.Expect(jsonUnmarshalReport([]byte(stdout), &report)).To(Succeed())
-	g.Expect(report.Status).To(Equal(cli.StatusPass))
+	g.Expect(report.Status).To(Equal(lint.StatusPass))
 	g.Expect(report.HasErrors).To(BeFalse())
 	g.Expect(report.Diagnostics).To(BeEmpty())
 }
@@ -82,9 +83,9 @@ func TestCLIChainKustomizeValidModule(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(stderr).To(BeEmpty())
 
-	var report cli.Report
+	var report lint.Report
 	g.Expect(jsonUnmarshalReport([]byte(stdout), &report)).To(Succeed())
-	g.Expect(report.Status).To(Equal(cli.StatusPass))
+	g.Expect(report.Status).To(Equal(lint.StatusPass))
 }
 
 func TestCLIChainTextReportDefault(t *testing.T) {
@@ -116,13 +117,13 @@ func TestCLIChainFindingsExitFailure(t *testing.T) {
 	stdout, stderr, err := runCLI(t.Context(), root, "--output", "json")
 
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(cli.ExitCode(err)).To(Equal(cli.ExitFailure))
+	g.Expect(cli.ExitCode(err)).To(Equal(lint.ExitFailure))
 	// Findings are report content: no stderr failure line.
 	g.Expect(stderr).To(BeEmpty())
 
-	var report cli.Report
+	var report lint.Report
 	g.Expect(jsonUnmarshalReport([]byte(stdout), &report)).To(Succeed())
-	g.Expect(report.Status).To(Equal(cli.StatusFindings))
+	g.Expect(report.Status).To(Equal(lint.StatusFindings))
 	g.Expect(report.HasErrors).To(BeTrue())
 	g.Expect(report.Diagnostics).NotTo(BeEmpty())
 }
@@ -138,13 +139,13 @@ func TestCLIChainDefinitionErrorExitUsage(t *testing.T) {
 	stdout, stderr, err := runCLI(t.Context(), root, "--output", "json")
 
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(cli.ExitCode(err)).To(Equal(cli.ExitUsage))
-	g.Expect(stderr).To(ContainSubstring(cli.FailureDefinition))
+	g.Expect(cli.ExitCode(err)).To(Equal(lint.ExitUsage))
+	g.Expect(stderr).To(ContainSubstring(lint.FailureDefinition))
 
-	var report cli.Report
+	var report lint.Report
 	g.Expect(jsonUnmarshalReport([]byte(stdout), &report)).To(Succeed())
-	g.Expect(report.Status).To(Equal(cli.StatusFailed))
-	g.Expect(report.Failure.Category).To(Equal(cli.FailureDefinition))
+	g.Expect(report.Status).To(Equal(lint.StatusFailed))
+	g.Expect(report.Failure.Category).To(Equal(lint.FailureDefinition))
 }
 
 func TestCLIChainRenderErrorExitFailure(t *testing.T) {
@@ -161,13 +162,13 @@ func TestCLIChainRenderErrorExitFailure(t *testing.T) {
 	stdout, stderr, err := runCLI(t.Context(), root, "--output", "json")
 
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(cli.ExitCode(err)).To(Equal(cli.ExitFailure))
-	g.Expect(stderr).To(ContainSubstring(cli.FailureRender))
+	g.Expect(cli.ExitCode(err)).To(Equal(lint.ExitFailure))
+	g.Expect(stderr).To(ContainSubstring(lint.FailureRender))
 
-	var report cli.Report
+	var report lint.Report
 	g.Expect(jsonUnmarshalReport([]byte(stdout), &report)).To(Succeed())
-	g.Expect(report.Status).To(Equal(cli.StatusFailed))
-	g.Expect(report.Failure.Category).To(Equal(cli.FailureRender))
+	g.Expect(report.Status).To(Equal(lint.StatusFailed))
+	g.Expect(report.Failure.Category).To(Equal(lint.FailureRender))
 }
 
 func TestCLIChainCancelledContextExitFailure(t *testing.T) {
@@ -184,11 +185,11 @@ func TestCLIChainCancelledContextExitFailure(t *testing.T) {
 	stdout, _, err := runCLI(ctx, root, "--output", "json")
 
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(cli.ExitCode(err)).To(Equal(cli.ExitFailure))
+	g.Expect(cli.ExitCode(err)).To(Equal(lint.ExitFailure))
 	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
 
-	var report cli.Report
+	var report lint.Report
 	g.Expect(jsonUnmarshalReport([]byte(stdout), &report)).To(Succeed())
-	g.Expect(report.Status).To(Equal(cli.StatusFailed))
-	g.Expect(report.Failure.Category).To(Equal(cli.FailureCancelled))
+	g.Expect(report.Status).To(Equal(lint.StatusFailed))
+	g.Expect(report.Failure.Category).To(Equal(lint.FailureCancelled))
 }

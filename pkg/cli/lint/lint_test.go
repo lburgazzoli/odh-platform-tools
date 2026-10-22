@@ -1,4 +1,4 @@
-package cli
+package lint
 
 import (
 	"bytes"
@@ -36,37 +36,41 @@ func (r *recordingRun) run(ctx context.Context, options linter.Options) (linter.
 	return r.result, r.err
 }
 
-// execute runs one command execution with captured streams.
-func execute(
-	ctx context.Context,
-	t *testing.T,
-	run LintRun,
-	args ...string,
-) (string, string, error) {
-	t.Helper()
+// exitCode maps one lint command error to its process exit status:
+// classified outcomes keep their own code, and flag or usage
+// failures are usage failures.
+func exitCode(err error) int {
+	if err == nil {
+		return ExitSuccess
+	}
 
-	root := NewRootCommand(run)
+	var exitErr *ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.Code
+	}
 
-	var stdout, stderr bytes.Buffer
-	root.SetOut(&stdout)
-	root.SetErr(&stderr)
-	root.SetArgs(args)
-
-	err := root.ExecuteContext(ctx)
-
-	return stdout.String(), stderr.String(), err
+	return ExitUsage
 }
 
-// executeLint runs `module lint` with the given flag arguments.
+// executeLint runs the lint command with the given flag arguments.
 func executeLint(
 	ctx context.Context,
 	t *testing.T,
-	run LintRun,
+	run Run,
 	flags ...string,
 ) (string, string, error) {
 	t.Helper()
 
-	return execute(ctx, t, run, append([]string{"module", "lint"}, flags...)...)
+	command := NewLintCommand(run)
+
+	var stdout, stderr bytes.Buffer
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+	command.SetArgs(flags)
+
+	err := command.ExecuteContext(ctx)
+
+	return stdout.String(), stderr.String(), err
 }
 
 // reportFromJSON decodes one executed JSON report.
@@ -195,7 +199,7 @@ func TestLintCommandClassification(t *testing.T) {
 			stdout, stderr, err := executeLint(t.Context(), t, recorder.run,
 				"--config", "definition.yaml", "--output", FormatJSON)
 
-			g.Expect(ExitCode(err)).To(Equal(testCase.exitCode))
+			g.Expect(exitCode(err)).To(Equal(testCase.exitCode))
 
 			report := reportFromJSON(t, g, stdout)
 			g.Expect(report.Status).To(Equal(testCase.status))
@@ -275,7 +279,7 @@ func TestLintCommandTextReportGolden(t *testing.T) {
 		stdout, stderr, err := executeLint(t.Context(), t, recorder.run,
 			"--config", "definition.yaml")
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(ExitCode(err)).To(Equal(ExitFailure))
+		g.Expect(exitCode(err)).To(Equal(ExitFailure))
 		g.Expect(stderr).To(BeEmpty())
 
 		g.Expect(stdout).To(Equal(`module lint definition.yaml: findings
@@ -296,7 +300,7 @@ warning RESOURCE_KIND_DISALLOWED v1, Kind=Namespace/synthetic/odh-applications/m
 		stdout, stderr, err := executeLint(t.Context(), t, recorder.run,
 			"--config", "definition.yaml")
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(ExitCode(err)).To(Equal(ExitUsage))
+		g.Expect(exitCode(err)).To(Equal(ExitUsage))
 
 		g.Expect(stdout).To(ContainSubstring("module lint definition.yaml: failed\n"))
 		g.Expect(stdout).To(ContainSubstring("definition: spec.type.group is required\n"))
@@ -353,7 +357,7 @@ func TestLintCommandJSONReportGolden(t *testing.T) {
 		stdout, _, err := executeLint(t.Context(), t, recorder.run,
 			"--config", "definition.yaml", "--output", FormatJSON)
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(ExitCode(err)).To(Equal(ExitFailure))
+		g.Expect(exitCode(err)).To(Equal(ExitFailure))
 
 		g.Expect(stdout).To(Equal(
 			`{"definition":"definition.yaml","status":"failed","hasErrors":false,"hasWarnings":false,` +
@@ -374,7 +378,7 @@ func TestLintCommandFlagFailures(t *testing.T) {
 		stdout, _, err := executeLint(t.Context(), t, recorder.run)
 
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(ExitCode(err)).To(Equal(ExitUsage))
+		g.Expect(exitCode(err)).To(Equal(ExitUsage))
 		g.Expect(recorder.calls).To(Equal(0))
 		g.Expect(stdout).To(BeEmpty())
 	})
@@ -390,7 +394,7 @@ func TestLintCommandFlagFailures(t *testing.T) {
 			"--config", "definition.yaml", "--output", "yaml")
 
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(ExitCode(err)).To(Equal(ExitUsage))
+		g.Expect(exitCode(err)).To(Equal(ExitUsage))
 		g.Expect(recorder.calls).To(Equal(0))
 		g.Expect(stdout).To(BeEmpty())
 	})
@@ -406,7 +410,7 @@ func TestLintCommandFlagFailures(t *testing.T) {
 			"--config", "definition.yaml", "extra")
 
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(ExitCode(err)).To(Equal(ExitUsage))
+		g.Expect(exitCode(err)).To(Equal(ExitUsage))
 		g.Expect(recorder.calls).To(Equal(0))
 	})
 
@@ -421,59 +425,7 @@ func TestLintCommandFlagFailures(t *testing.T) {
 			"--config", "definition.yaml", "--set-image", "manager=quay.io/other:v1")
 
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(ExitCode(err)).To(Equal(ExitUsage))
-		g.Expect(recorder.calls).To(Equal(0))
-	})
-}
-
-func TestRootCommandRejectsDeferredCommands(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	recorder := &recordingRun{}
-
-	stdout, _, err := execute(t.Context(), t, recorder.run,
-		"module", "run", "--config", "definition.yaml")
-
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(ExitCode(err)).To(Equal(ExitUsage))
-	// The deferred command is rejected, never stubbed.
-	g.Expect(err.Error()).To(ContainSubstring("unknown"))
-	g.Expect(recorder.calls).To(Equal(0))
-	g.Expect(stdout).To(BeEmpty())
-}
-
-func TestRootCommandHelp(t *testing.T) {
-	t.Parallel()
-
-	t.Run("root help", func(t *testing.T) {
-		t.Parallel()
-
-		g := NewWithT(t)
-
-		recorder := &recordingRun{}
-
-		stdout, _, err := execute(t.Context(), t, recorder.run, "--help")
-
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(stdout).To(ContainSubstring("Offline platform module tooling"))
-		g.Expect(stdout).To(ContainSubstring("\n  module "))
-		g.Expect(recorder.calls).To(Equal(0))
-	})
-
-	t.Run("lint help", func(t *testing.T) {
-		t.Parallel()
-
-		g := NewWithT(t)
-
-		recorder := &recordingRun{}
-
-		stdout, _, err := executeLint(t.Context(), t, recorder.run, "--help")
-
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(stdout).To(ContainSubstring("--config"))
-		g.Expect(stdout).To(ContainSubstring("--output"))
+		g.Expect(exitCode(err)).To(Equal(ExitUsage))
 		g.Expect(recorder.calls).To(Equal(0))
 	})
 }
@@ -485,17 +437,17 @@ func TestLintCommandStatelessAcrossExecutions(t *testing.T) {
 
 	recorder := &recordingRun{}
 
-	root := NewRootCommand(recorder.run)
+	command := NewLintCommand(recorder.run)
 
 	var stdout bytes.Buffer
-	root.SetOut(&stdout)
-	root.SetErr(&bytes.Buffer{})
+	command.SetOut(&stdout)
+	command.SetErr(&bytes.Buffer{})
 
-	root.SetArgs([]string{"module", "lint", "--config", "first.yaml"})
-	g.Expect(root.ExecuteContext(t.Context())).NotTo(HaveOccurred())
+	command.SetArgs([]string{"--config", "first.yaml"})
+	g.Expect(command.ExecuteContext(t.Context())).NotTo(HaveOccurred())
 
-	root.SetArgs([]string{"module", "lint", "--config", "second.yaml", "--output", FormatJSON})
-	g.Expect(root.ExecuteContext(t.Context())).NotTo(HaveOccurred())
+	command.SetArgs([]string{"--config", "second.yaml", "--output", FormatJSON})
+	g.Expect(command.ExecuteContext(t.Context())).NotTo(HaveOccurred())
 
 	// The second execution sees only its own flag values: no state
 	// leaks from the first run into options or output format.
@@ -504,17 +456,6 @@ func TestLintCommandStatelessAcrossExecutions(t *testing.T) {
 	g.Expect(recorder.options[1].DefinitionFile).To(Equal("second.yaml"))
 	g.Expect(stdout.String()).To(ContainSubstring("module lint first.yaml: pass"))
 	g.Expect(stdout.String()).To(ContainSubstring(`"definition":"second.yaml"`))
-}
-
-func TestExitCode(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	g.Expect(ExitCode(nil)).To(Equal(ExitSuccess))
-	g.Expect(ExitCode(errors.New("flag needs an argument"))).To(Equal(ExitUsage))
-	g.Expect(ExitCode(fmt.Errorf("wrapped: %w",
-		&ExitError{Code: ExitFailure, Err: errors.New("render")}))).To(Equal(ExitFailure))
 }
 
 func TestLintCommandWriteFailuresExitAsExecutionFailures(t *testing.T) {
@@ -529,14 +470,14 @@ func TestLintCommandWriteFailuresExitAsExecutionFailures(t *testing.T) {
 			err: fmt.Errorf("render manifests: %w", context.Canceled),
 		}
 
-		root := NewRootCommand(recorder.run)
-		root.SetOut(failingWriter{})
-		root.SetErr(&bytes.Buffer{})
-		root.SetArgs([]string{"module", "lint", "--config", "definition.yaml"})
+		command := NewLintCommand(recorder.run)
+		command.SetOut(failingWriter{})
+		command.SetErr(&bytes.Buffer{})
+		command.SetArgs([]string{"--config", "definition.yaml"})
 
-		err := root.ExecuteContext(t.Context())
+		err := command.ExecuteContext(t.Context())
 
-		g.Expect(ExitCode(err)).To(Equal(ExitFailure))
+		g.Expect(exitCode(err)).To(Equal(ExitFailure))
 		g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
 		g.Expect(err.Error()).To(ContainSubstring("write report"))
 	})
@@ -548,14 +489,14 @@ func TestLintCommandWriteFailuresExitAsExecutionFailures(t *testing.T) {
 
 		recorder := &recordingRun{}
 
-		root := NewRootCommand(recorder.run)
-		root.SetOut(failingWriter{})
-		root.SetErr(&bytes.Buffer{})
-		root.SetArgs([]string{"module", "lint", "--config", "definition.yaml"})
+		command := NewLintCommand(recorder.run)
+		command.SetOut(failingWriter{})
+		command.SetErr(&bytes.Buffer{})
+		command.SetArgs([]string{"--config", "definition.yaml"})
 
-		err := root.ExecuteContext(t.Context())
+		err := command.ExecuteContext(t.Context())
 
-		g.Expect(ExitCode(err)).To(Equal(ExitFailure))
+		g.Expect(exitCode(err)).To(Equal(ExitFailure))
 		g.Expect(err.Error()).To(ContainSubstring("write report"))
 	})
 
@@ -568,14 +509,14 @@ func TestLintCommandWriteFailuresExitAsExecutionFailures(t *testing.T) {
 
 		recorder := &recordingRun{err: definitionFailure}
 
-		root := NewRootCommand(recorder.run)
-		root.SetOut(&bytes.Buffer{})
-		root.SetErr(failingWriter{})
-		root.SetArgs([]string{"module", "lint", "--config", "definition.yaml"})
+		command := NewLintCommand(recorder.run)
+		command.SetOut(&bytes.Buffer{})
+		command.SetErr(failingWriter{})
+		command.SetArgs([]string{"--config", "definition.yaml"})
 
-		err := root.ExecuteContext(t.Context())
+		err := command.ExecuteContext(t.Context())
 
-		g.Expect(ExitCode(err)).To(Equal(ExitFailure))
+		g.Expect(exitCode(err)).To(Equal(ExitFailure))
 		g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
 		g.Expect(err.Error()).To(ContainSubstring("write failure summary"))
 	})

@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/cli"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/cli/lint"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module"
 )
 
@@ -29,15 +30,15 @@ func run() int {
 	if err := command.ExecuteContext(ctx); err != nil {
 		// Classified lint outcomes already wrote their report; every
 		// other command or flag failure is a usage failure on stderr.
-		var exitErr *cli.ExitError
+		var exitErr *lint.ExitError
 		if errors.As(err, &exitErr) {
 			return exitErr.Code
 		}
 
 		fmt.Fprintln(os.Stderr, "module:", err)
 
-		return cli.ExitUsage
+		return lint.ExitUsage
 	}
 
-	return cli.ExitSuccess
+	return lint.ExitSuccess
 }
