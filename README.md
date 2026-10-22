@@ -144,7 +144,8 @@ The default check set mirrors the compliance checks the
 opendatahub-operator applies to its own module manifests
 (`manifests_compliance_test.go`). Each check lives in its own package
 under `pkg/module/linter/checks` and exposes a `Validate` function;
-the linter runs the composed set and reports the findings.
+`checks.And` composes them, and the lint action wires the default
+set.
 
 **Allowed resource kinds** (`types`): every rendered object must be
 of an allowed kind — `apps/v1 Deployment`, core

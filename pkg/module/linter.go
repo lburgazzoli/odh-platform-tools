@@ -6,6 +6,9 @@ package module
 import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/crd"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/deployments"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/types"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/helm"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/kustomize"
@@ -21,6 +24,10 @@ func NewLinter() *linter.Action {
 		linter.DefinitionLoad(loader.LoadFromPath),
 		linter.ManifestRender(helm.Render),
 		linter.ManifestRender(kustomize.Render),
-		checks.Validate,
+		checks.And(
+			types.Validate,
+			deployments.Validate,
+			crd.Validate,
+		),
 	)
 }

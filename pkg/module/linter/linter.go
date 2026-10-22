@@ -1,8 +1,8 @@
 // Package linter runs manifest validators over rendered module
 // objects and reports their findings.
 //
-// The linter itself owns no rules: checks implement the Validator
-// interface and are registered on the action, so the check set is the
+// The linter itself owns no rules: checks are linter.Validation
+// functions injected into the action, so the check set is the
 // caller's choice. Validation is a pure function of the rendered
 // object list and the definition: it reads no files or environment,
 // contacts no cluster, invokes no renderer, and never mutates its
