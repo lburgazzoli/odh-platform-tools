@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	gvk "github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
@@ -36,10 +35,6 @@ func (CRD) Validate(
 	definition config.PlatformModuleDefinition,
 	resources []unstructured.Unstructured,
 ) ([]linter.Diagnostic, error) {
-	// Type is a schema.GroupVersionKind, so GroupKind, String, and
-	// the conversion below are free.
-	moduleType := definition.Spec.Type.GroupKind()
-
 	var matches []*unstructured.Unstructured
 
 	for i := range resources {
@@ -56,8 +51,8 @@ func (CRD) Validate(
 		match, err := jq.Matchesf(
 			object,
 			`.spec.group == %q and .spec.names.kind == %q`,
-			moduleType.Group,
-			moduleType.Kind,
+			definition.Spec.Type.Group,
+			definition.Spec.Type.Kind,
 		)
 
 		if err != nil {
@@ -79,11 +74,7 @@ func (CRD) Validate(
 
 	diagnostic := linter.Diagnostic{
 		Severity: linter.SeverityError,
-		GVK: schema.GroupVersionKind{
-			Group:   definition.Spec.Type.Group,
-			Version: definition.Spec.Type.Version,
-			Kind:    definition.Spec.Type.Kind,
-		},
+		GVK:      definition.Spec.Type.GroupVersionKind,
 	}
 
 	switch len(matches) {
