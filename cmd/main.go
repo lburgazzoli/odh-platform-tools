@@ -9,8 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/cli"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/cli/lint"
+	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module"
 )
 
@@ -25,7 +24,7 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	command := cli.NewRootCommand(module.NewLinter().Run)
+	command := NewRootCommand(module.NewLinter().Run)
 
 	if err := command.ExecuteContext(ctx); err != nil {
 		// Classified lint outcomes already wrote their report; every

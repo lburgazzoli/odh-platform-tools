@@ -1,4 +1,4 @@
-package cli
+package main
 
 import (
 	"bytes"
@@ -9,7 +9,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/cli/lint"
+	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 )
 

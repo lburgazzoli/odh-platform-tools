@@ -184,11 +184,11 @@ execution error instead of reporting a finding.
              │  signal context, Cobra execution, process exit codes              │
              └───────────────────────────────┬───────────────────────────────────┘
                                              │
-             ┌─────────────────────── pkg/cli (root command) ──────────────────────┐
-             │  command tree wiring, exit-status mapping                          │
+             ┌─────────────────────── cmd (root command) ─────────────────────────┐
+             │  command tree wiring, exit-status mapping, signal context        │
              └───────────────────────────────┬───────────────────────────────────┘
                                              │
-             ┌───────────────────── pkg/cli/lint (command) ──────────────────────┐
+             ┌─────────────────── cmd/module/lint (command) ───────────────────┐
              │  `module lint`: --config/--output flags → plain linter.Options,  │
              │  report formatting, exit-code classification                     │
              └───────────────────────────────┬───────────────────────────────────┘

@@ -1,15 +1,11 @@
-// Package cli wires the command tree of the binary. It owns the
-// root and group commands and the process exit-status mapping only:
-// the `module lint` command itself lives in pkg/lint, and every
-// business execution goes through the injected action boundary.
-package cli
+package main
 
 import (
 	"errors"
 
 	"github.com/spf13/cobra"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/cli/lint"
+	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
 )
 
 // NewRootCommand returns the binary root command with exactly one
