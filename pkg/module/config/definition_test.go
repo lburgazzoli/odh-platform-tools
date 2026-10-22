@@ -3,7 +3,6 @@ package config
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	jsonv2 "encoding/json/v2"
@@ -15,9 +14,8 @@ import (
 	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
 )
 
-// validDefinition returns a definition that passes Normalize for the
-// given backend, with the main container name omitted so defaulting is
-// observable.
+// validDefinition returns a complete definition for the given backend,
+// with the main container name omitted so defaulting is observable.
 func validDefinition(format Format) PlatformModuleDefinition {
 	definition := PlatformModuleDefinition{
 		APIVersion: APIVersion,
@@ -41,7 +39,7 @@ func validDefinition(format Format) PlatformModuleDefinition {
 						},
 					},
 					InitContainer: &ContainerDefinition{
-						Name:  new("copy-manifests"),
+						Name:  "copy-manifests",
 						Image: "{{RELATED_IMAGE_SYNTHETIC_CONTROLLER}}",
 						Env: []EnvVar{
 							{Name: "INIT_MODE", Value: new("copy")},
@@ -68,15 +66,25 @@ func validDefinition(format Format) PlatformModuleDefinition {
 	return definition
 }
 
-// JSON documents exercising the container name presence rules through
-// the JSON decoder.
-const (
-	containerJSONOmittedName   = `{"image":"quay.io/example/controller:v1"}`
-	containerJSONNullName      = `{"name":null,"image":"quay.io/example/controller:v1"}`
-	containerJSONEmptyName     = `{"name":"","image":"quay.io/example/controller:v1"}`
-	containerJSONValidName     = `{"name":"manager","image":"quay.io/example/controller:v1"}`
-	containerJSONNonStringName = `{"name":42,"image":"quay.io/example/controller:v1"}`
-)
+// containerJSONOmittedName is a container wire document whose name is
+// omitted.
+const containerJSONOmittedName = `{"image":"quay.io/example/controller:v1"}`
+
+// containerJSONNullName is a container wire document whose name is an
+// explicit null.
+const containerJSONNullName = `{"name":null,"image":"quay.io/example/controller:v1"}`
+
+// containerJSONEmptyName is a container wire document whose name is an
+// explicit empty string.
+const containerJSONEmptyName = `{"name":"","image":"quay.io/example/controller:v1"}`
+
+// containerJSONValidName is a container wire document with a valid
+// name.
+const containerJSONValidName = `{"name":"manager","image":"quay.io/example/controller:v1"}`
+
+// containerJSONNonStringName is a container wire document whose name
+// is not a string.
+const containerJSONNonStringName = `{"name":42,"image":"quay.io/example/controller:v1"}`
 
 // definitionJSON is a complete valid document in the wire format.
 const definitionJSON = `{
@@ -108,35 +116,6 @@ const definitionJSON = `{
 	}
 }`
 
-// fieldPaths returns the paths of every FieldError in err's tree, in
-// collection order.
-func fieldPaths(err error) []string {
-	var paths []string
-
-	var walk func(error)
-	walk = func(err error) {
-		if field, ok := err.(*FieldError); ok {
-			paths = append(paths, field.Path)
-			return
-		}
-
-		if unwrapper, ok := err.(interface{ Unwrap() []error }); ok {
-			for _, cause := range unwrapper.Unwrap() {
-				walk(cause)
-			}
-			return
-		}
-
-		if unwrapper, ok := err.(interface{ Unwrap() error }); ok {
-			walk(unwrapper.Unwrap())
-		}
-	}
-
-	walk(err)
-
-	return paths
-}
-
 func TestNormalizeDefaultsOmittedMainContainerName(t *testing.T) {
 	t.Parallel()
 
@@ -144,13 +123,12 @@ func TestNormalizeDefaultsOmittedMainContainerName(t *testing.T) {
 
 	definition := validDefinition(FormatHelm)
 
-	normalized, err := definition.Normalize()
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(*normalized.Spec.Controller.Deployment.Container.Name).To(Equal(DefaultMainContainerName))
+	normalized := definition.Normalize()
+	g.Expect(normalized.Spec.Controller.Deployment.Container.Name).To(Equal(DefaultMainContainerName))
 
 	// The input definition is not mutated: the original container still
 	// has no name.
-	g.Expect(definition.Spec.Controller.Deployment.Container.Name).To(BeNil())
+	g.Expect(definition.Spec.Controller.Deployment.Container.Name).To(Equal(""))
 }
 
 func TestNormalizeDefaultsNamesIndependently(t *testing.T) {
@@ -158,8 +136,8 @@ func TestNormalizeDefaultsNamesIndependently(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		instanceName  *string
-		containerName *string
+		instanceName  string
+		containerName string
 		wantInstance  string
 		wantContainer string
 	}{
@@ -170,20 +148,20 @@ func TestNormalizeDefaultsNamesIndependently(t *testing.T) {
 		},
 		{
 			name:          "instance name omitted",
-			containerName: new("custom-manager"),
+			containerName: "custom-manager",
 			wantInstance:  "synthetic",
 			wantContainer: "custom-manager",
 		},
 		{
 			name:          "container name omitted",
-			instanceName:  new("trainer"),
+			instanceName:  "trainer",
 			wantInstance:  "trainer",
 			wantContainer: DefaultMainContainerName,
 		},
 		{
 			name:          "both names authored",
-			instanceName:  new("trainer"),
-			containerName: new("custom-manager"),
+			instanceName:  "trainer",
+			containerName: "custom-manager",
 			wantInstance:  "trainer",
 			wantContainer: "custom-manager",
 		},
@@ -199,56 +177,19 @@ func TestNormalizeDefaultsNamesIndependently(t *testing.T) {
 			definition.Spec.Instance.Name = test.instanceName
 			definition.Spec.Controller.Deployment.Container.Name = test.containerName
 
-			normalized, err := definition.Normalize()
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(*normalized.Spec.Instance.Name).To(Equal(test.wantInstance))
-			g.Expect(*normalized.Spec.Controller.Deployment.Container.Name).To(Equal(test.wantContainer))
+			normalized := definition.Normalize()
+			g.Expect(normalized.Spec.Instance.Name).To(Equal(test.wantInstance))
+			g.Expect(normalized.Spec.Controller.Deployment.Container.Name).To(Equal(test.wantContainer))
 
-			// Neither default aliases storage back into the caller.
-			g.Expect(definition.Spec.Instance.Name).To(Equal(test.instanceName))
+			// The container default does not alias storage back into
+			// the caller.
 			g.Expect(definition.Spec.Controller.Deployment.Container.Name).To(Equal(test.containerName))
 
 			// Normalization is idempotent.
-			repeated, err := normalized.Normalize()
-			g.Expect(err).NotTo(HaveOccurred())
+			repeated := normalized.Normalize()
 			g.Expect(repeated).To(Equal(normalized))
 		})
 	}
-}
-
-func TestNormalizeRejectsInheritedInvalidInstanceName(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	// The Kustomize backend tolerates a metadata name that is not a
-	// valid object name, but an omitted instance name inherits it and
-	// is still validated.
-	definition := validDefinition(FormatKustomize)
-	definition.Metadata.Name = "Synthetic_Module"
-
-	_, err := definition.Normalize()
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(fieldPaths(err)).To(ConsistOf("spec.instance.name"))
-}
-
-func TestNormalizeAggregatesInstanceAndTypeProblems(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	definition := validDefinition(FormatKustomize)
-	definition.Spec.Instance.Type = Type{}
-	definition.Spec.Instance.Name = new("")
-
-	_, err := definition.Normalize()
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(fieldPaths(err)).To(ConsistOf(
-		"spec.instance.name",
-		"spec.instance.type.group",
-		"spec.instance.type.version",
-		"spec.instance.type.kind",
-	))
 }
 
 func TestNormalizePreservesAuthoredValues(t *testing.T) {
@@ -257,19 +198,17 @@ func TestNormalizePreservesAuthoredValues(t *testing.T) {
 	g := NewWithT(t)
 
 	definition := validDefinition(FormatKustomize)
-	definition.Spec.Controller.Deployment.Container.Name = new("custom-manager")
-	// A name that would not be a valid object name is fine for the
-	// Kustomize backend as long as an explicit instance name avoids
-	// inheriting it.
+	definition.Spec.Controller.Deployment.Container.Name = "custom-manager"
+	// Structural validation is deferred, so even names that are not
+	// valid object names survive normalization untouched.
 	definition.Metadata.Name = "Synthetic_Module"
-	definition.Spec.Instance.Name = new("synthetic-module")
+	definition.Spec.Instance.Name = "synthetic-module"
 
-	normalized, err := definition.Normalize()
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(*normalized.Spec.Controller.Deployment.Container.Name).To(Equal("custom-manager"))
-	g.Expect(*normalized.Spec.Controller.Deployment.InitContainer.Name).To(Equal("copy-manifests"))
+	normalized := definition.Normalize()
+	g.Expect(normalized.Spec.Controller.Deployment.Container.Name).To(Equal("custom-manager"))
+	g.Expect(normalized.Spec.Controller.Deployment.InitContainer.Name).To(Equal("copy-manifests"))
 	g.Expect(normalized.Metadata.Name).To(Equal("Synthetic_Module"))
-	g.Expect(*normalized.Spec.Instance.Name).To(Equal("synthetic-module"))
+	g.Expect(normalized.Spec.Instance.Name).To(Equal("synthetic-module"))
 	g.Expect(normalized.Spec.Manifests.Kustomize.Path).To(Equal("./manifests/controller/overlays/development"))
 
 	// Replacement references stay opaque, and an explicit empty env
@@ -278,229 +217,19 @@ func TestNormalizePreservesAuthoredValues(t *testing.T) {
 	g.Expect(*normalized.Spec.Controller.Deployment.Container.Env[0].Value).To(Equal(""))
 }
 
-func TestNormalizeRejectsInvalidDefinitions(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		mutate func(*PlatformModuleDefinition)
-		paths  []string
-	}{
-		{
-			name:   "wrong api version",
-			mutate: func(d *PlatformModuleDefinition) { d.APIVersion = "example.com/v1" },
-			paths:  []string{"apiVersion"},
-		},
-		{
-			name:   "wrong kind",
-			mutate: func(d *PlatformModuleDefinition) { d.Kind = "Module" },
-			paths:  []string{"kind"},
-		},
-		{
-			name:   "missing metadata name",
-			mutate: func(d *PlatformModuleDefinition) { d.Metadata.Name = "" },
-			paths:  []string{"metadata.name"},
-		},
-		{
-			// The uppercase name is both an invalid Helm release name
-			// and, inherited as the instance name, an invalid object
-			// name.
-			name: "helm release name with uppercase",
-			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.Manifests = Manifests{Format: FormatHelm, Helm: &HelmManifests{Path: "./chart"}}
-				d.Metadata.Name = "Synthetic"
-			},
-			paths: []string{"metadata.name", "spec.instance.name"},
-		},
-		{
-			name: "helm release name too long",
-			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.Manifests = Manifests{Format: FormatHelm, Helm: &HelmManifests{Path: "./chart"}}
-				d.Metadata.Name = "s" + strings.Repeat("a", 53)
-			},
-			paths: []string{"metadata.name"},
-		},
-		{
-			name: "missing type",
-			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.Instance.Type = Type{}
-			},
-			paths: []string{"spec.instance.type.group", "spec.instance.type.version", "spec.instance.type.kind"},
-		},
-		{
-			name: "invalid explicit instance name",
-			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.Instance.Name = new("Synthetic_Module")
-			},
-			paths: []string{"spec.instance.name"},
-		},
-		{
-			name: "overlength instance name",
-			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.Instance.Name = new(strings.Repeat("a", 254))
-			},
-			paths: []string{"spec.instance.name"},
-		},
-		{
-			name:   "unknown manifest format",
-			mutate: func(d *PlatformModuleDefinition) { d.Spec.Manifests.Format = "raw" },
-			paths:  []string{"spec.manifests.format"},
-		},
-		{
-			name: "helm format with kustomize block",
-			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.Manifests.Format = FormatHelm
-				d.Spec.Manifests.Helm = &HelmManifests{Path: "./chart"}
-				d.Spec.Manifests.Kustomize = &KustomizeManifests{Path: "./tree"}
-			},
-			paths: []string{"spec.manifests.kustomize"},
-		},
-		{
-			name: "helm format without helm block",
-			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.Manifests = Manifests{Format: FormatHelm}
-			},
-			paths: []string{"spec.manifests.helm"},
-		},
-		{
-			name: "empty helm path",
-			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.Manifests = Manifests{Format: FormatHelm, Helm: &HelmManifests{}}
-			},
-			paths: []string{"spec.manifests.helm.path"},
-		},
-		{
-			name: "kustomize format with helm block",
-			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.Manifests.Helm = &HelmManifests{Path: "./chart"}
-			},
-			paths: []string{"spec.manifests.helm"},
-		},
-		{
-			name:   "missing deployment name",
-			mutate: func(d *PlatformModuleDefinition) { d.Spec.Controller.Deployment.Name = "" },
-			paths:  []string{"spec.controller.deployment.name"},
-		},
-		{
-			name: "missing main container",
-			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.Controller.Deployment.Container = nil
-			},
-			paths: []string{"spec.controller.deployment.container"},
-		},
-		{
-			name:   "empty main container name",
-			mutate: func(d *PlatformModuleDefinition) { d.Spec.Controller.Deployment.Container.Name = new("") },
-			paths:  []string{"spec.controller.deployment.container.name"},
-		},
-		{
-			name:   "missing main container image",
-			mutate: func(d *PlatformModuleDefinition) { d.Spec.Controller.Deployment.Container.Image = "" },
-			paths:  []string{"spec.controller.deployment.container.image"},
-		},
-		{
-			name: "missing init container image",
-			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.Controller.Deployment.InitContainer.Image = ""
-			},
-			paths: []string{"spec.controller.deployment.initContainer.image"},
-		},
-		{
-			name: "init container without name",
-			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.Controller.Deployment.InitContainer.Name = nil
-			},
-			paths: []string{"spec.controller.deployment.initContainer.name"},
-		},
-		{
-			name: "env entry without name",
-			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.Controller.Deployment.Container.Env[0].Name = ""
-			},
-			paths: []string{"spec.controller.deployment.container.env[0].name"},
-		},
-		{
-			name: "env entry without value",
-			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.Controller.Deployment.Container.Env[0].Value = nil
-			},
-			paths: []string{"spec.controller.deployment.container.env[0].value"},
-		},
-		{
-			name: "duplicate env names",
-			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.Controller.Deployment.Container.Env[1].Name = "LOG_LEVEL"
-			},
-			paths: []string{"spec.controller.deployment.container.env[1].name"},
-		},
-		{
-			name:   "unportable related image name",
-			mutate: func(d *PlatformModuleDefinition) { d.Spec.RelatedImages = []string{"related-image"} },
-			paths:  []string{"spec.relatedImages[0]"},
-		},
-		{
-			name: "duplicate related images",
-			mutate: func(d *PlatformModuleDefinition) {
-				d.Spec.RelatedImages = []string{"RELATED_IMAGE_A", "RELATED_IMAGE_A"}
-			},
-			paths: []string{"spec.relatedImages[1]"},
-		},
-		{
-			name:   "related image colliding with explicit env",
-			mutate: func(d *PlatformModuleDefinition) { d.Spec.RelatedImages = []string{"LOG_LEVEL"} },
-			paths:  []string{"spec.relatedImages[0]"},
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
-			g := NewWithT(t)
-
-			definition := validDefinition(FormatKustomize)
-			test.mutate(&definition)
-
-			_, err := definition.Normalize()
-			g.Expect(err).To(HaveOccurred())
-			g.Expect(errors.Is(err, ErrInvalidDefinition)).To(BeTrue())
-			g.Expect(fieldPaths(err)).To(ConsistOf(test.paths))
-		})
-	}
-}
-
-func TestNormalizeAggregatesIndependentProblems(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	definition := validDefinition(FormatHelm)
-	definition.APIVersion = "example.com/v1"
-	definition.Spec.Controller.Deployment.Container.Image = ""
-	definition.Spec.Controller.Deployment.Name = ""
-
-	_, err := definition.Normalize()
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(fieldPaths(err)).To(ConsistOf(
-		"apiVersion",
-		"spec.controller.deployment.name",
-		"spec.controller.deployment.container.image",
-	))
-}
-
 func TestContainerDefinitionJSONDecoding(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
 		json    string
-		want    *string
+		want    string
 		wantErr bool
 	}{
 		{name: "omitted name", json: containerJSONOmittedName},
-		{name: "null name", json: containerJSONNullName, want: new("")},
-		{name: "empty name", json: containerJSONEmptyName, want: new("")},
-		{name: "valid name", json: containerJSONValidName, want: new("manager")},
+		{name: "null name", json: containerJSONNullName},
+		{name: "empty name", json: containerJSONEmptyName},
+		{name: "valid name", json: containerJSONValidName, want: "manager"},
 		{name: "non-string name", json: containerJSONNonStringName, wantErr: true},
 	}
 
@@ -519,20 +248,15 @@ func TestContainerDefinitionJSONDecoding(t *testing.T) {
 			}
 
 			g.Expect(err).NotTo(HaveOccurred())
-			if test.want == nil {
-				g.Expect(container.Name).To(BeNil())
-			} else {
-				g.Expect(container.Name).To(Equal(test.want))
-			}
+			g.Expect(container.Name).To(Equal(test.want))
 			g.Expect(container.Image).To(Equal("quay.io/example/controller:v1"))
 		})
 	}
 }
 
-// Instance wire documents exercising the name presence rules through
-// the JSON decoder.
-const (
-	instanceJSONOmittedName = `{
+// instanceJSONOmittedName is an instance wire document whose name is
+// omitted.
+const instanceJSONOmittedName = `{
 	"type": {
 		"group": "components.platform.opendatahub.io",
 		"version": "v1alpha1",
@@ -540,7 +264,9 @@ const (
 	}
 }`
 
-	instanceJSONNullName = `{
+// instanceJSONNullName is an instance wire document whose name is an
+// explicit null.
+const instanceJSONNullName = `{
 	"name": null,
 	"type": {
 		"group": "components.platform.opendatahub.io",
@@ -549,7 +275,9 @@ const (
 	}
 }`
 
-	instanceJSONEmptyName = `{
+// instanceJSONEmptyName is an instance wire document whose name is an
+// explicit empty string.
+const instanceJSONEmptyName = `{
 	"name": "",
 	"type": {
 		"group": "components.platform.opendatahub.io",
@@ -558,7 +286,9 @@ const (
 	}
 }`
 
-	instanceJSONValidName = `{
+// instanceJSONValidName is an instance wire document with a valid
+// name.
+const instanceJSONValidName = `{
 	"name": "trainer",
 	"type": {
 		"group": "components.platform.opendatahub.io",
@@ -567,7 +297,9 @@ const (
 	}
 }`
 
-	instanceJSONNonStringName = `{
+// instanceJSONNonStringName is an instance wire document whose name is
+// not a string.
+const instanceJSONNonStringName = `{
 	"name": 42,
 	"type": {
 		"group": "components.platform.opendatahub.io",
@@ -576,7 +308,9 @@ const (
 	}
 }`
 
-	instanceJSONUnknownMember = `{
+// instanceJSONUnknownMember is an instance wire document with an
+// unknown member.
+const instanceJSONUnknownMember = `{
 	"namespace": "opendatahub",
 	"type": {
 		"group": "components.platform.opendatahub.io",
@@ -585,7 +319,9 @@ const (
 	}
 }`
 
-	instanceJSONCaseMismatch = `{
+// instanceJSONCaseMismatch is an instance wire document with a
+// case-mismatched member.
+const instanceJSONCaseMismatch = `{
 	"Name": "trainer",
 	"type": {
 		"group": "components.platform.opendatahub.io",
@@ -594,7 +330,9 @@ const (
 	}
 }`
 
-	instanceJSONDuplicateName = `{
+// instanceJSONDuplicateName is an instance wire document with a
+// duplicate name member.
+const instanceJSONDuplicateName = `{
 	"name": "trainer",
 	"name": "other",
 	"type": {
@@ -603,7 +341,6 @@ const (
 		"kind": "SyntheticModule"
 	}
 }`
-)
 
 func TestInstanceJSONDecoding(t *testing.T) {
 	t.Parallel()
@@ -611,13 +348,13 @@ func TestInstanceJSONDecoding(t *testing.T) {
 	tests := []struct {
 		name    string
 		json    string
-		want    *string
+		want    string
 		wantErr bool
 	}{
 		{name: "omitted name", json: instanceJSONOmittedName},
-		{name: "null name", json: instanceJSONNullName, want: new("")},
-		{name: "empty name", json: instanceJSONEmptyName, want: new("")},
-		{name: "valid name", json: instanceJSONValidName, want: new("trainer")},
+		{name: "null name", json: instanceJSONNullName},
+		{name: "empty name", json: instanceJSONEmptyName},
+		{name: "valid name", json: instanceJSONValidName, want: "trainer"},
 		{name: "non-string name", json: instanceJSONNonStringName, wantErr: true},
 		{name: "unknown member", json: instanceJSONUnknownMember, wantErr: true},
 		{name: "case-mismatched member", json: instanceJSONCaseMismatch, wantErr: true},
@@ -639,22 +376,15 @@ func TestInstanceJSONDecoding(t *testing.T) {
 			}
 
 			g.Expect(err).NotTo(HaveOccurred())
-			if test.want == nil {
-				g.Expect(instance.Name).To(BeNil())
-			} else {
-				g.Expect(instance.Name).To(Equal(test.want))
-			}
+			g.Expect(instance.Name).To(Equal(test.want))
 			g.Expect(instance.Type.Kind).To(Equal("SyntheticModule"))
 		})
 	}
 }
 
-// Definition documents using the superseded top-level spec.type
-// location, alone and alongside the nested layout.
-const (
-	// definitionJSONLegacyType places the module type at the legacy
-	// location only.
-	definitionJSONLegacyType = `{
+// definitionJSONLegacyType is a definition placing the module type at
+// the superseded top-level spec.type location only.
+const definitionJSONLegacyType = `{
 	"apiVersion": "config.opendatahub.io/v1",
 	"kind": "PlatformModuleDefinition",
 	"metadata": {"name": "synthetic"},
@@ -677,9 +407,9 @@ const (
 	}
 }`
 
-	// definitionJSONLegacyAndNestedType carries both the legacy and
-	// the nested location.
-	definitionJSONLegacyAndNestedType = `{
+// definitionJSONLegacyAndNestedType is a definition carrying the
+// module type at both the legacy and the nested location.
+const definitionJSONLegacyAndNestedType = `{
 	"apiVersion": "config.opendatahub.io/v1",
 	"kind": "PlatformModuleDefinition",
 	"metadata": {"name": "synthetic"},
@@ -708,7 +438,6 @@ const (
 		}
 	}
 }`
-)
 
 func TestDefinitionJSONRejectsLegacySpecType(t *testing.T) {
 	t.Parallel()
@@ -736,100 +465,6 @@ func TestDefinitionJSONRejectsLegacySpecType(t *testing.T) {
 	}
 }
 
-// Definition documents whose instance is missing: an explicit null
-// instance, an explicit null type, and no instance block at all.
-const (
-	definitionJSONNullInstance = `{
-	"apiVersion": "config.opendatahub.io/v1",
-	"kind": "PlatformModuleDefinition",
-	"metadata": {"name": "synthetic"},
-	"spec": {
-		"instance": null,
-		"manifests": {
-			"format": "kustomize",
-			"kustomize": {"path": "./manifests/controller"}
-		},
-		"controller": {
-			"deployment": {
-				"name": "synthetic-controller",
-				"container": {"image": "quay.io/example/controller:v1"}
-			}
-		}
-	}
-}`
-
-	definitionJSONNullType = `{
-	"apiVersion": "config.opendatahub.io/v1",
-	"kind": "PlatformModuleDefinition",
-	"metadata": {"name": "synthetic"},
-	"spec": {
-		"instance": {
-			"type": null
-		},
-		"manifests": {
-			"format": "kustomize",
-			"kustomize": {"path": "./manifests/controller"}
-		},
-		"controller": {
-			"deployment": {
-				"name": "synthetic-controller",
-				"container": {"image": "quay.io/example/controller:v1"}
-			}
-		}
-	}
-}`
-
-	definitionJSONOmittedInstance = `{
-	"apiVersion": "config.opendatahub.io/v1",
-	"kind": "PlatformModuleDefinition",
-	"metadata": {"name": "synthetic"},
-	"spec": {
-		"manifests": {
-			"format": "kustomize",
-			"kustomize": {"path": "./manifests/controller"}
-		},
-		"controller": {
-			"deployment": {
-				"name": "synthetic-controller",
-				"container": {"image": "quay.io/example/controller:v1"}
-			}
-		}
-	}
-}`
-)
-
-func TestDefinitionJSONRejectsMissingInstance(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		json string
-	}{
-		{name: "null instance", json: definitionJSONNullInstance},
-		{name: "null type", json: definitionJSONNullType},
-		{name: "omitted instance", json: definitionJSONOmittedInstance},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
-			g := NewWithT(t)
-
-			var definition PlatformModuleDefinition
-			err := jsonv2.Unmarshal([]byte(test.json), &definition)
-			if err == nil {
-				_, err = definition.Normalize()
-			}
-
-			// A missing or null instance cannot yield a valid
-			// definition, whether the decoder or structural
-			// validation reports it.
-			g.Expect(err).To(HaveOccurred())
-		})
-	}
-}
-
 func TestDefinitionJSONDecoding(t *testing.T) {
 	t.Parallel()
 
@@ -839,16 +474,15 @@ func TestDefinitionJSONDecoding(t *testing.T) {
 	err := jsonv2.Unmarshal([]byte(definitionJSON), &definition)
 	g.Expect(err).NotTo(HaveOccurred())
 
-	normalized, err := definition.Normalize()
-	g.Expect(err).NotTo(HaveOccurred())
+	normalized := definition.Normalize()
 	g.Expect(normalized.APIVersion).To(Equal(APIVersion))
 	g.Expect(normalized.Kind).To(Equal(Kind))
 	g.Expect(normalized.Metadata.Name).To(Equal("synthetic"))
 	g.Expect(normalized.Spec.Instance.Type.Kind).To(Equal("SyntheticModule"))
-	g.Expect(*normalized.Spec.Instance.Name).To(Equal("synthetic"))
+	g.Expect(normalized.Spec.Instance.Name).To(Equal("synthetic"))
 	g.Expect(normalized.Spec.Manifests.Format).To(Equal(FormatKustomize))
 	g.Expect(normalized.Spec.Manifests.Kustomize.Path).To(Equal("./manifests/controller"))
-	g.Expect(*normalized.Spec.Controller.Deployment.Container.Name).To(Equal(DefaultMainContainerName))
+	g.Expect(normalized.Spec.Controller.Deployment.Container.Name).To(Equal(DefaultMainContainerName))
 	g.Expect(normalized.Spec.Controller.Deployment.Container.Env).To(HaveLen(1))
 	g.Expect(*normalized.Spec.Controller.Deployment.Container.Env[0].Value).To(Equal("{{CONTROLLER_LOG_LEVEL}}"))
 	g.Expect(normalized.Spec.RelatedImages).To(Equal([]string{"RELATED_IMAGE_SYNTHETIC_OPERAND"}))
@@ -860,8 +494,7 @@ func TestDefinitionJSONRoundTrip(t *testing.T) {
 	g := NewWithT(t)
 
 	definition := validDefinition(FormatHelm)
-	normalized, err := definition.Normalize()
-	g.Expect(err).NotTo(HaveOccurred())
+	normalized := definition.Normalize()
 
 	encoded, err := jsonv2.Marshal(normalized)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -881,8 +514,7 @@ func TestDefinitionJSONRoundTrip(t *testing.T) {
 	err = jsonv2.Unmarshal(encoded, &decoded)
 	g.Expect(err).NotTo(HaveOccurred())
 
-	decodedNormalized, err := decoded.Normalize()
-	g.Expect(err).NotTo(HaveOccurred())
+	decodedNormalized := decoded.Normalize()
 	g.Expect(decodedNormalized).To(Equal(normalized))
 }
 

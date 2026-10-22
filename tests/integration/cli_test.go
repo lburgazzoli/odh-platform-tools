@@ -161,9 +161,7 @@ func TestCLIChainDefinitionErrorExitUsage(t *testing.T) {
 		name    string
 		content string
 	}{
-		{name: "incomplete instance type", content: invalidDefinitionYAML},
 		{name: "legacy spec.type", content: legacyTypeDefinitionYAML},
-		{name: "invalid instance name", content: invalidInstanceNameDefinitionYAML},
 	}
 
 	for _, test := range tests {

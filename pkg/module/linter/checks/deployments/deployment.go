@@ -64,8 +64,8 @@ func (d Deployment) Validate(
 	// The main container is required; the init container is optional
 	// and only validated when the definition configures one. A loaded
 	// definition has a resolved name for every configured placement.
-	if container := definition.Spec.Controller.Deployment.Container; container != nil && container.Name != nil {
-		findings, err := d.validateContainerExists(deployment, "containers", *container.Name)
+	if container := definition.Spec.Controller.Deployment.Container; container != nil && container.Name != "" {
+		findings, err := d.validateContainerExists(deployment, "containers", container.Name)
 		if err != nil {
 			return nil, err
 		}
@@ -73,8 +73,8 @@ func (d Deployment) Validate(
 		diagnostics = append(diagnostics, findings...)
 	}
 
-	if init := definition.Spec.Controller.Deployment.InitContainer; init != nil && init.Name != nil {
-		findings, err := d.validateContainerExists(deployment, "initContainers", *init.Name)
+	if init := definition.Spec.Controller.Deployment.InitContainer; init != nil && init.Name != "" {
+		findings, err := d.validateContainerExists(deployment, "initContainers", init.Name)
 		if err != nil {
 			return nil, err
 		}

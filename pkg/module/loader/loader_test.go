@@ -254,139 +254,6 @@ metadata:
 `
 )
 
-// Documents that decode cleanly but fail structural validation. Each
-// is a complete valid document except for the field under test.
-const (
-	wrongAPIVersionYAML = `apiVersion: example.com/v1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  instance:
-    type:
-      group: components.platform.opendatahub.io
-      version: v1alpha1
-      kind: SyntheticModule
-  manifests:
-    format: helm
-    helm:
-      path: ./manifests/chart
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
-`
-
-	wrongKindYAML = `apiVersion: config.opendatahub.io/v1
-kind: Module
-metadata:
-  name: synthetic
-spec:
-  instance:
-    type:
-      group: components.platform.opendatahub.io
-      version: v1alpha1
-      kind: SyntheticModule
-  manifests:
-    format: helm
-    helm:
-      path: ./manifests/chart
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
-`
-
-	missingBackendBlockYAML = `apiVersion: config.opendatahub.io/v1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  instance:
-    type:
-      group: components.platform.opendatahub.io
-      version: v1alpha1
-      kind: SyntheticModule
-  manifests:
-    format: helm
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
-`
-
-	bothBackendBlocksYAML = `apiVersion: config.opendatahub.io/v1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  instance:
-    type:
-      group: components.platform.opendatahub.io
-      version: v1alpha1
-      kind: SyntheticModule
-  manifests:
-    format: helm
-    helm:
-      path: ./manifests/chart
-    kustomize:
-      path: ./manifests/tree
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
-`
-
-	nullImageYAML = `apiVersion: config.opendatahub.io/v1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  instance:
-    type:
-      group: components.platform.opendatahub.io
-      version: v1alpha1
-      kind: SyntheticModule
-  manifests:
-    format: helm
-    helm:
-      path: ./manifests/chart
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image:
-`
-
-	nullEnvValueYAML = `apiVersion: config.opendatahub.io/v1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  instance:
-    type:
-      group: components.platform.opendatahub.io
-      version: v1alpha1
-      kind: SyntheticModule
-  manifests:
-    format: helm
-    helm:
-      path: ./manifests/chart
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
-        env:
-          - name: LOG_LEVEL
-            value:
-`
-)
-
 // Renderer entry files.
 const (
 	chartYAML = `apiVersion: v2
@@ -445,16 +312,6 @@ func writeKustomizeModule(t *testing.T) string {
 	return root
 }
 
-// firstFieldPath returns the path of the first FieldError in err.
-func firstFieldPath(err error) (string, bool) {
-	var field *config.FieldError
-	if errors.As(err, &field) {
-		return field.Path, true
-	}
-
-	return "", false
-}
-
 func TestLoadHelmDefinition(t *testing.T) {
 	t.Parallel()
 
@@ -474,10 +331,10 @@ func TestLoadHelmDefinition(t *testing.T) {
 	g.Expect(definition.Spec.RelatedImages).To(Equal([]string{"RELATED_IMAGE_SYNTHETIC_OPERAND"}))
 
 	// Placement defaults are applied.
-	g.Expect(*definition.Spec.Controller.Deployment.Container.Name).To(Equal(config.DefaultMainContainerName))
+	g.Expect(definition.Spec.Controller.Deployment.Container.Name).To(Equal(config.DefaultMainContainerName))
 
 	// The omitted instance name defaults to the module name.
-	g.Expect(*definition.Spec.Instance.Name).To(Equal("synthetic"))
+	g.Expect(definition.Spec.Instance.Name).To(Equal("synthetic"))
 }
 
 // TestLoadKeepsExplicitInstanceName proves the nested instance name
@@ -493,7 +350,7 @@ func TestLoadKeepsExplicitInstanceName(t *testing.T) {
 
 	definition, err := Load(t.Context(), os.DirFS(root), "definition.yaml")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(*definition.Spec.Instance.Name).To(Equal("synthetic-trainer"))
+	g.Expect(definition.Spec.Instance.Name).To(Equal("synthetic-trainer"))
 	g.Expect(definition.Metadata.Name).To(Equal("synthetic"))
 }
 
@@ -510,7 +367,7 @@ func TestLoadKustomizeDefinitionWithSiblingBase(t *testing.T) {
 	// The explicit empty env literal is valid and the init container is
 	// preserved.
 	g.Expect(*definition.Spec.Controller.Deployment.Container.Env[0].Value).To(Equal(""))
-	g.Expect(*definition.Spec.Controller.Deployment.InitContainer.Name).To(Equal("copy-manifests"))
+	g.Expect(definition.Spec.Controller.Deployment.InitContainer.Name).To(Equal("copy-manifests"))
 }
 
 func TestLoadFromPathByRelativePath(t *testing.T) {
@@ -575,7 +432,6 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 		name        string
 		content     string
 		errContains string
-		fieldPath   string
 	}{
 		{
 			name:        "unknown member",
@@ -658,42 +514,6 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 			content:     malformedYAML,
 			errContains: "did not find expected",
 		},
-		{
-			name:        "wrong api version",
-			content:     wrongAPIVersionYAML,
-			fieldPath:   "apiVersion",
-			errContains: `must be "config.opendatahub.io/v1"`,
-		},
-		{
-			name:        "wrong kind",
-			content:     wrongKindYAML,
-			fieldPath:   "kind",
-			errContains: `must be "PlatformModuleDefinition"`,
-		},
-		{
-			name:        "missing backend block",
-			content:     missingBackendBlockYAML,
-			fieldPath:   "spec.manifests.helm",
-			errContains: `is required when format is "helm"`,
-		},
-		{
-			name:        "both backend blocks",
-			content:     bothBackendBlocksYAML,
-			fieldPath:   "spec.manifests.kustomize",
-			errContains: `must not be set when format is "helm"`,
-		},
-		{
-			name:        "null image",
-			content:     nullImageYAML,
-			fieldPath:   "spec.controller.deployment.container.image",
-			errContains: "image is required",
-		},
-		{
-			name:        "null env value",
-			content:     nullEnvValueYAML,
-			fieldPath:   "spec.controller.deployment.container.env[0].value",
-			errContains: "value is required",
-		},
 	}
 
 	for _, test := range tests {
@@ -713,12 +533,6 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 
 			// Failures name the source file.
 			g.Expect(err.Error()).To(ContainSubstring(path))
-
-			if test.fieldPath != "" {
-				path, ok := firstFieldPath(err)
-				g.Expect(ok).To(BeTrue())
-				g.Expect(path).To(Equal(test.fieldPath))
-			}
 		})
 	}
 }

@@ -3,7 +3,6 @@ package linter
 import (
 	"cmp"
 	"context"
-	"fmt"
 	"slices"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -11,7 +10,7 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
 )
 
-// DefinitionLoad loads and validates one module definition file. The
+// DefinitionLoad loads and normalizes one module definition file. The
 // strict loader is the concrete implementation.
 type DefinitionLoad func(ctx context.Context, path string) (config.PlatformModuleDefinition, error)
 
@@ -113,9 +112,9 @@ func (a *Action) Run(ctx context.Context, options Options) (Result, error) {
 }
 
 // backendFor selects the rendering service for the loaded definition's
-// manifest format. The strict loader already restricts the format, so
-// an unexpected value is a defensive internal error, not a user
-// category.
+// manifest format. Structural validation is deferred, so an
+// unsupported value reaches this point as a definition failure rather
+// than being caught at load time.
 func (a *Action) backendFor(definition config.PlatformModuleDefinition) (ManifestRender, error) {
 	switch definition.Spec.Manifests.Format {
 	case config.FormatHelm:
@@ -123,7 +122,7 @@ func (a *Action) backendFor(definition config.PlatformModuleDefinition) (Manifes
 	case config.FormatKustomize:
 		return a.renderKustomize, nil
 	default:
-		return nil, fmt.Errorf("unsupported manifest format %q for module %s",
+		return nil, config.NewDefinitionErrorf("unsupported manifest format %q for module %s",
 			definition.Spec.Manifests.Format,
 			definition.Metadata.Name)
 	}

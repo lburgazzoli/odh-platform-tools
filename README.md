@@ -36,9 +36,10 @@ implies a runnable controller or a cluster.
 A module is described by one file, `definition.yaml`, typed as plain
 data (`config.opendatahub.io/v1`, kind `PlatformModuleDefinition`). It
 is a file-only document: no Kubernetes Scheme, no generated deepcopy, no
-cluster API submission. Loading is strict — unknown members and
-structural violations are rejected with file and line
-positions.
+cluster API submission. Loading is strict at the decoding level —
+unknown members, name-case mismatches, and type mismatches are rejected
+with file and line positions. Structural validation beyond that is
+deferred and will be added later as JSON Schema validation.
 
 ```yaml
 apiVersion: config.opendatahub.io/v1
@@ -72,16 +73,16 @@ spec:
 
 | Field | Notes |
 | --- | --- |
-| `spec.instance.type` | Group, version, and kind of the Module custom resource. All three are required. |
+| `spec.instance.type` | Group, version, and kind of the Module custom resource. |
 | `spec.instance.name` | Optional name of the module's custom resource instance; defaults to `metadata.name` when omitted. Must be a valid object name (DNS subdomain). It is reserved for a future runner that creates and looks up the custom resource — it is not a rendering input. |
-| `spec.manifests.format` | `helm` or `kustomize`. The block matching the format is required; the other must be absent. |
+| `spec.manifests.format` | `helm` or `kustomize`, selecting the backend block to render. |
 | `spec.manifests.helm.path` | Chart directory relative to the definition file. Must contain `Chart.yaml`. The release name is `metadata.name`; no repositories, credentials, or extra values are involved. Chart dependencies must be vendored under `charts/`. |
 | `spec.manifests.kustomize.path` | Directory containing `kustomization.yaml` (or `.yml`), relative to the definition file. Sibling bases and resource files are allowed; there is no `default/` fallback. |
 | `spec.controller.deployment.name` | The controller Deployment the rendered manifests must contain exactly once. |
-| `spec.controller.deployment.container` | The main container. `name` defaults to `manager` when omitted; `image` is required and may be a literal or a whole-value `{{VARIABLE}}` reference. |
-| `spec.controller.deployment.initContainer` | Optional init container; same type as `container` but requires an explicit `name`. There is no inheritance between the two placements. |
-| `spec.controller.deployment.*.env` | Explicit environment variables. `value` is required and non-null; an explicit empty string is valid. |
-| `spec.relatedImages` | Optional list of portable, unique environment-variable-style names. A future runner will inject them into both selected containers; lint only checks uniqueness and collision with explicit `env` names. |
+| `spec.controller.deployment.container` | The main container. `name` defaults to `manager` when omitted; `image` may be a literal or a whole-value `{{VARIABLE}}` reference. |
+| `spec.controller.deployment.initContainer` | Optional init container; same type as `container`. There is no inheritance between the two placements. |
+| `spec.controller.deployment.*.env` | Explicit environment variables. An explicit empty string is a valid value. |
+| `spec.relatedImages` | Optional list of portable environment-variable-style names. A future runner will inject them into both selected containers; lint neither resolves nor injects them. |
 
 The instance identity is descriptive data: nothing in this delivery
 creates or looks up the custom resource, and rendering never uses
@@ -91,11 +92,10 @@ the layout: the superseded top-level `spec.type` location is rejected
 as an unknown member, including when it appears together with
 `spec.instance`.
 
-Lint neither resolves nor injects declarations: `{{VARIABLE}}` image
-references and `relatedImages` names are validated for shape only, and
-the rendered manifests keep whatever image and env the chart or
-kustomize tree authors. No replacement sources, environment discovery,
-or settings files exist in this delivery.
+Lint neither resolves nor injects declarations: the rendered manifests
+keep whatever image and env the chart or kustomize tree authors. No
+replacement sources, environment discovery, or settings files exist in
+this delivery.
 
 ## CLI reference
 

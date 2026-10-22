@@ -1,5 +1,5 @@
 // Package loader reads module definitions from explicit local files
-// into typed, validated definitions. It is a generic module service:
+// into typed, normalized definitions. It is a generic module service:
 // it performs no environment lookup, rendering, linting, or cluster
 // access.
 package loader
@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -59,8 +58,8 @@ func LoadFromPath(ctx context.Context, path string) (config.PlatformModuleDefini
 	return Load(ctx, os.DirFS("/"), relative)
 }
 
-// Load reads, strictly decodes, and validates the module definition at
-// path in the loader's filesystem and returns it normalized.
+// Load reads and strictly decodes the module definition at path in
+// the loader's filesystem and returns it normalized.
 //
 // Every failure except cancellation is a configuration error matching
 // errors.Is(err, config.ErrInvalidDefinition). Cancellation and
@@ -81,12 +80,7 @@ func (l *Loader) Load(ctx context.Context, path string) (config.PlatformModuleDe
 		return config.PlatformModuleDefinition{}, config.NewDefinitionErrorf("%s: %w", path, err)
 	}
 
-	normalized, err := definition.Normalize()
-	if err != nil {
-		// Validation errors already carry the ErrInvalidDefinition
-		// sentinel; only the source path is added.
-		return config.PlatformModuleDefinition{}, fmt.Errorf("%s: %w", path, err)
-	}
+	normalized := definition.Normalize()
 
 	return normalized, nil
 }

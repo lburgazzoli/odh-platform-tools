@@ -174,7 +174,7 @@ func TestLintCommandClassification(t *testing.T) {
 		},
 		{
 			name:     "definition error",
-			err:      config.NewDefinitionError(errors.New("spec.instance.type.group is required")),
+			err:      config.NewDefinitionError(errors.New(`unknown object member name "type"`)),
 			exitCode: ExitUsage,
 			status:   StatusFailed,
 			category: FailureDefinition,
@@ -294,7 +294,7 @@ warning RESOURCE_KIND_DISALLOWED v1, Kind=Namespace/synthetic/odh-applications/m
 		g := NewWithT(t)
 
 		recorder := &recordingRun{
-			err: config.NewDefinitionError(errors.New("spec.instance.type.group is required")),
+			err: config.NewDefinitionError(errors.New(`unknown object member name "type"`)),
 		}
 
 		stdout, stderr, err := executeLint(t.Context(), t, recorder.run,
@@ -303,7 +303,7 @@ warning RESOURCE_KIND_DISALLOWED v1, Kind=Namespace/synthetic/odh-applications/m
 		g.Expect(exitCode(err)).To(Equal(ExitUsage))
 
 		g.Expect(stdout).To(ContainSubstring("module lint definition.yaml: failed\n"))
-		g.Expect(stdout).To(ContainSubstring("definition: spec.instance.type.group is required\n"))
+		g.Expect(stdout).To(ContainSubstring(`definition: unknown object member name "type"` + "\n"))
 		g.Expect(stderr).To(ContainSubstring("definition"))
 	})
 }

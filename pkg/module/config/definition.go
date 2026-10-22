@@ -3,8 +3,9 @@
 // manifest source, and its controller deployment.
 //
 // The document is plain data with JSON tags. Loading it from a file is
-// the loader package's job; this package models the document shape,
-// applies placement defaults, and validates structure. It performs no
+// the loader package's job; this package models the document shape and
+// applies placement defaults. Structural validation is deferred: JSON
+// Schema validation will be added later. This package performs no
 // filesystem, environment, renderer, or cluster access.
 package config
 
@@ -66,11 +67,12 @@ type Spec struct {
 // the renderer names the in-memory module instance and the Helm
 // release after metadata.name.
 type Instance struct {
-	// Name is nil when the definition omits it; Normalize then
-	// defaults it to metadata.name. An explicit null or empty name is
-	// invalid, exactly like an empty container name. After Normalize
-	// the name is always set.
-	Name *string `json:"name,omitzero"`
+	// Name is the module instance name. It is empty when the
+	// definition omits it or authors an explicit empty string; both
+	// are equivalent here, and Normalize then defaults it to
+	// metadata.name. An empty name is invalid and will be rejected by
+	// JSON Schema validation once it is added.
+	Name string `json:"name,omitzero"`
 
 	// Type is the Module custom resource type the controller owns.
 	Type Type `json:"type"`
@@ -125,12 +127,14 @@ type Deployment struct {
 // manager container or an init container. There is no inheritance
 // between the two placements.
 type ContainerDefinition struct {
-	// Name is nil when the definition omits it; the main container
-	// then defaults to DefaultMainContainerName during Normalize,
-	// while an init container requires an explicit name. An explicit
-	// null or empty name is invalid for both placements. After
-	// Normalize the name is always set.
-	Name *string `json:"name,omitzero"`
+	// Name is the container name. It is empty when the definition
+	// omits it or authors an explicit empty string; both are
+	// equivalent here, and the main container then defaults to
+	// DefaultMainContainerName during Normalize, while an init
+	// container requires an explicit name. An empty name is invalid
+	// and will be rejected by JSON Schema validation once it is
+	// added.
+	Name string `json:"name,omitzero"`
 
 	// Image is the required container image. It may be a literal or a
 	// whole-value {{VARIABLE}} reference; its contents stay opaque
@@ -143,8 +147,8 @@ type ContainerDefinition struct {
 }
 
 // EnvVar is one explicit container environment variable. Value is a
-// pointer so validation can distinguish an absent value from an
-// explicit empty string.
+// pointer so an absent value stays distinguishable from an explicit
+// empty string.
 type EnvVar struct {
 	Name  string  `json:"name"`
 	Value *string `json:"value"`

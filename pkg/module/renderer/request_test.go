@@ -65,7 +65,7 @@ func helmDefinition() config.PlatformModuleDefinition {
 				Deployment: config.Deployment{
 					Name: "synthetic-controller",
 					Container: &config.ContainerDefinition{
-						Name:  new(config.DefaultMainContainerName),
+						Name:  config.DefaultMainContainerName,
 						Image: "quay.io/example/controller:v1",
 					},
 				},
@@ -88,6 +88,29 @@ func kustomizeDefinition(path string) config.PlatformModuleDefinition {
 	}
 
 	return definition
+}
+
+// TestNewRequestWithoutBackendBlock proves a definition that selects a
+// backend without its block — decodable now that structural validation
+// is deferred — yields a request with no entry instead of a panic.
+func TestNewRequestWithoutBackendBlock(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	helmless := helmDefinition()
+	helmless.Spec.Manifests = config.Manifests{Format: config.FormatHelm}
+
+	request := NewRequest(helmless, definitionFile)
+	g.Expect(request.HelmCharts).To(BeEmpty())
+	g.Expect(request.Manifests).To(BeEmpty())
+
+	blockless := kustomizeDefinition("./manifests/controller")
+	blockless.Spec.Manifests = config.Manifests{Format: config.FormatKustomize}
+
+	request = NewRequest(blockless, definitionFile)
+	g.Expect(request.HelmCharts).To(BeEmpty())
+	g.Expect(request.Manifests).To(BeEmpty())
 }
 
 func TestNewRequestHelm(t *testing.T) {
@@ -125,7 +148,7 @@ func TestNewRequestHelm(t *testing.T) {
 	g.Expect(instance.GetNamespace()).To(BeEmpty())
 
 	// The source definition is not aliased or mutated.
-	g.Expect(definition.Spec.Controller.Deployment.Container.Name).NotTo(BeNil())
+	g.Expect(definition.Spec.Controller.Deployment.Container.Name).To(Equal(config.DefaultMainContainerName))
 	instance.SetName("mutated")
 	g.Expect(definition.Metadata.Name).To(Equal("synthetic"))
 }
@@ -136,7 +159,7 @@ func TestNewRequestIgnoresInstanceName(t *testing.T) {
 	g := NewWithT(t)
 
 	definition := helmDefinition()
-	definition.Spec.Instance.Name = new("synthetic-trainer")
+	definition.Spec.Instance.Name = "synthetic-trainer"
 
 	request := NewRequest(definition, definitionFile)
 

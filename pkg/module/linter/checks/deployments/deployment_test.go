@@ -41,9 +41,8 @@ func testDefinition() config.PlatformModuleDefinition {
 // container name.
 func managerDefinition() config.PlatformModuleDefinition {
 	definition := testDefinition()
-	name := "manager"
 	definition.Spec.Controller.Deployment.Container = &config.ContainerDefinition{
-		Name:  &name,
+		Name:  "manager",
 		Image: "quay.io/example/controller:v1",
 	}
 
@@ -55,7 +54,7 @@ func managerDefinition() config.PlatformModuleDefinition {
 func initContainerDefinition(name string) config.PlatformModuleDefinition {
 	definition := testDefinition()
 	definition.Spec.Controller.Deployment.InitContainer = &config.ContainerDefinition{
-		Name:  &name,
+		Name:  name,
 		Image: "quay.io/example/controller:v1",
 	}
 

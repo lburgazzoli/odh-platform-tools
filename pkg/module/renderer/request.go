@@ -40,17 +40,25 @@ func NewRequest(definition config.PlatformModuleDefinition, definitionFile strin
 
 	root := filepath.Dir(definitionFile)
 
+	// Structural validation is deferred, so a decodable definition may
+	// select a backend without its block: no entry is attached and the
+	// render action reports the empty result downstream instead of
+	// this adapter panicking on a nil block.
 	switch definition.Spec.Manifests.Format {
 	case config.FormatHelm:
-		request.HelmCharts = []types.HelmChartInfo{{
-			Source: helm.Source{
-				Chart:       resolveEntry(root, definition.Spec.Manifests.Helm.Path),
-				ReleaseName: definition.Metadata.Name,
-			},
-		}}
+		if manifests := definition.Spec.Manifests.Helm; manifests != nil {
+			request.HelmCharts = []types.HelmChartInfo{{
+				Source: helm.Source{
+					Chart:       resolveEntry(root, manifests.Path),
+					ReleaseName: definition.Metadata.Name,
+				},
+			}}
+		}
 	case config.FormatKustomize:
-		request.Manifests = []types.ManifestInfo{
-			{Path: resolveEntry(root, definition.Spec.Manifests.Kustomize.Path)},
+		if manifests := definition.Spec.Manifests.Kustomize; manifests != nil {
+			request.Manifests = []types.ManifestInfo{
+				{Path: resolveEntry(root, manifests.Path)},
+			}
 		}
 	}
 

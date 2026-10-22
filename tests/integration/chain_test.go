@@ -90,19 +90,9 @@ func TestLintChainInvalidDefinition(t *testing.T) {
 		contains string
 	}{
 		{
-			name:     "incomplete instance type",
-			content:  invalidDefinitionYAML,
-			contains: "spec.instance.type.group",
-		},
-		{
 			name:     "legacy spec.type",
 			content:  legacyTypeDefinitionYAML,
 			contains: `unknown object member name "type"`,
-		},
-		{
-			name:     "invalid instance name",
-			content:  invalidInstanceNameDefinitionYAML,
-			contains: "spec.instance.name",
 		},
 	}
 
