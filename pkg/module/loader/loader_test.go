@@ -115,11 +115,28 @@ metadata:
   namespace: opendatahub
 `
 
+	// duplicateKeyYAML relies on the Kubernetes YAML semantics of the
+	// single-pass decode: duplicate keys resolve last-wins instead of
+	// being rejected.
 	duplicateKeyYAML = `apiVersion: config.opendatahub.io/v1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
   name: duplicate
+spec:
+  type:
+    group: components.platform.opendatahub.io
+    version: v1alpha1
+    kind: SyntheticModule
+  manifests:
+    format: helm
+    helm:
+      path: ./manifests/chart
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        image: quay.io/example/controller:v1
 `
 
 	integerNameYAML = `apiVersion: config.opendatahub.io/v1
@@ -317,92 +334,8 @@ spec:
 `
 )
 
-// Definitions with invalid renderer paths. Full documents that differ
-// from the valid Helm definition only in the chart path.
-const (
-	helmEscapeOutsideYAML = `apiVersion: config.opendatahub.io/v1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
-  manifests:
-    format: helm
-    helm:
-      path: ../outside
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
-`
-
-	helmLookalikeOutsideYAML = `apiVersion: config.opendatahub.io/v1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
-  manifests:
-    format: helm
-    helm:
-      path: ../mod-evil
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
-`
-
-	helmMissingPathYAML = `apiVersion: config.opendatahub.io/v1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
-  manifests:
-    format: helm
-    helm:
-      path: ./manifests/missing
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
-`
-
-	helmFileNotDirectoryYAML = `apiVersion: config.opendatahub.io/v1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
-  manifests:
-    format: helm
-    helm:
-      path: ./definition.yaml
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
-`
-)
-
 // helmAbsolutePathYAML points at an absolute chart directory that the
-// test substitutes with a path outside the module root.
+// test substitutes with the module's own chart location.
 const helmAbsolutePathYAML = `apiVersion: config.opendatahub.io/v1
 kind: PlatformModuleDefinition
 metadata:
@@ -518,7 +451,6 @@ func TestLoadHelmDefinition(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(document.DefinitionFile).To(Equal(filepath.Join(canonical(t, root), "definition.yaml")))
-	g.Expect(document.ModuleRoot).To(Equal(canonical(t, root)))
 	g.Expect(document.RendererEntry).To(Equal(filepath.Join(canonical(t, root), "manifests/chart")))
 
 	// Authored strings are not replaced by canonical runtime state, and
@@ -559,7 +491,6 @@ func TestLoadDefinitionByRelativePath(t *testing.T) {
 	// directory; the chart path resolves against the module root.
 	document, err := New().Load(t.Context(), "definition.yaml")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(document.ModuleRoot).To(Equal(canonical(t, root)))
 	g.Expect(document.RendererEntry).To(Equal(filepath.Join(canonical(t, root), "manifests/chart")))
 }
 
@@ -578,7 +509,6 @@ func TestLoadDefinitionThroughSymlink(t *testing.T) {
 	// directory the symlink was invoked through.
 	document, err := New().Load(t.Context(), filepath.Join(linkDir, "definition.yaml"))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(document.ModuleRoot).To(Equal(canonical(t, root)))
 	g.Expect(document.RendererEntry).To(Equal(filepath.Join(canonical(t, root), "manifests/chart")))
 }
 
@@ -610,6 +540,21 @@ func TestLoadToleratesTrailingEmptyDocument(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
+func TestLoadResolvesDuplicateKeysLastWins(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	// The single-pass decode follows the Kubernetes YAML semantics:
+	// a duplicate key resolves last-wins rather than failing.
+	root := t.TempDir()
+	writeModuleFile(t, root, "definition.yaml", duplicateKeyYAML)
+
+	document, err := New().Load(t.Context(), filepath.Join(root, "definition.yaml"))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(document.Definition.Metadata.Name).To(Equal("duplicate"))
+}
+
 func TestLoadRejectsInvalidDocuments(t *testing.T) {
 	t.Parallel()
 
@@ -633,11 +578,6 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 			name:        "unsupported metadata",
 			content:     metadataNamespaceYAML,
 			errContains: `unknown object member name "namespace"`,
-		},
-		{
-			name:        "duplicate key",
-			content:     duplicateKeyYAML,
-			errContains: `key "name" already set in map`,
 		},
 		{
 			// The decoder reports type mismatches; the exact json
@@ -862,165 +802,6 @@ func TestLoadRejectsMissingAndNonRegularFiles(t *testing.T) {
 	_, err = New().Load(t.Context(), "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
-}
-
-// helmSymlinkPathYAML points at a chart directory that the test
-// replaces with a symlink escaping the module root.
-const helmSymlinkPathYAML = `apiVersion: config.opendatahub.io/v1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
-  manifests:
-    format: helm
-    helm:
-      path: ./manifests/chart-link
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
-`
-
-// kustomizeMissingEntryYAML points at a directory whose entry file is
-// missing; the test varies what that directory contains.
-const kustomizeMissingEntryYAML = `apiVersion: config.opendatahub.io/v1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
-  manifests:
-    format: kustomize
-    kustomize:
-      path: ./manifests/tree
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
-`
-
-func TestLoadRejectsEscapingRendererPaths(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		content string
-		setup   func(t *testing.T, root string)
-	}{
-		{
-			name:    "relative escape",
-			content: helmEscapeOutsideYAML,
-			setup: func(t *testing.T, root string) {
-				writeModuleFile(t, filepath.Dir(root), "outside/Chart.yaml", chartYAML)
-			},
-		},
-		{
-			name:    "root-prefix lookalike",
-			content: helmLookalikeOutsideYAML,
-			setup: func(t *testing.T, root string) {
-				writeModuleFile(t, filepath.Dir(root), "mod-evil/Chart.yaml", chartYAML)
-			},
-		},
-		{
-			name:    "missing path",
-			content: helmMissingPathYAML,
-			setup:   func(*testing.T, string) {},
-		},
-		{
-			name:    "file instead of directory",
-			content: helmFileNotDirectoryYAML,
-			setup:   func(*testing.T, string) {},
-		},
-		{
-			name:    "chart directory without Chart.yaml",
-			content: helmDefinitionYAML,
-			setup: func(t *testing.T, root string) {
-				writeModuleFile(t, root, "manifests/chart/templates/deployment.yaml", deploymentYAML)
-			},
-		},
-		{
-			name:    "symlink escape",
-			content: helmSymlinkPathYAML,
-			setup: func(t *testing.T, root string) {
-				outside := filepath.Join(filepath.Dir(root), "outside")
-				if err := os.MkdirAll(outside, 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.MkdirAll(filepath.Join(root, "manifests"), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink(outside, filepath.Join(root, "manifests/chart-link")); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-		{
-			name:    "kustomize directory without kustomization",
-			content: kustomizeMissingEntryYAML,
-			setup: func(t *testing.T, root string) {
-				writeModuleFile(t, root, "manifests/tree/deployment.yaml", deploymentYAML)
-			},
-		},
-		{
-			name:    "kustomize directory with only a default fallback",
-			content: kustomizeMissingEntryYAML,
-			setup: func(t *testing.T, root string) {
-				writeModuleFile(t, root, "manifests/tree/default/kustomization.yaml", kustomizationYAML)
-			},
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
-			g := NewWithT(t)
-
-			// The module root sits inside a parent directory so
-			// sibling escapes and lookalikes have somewhere to be.
-			parent := t.TempDir()
-			root := filepath.Join(parent, "mod")
-			if err := os.MkdirAll(root, 0o755); err != nil {
-				t.Fatal(err)
-			}
-
-			writeModuleFile(t, root, "definition.yaml", test.content)
-			test.setup(t, root)
-
-			_, err := New().Load(t.Context(), filepath.Join(root, "definition.yaml"))
-			g.Expect(err).To(HaveOccurred())
-			g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
-		})
-	}
-}
-
-func TestLoadRejectsAbsoluteOutsideRendererPath(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	parent := t.TempDir()
-	root := filepath.Join(parent, "mod")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	outside := filepath.Dir(writeModuleFile(t, parent, "outside/Chart.yaml", chartYAML))
-
-	writeModuleFile(t, root, "definition.yaml", fmt.Sprintf(helmAbsolutePathYAML, outside))
-
-	_, err := New().Load(t.Context(), filepath.Join(root, "definition.yaml"))
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
-	g.Expect(err.Error()).To(ContainSubstring("escapes the module root"))
 }
 
 func TestLoadAcceptsAbsoluteInsideRendererPath(t *testing.T) {

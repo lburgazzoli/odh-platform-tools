@@ -73,7 +73,6 @@ func helmDocument() config.Document {
 			},
 		},
 		DefinitionFile: "/modules/synthetic/definition.yaml",
-		ModuleRoot:     "/modules/synthetic",
 		RendererEntry:  "/modules/synthetic/manifests/chart",
 	}
 }

@@ -469,7 +469,6 @@ func TestDocumentCarriesDefinitionAndSourceData(t *testing.T) {
 	document := Document{
 		Definition:     definition,
 		DefinitionFile: "/modules/synthetic/definition.yaml",
-		ModuleRoot:     "/modules/synthetic",
 		RendererEntry:  "/modules/synthetic/manifests/chart",
 	}
 

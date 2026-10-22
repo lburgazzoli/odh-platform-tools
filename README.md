@@ -225,7 +225,8 @@ error `SINGLETON_EVIDENCE_MISSING`.
   authored, and any input the engine rejects fails the lint with the
   engine's own error. No Kubernetes client, cluster access, release
   state, or action cache is attached; the definition's entry path is
-  still resolved and root-contained by the loader.
+  resolved against the module root, and its existence and shape are the
+  engine's to validate.
 
 ## Limits
 

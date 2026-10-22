@@ -13,12 +13,8 @@ type Document struct {
 	// definition file that was loaded.
 	DefinitionFile string
 
-	// ModuleRoot is the canonical directory containing the definition
-	// file. Every renderer input must stay inside it.
-	ModuleRoot string
-
-	// RendererEntry is the canonical directory the manifest backend
-	// selected: the Helm chart root, or the directory containing
-	// kustomization.yaml.
+	// RendererEntry is the directory the manifest backend selected,
+	// resolved against the definition file's directory: the Helm chart
+	// root, or the directory containing kustomization.yaml.
 	RendererEntry string
 }
