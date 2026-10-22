@@ -3,7 +3,6 @@ package loader
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,9 +13,8 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
 )
 
-// Valid definition documents, one per backend.
-const (
-	helmDefinitionYAML = `apiVersion: config.opendatahub.io/v1
+// helmDefinitionYAML is the valid Helm module definition.
+const helmDefinitionYAML = `apiVersion: config.opendatahub.io/v1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -40,10 +38,9 @@ spec:
           - name: LOG_LEVEL
             value: "{{CONTROLLER_LOG_LEVEL}}"
 `
-)
 
-const (
-	kustomizeDefinitionYAML = `apiVersion: config.opendatahub.io/v1
+// kustomizeDefinitionYAML is the valid Kustomize module definition.
+const kustomizeDefinitionYAML = `apiVersion: config.opendatahub.io/v1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -68,7 +65,6 @@ spec:
         name: copy-manifests
         image: quay.io/example/controller:v1
 `
-)
 
 // definitionJSON is the Helm definition in JSON syntax.
 const definitionJSON = `{
@@ -334,28 +330,6 @@ spec:
 `
 )
 
-// helmAbsolutePathYAML points at an absolute chart directory that the
-// test substitutes with the module's own chart location.
-const helmAbsolutePathYAML = `apiVersion: config.opendatahub.io/v1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
-  manifests:
-    format: helm
-    helm:
-      path: %s
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
-`
-
 // Renderer entry files.
 const (
 	chartYAML = `apiVersion: v2
@@ -376,9 +350,8 @@ metadata:
 `
 )
 
-// writeModuleFile writes content at a relative path inside root and
-// returns the full path.
-func writeModuleFile(t *testing.T, root, relative, content string) string {
+// writeModuleFile writes content at a relative path inside root.
+func writeModuleFile(t *testing.T, root, relative, content string) {
 	t.Helper()
 
 	path := filepath.Join(root, relative)
@@ -388,21 +361,6 @@ func writeModuleFile(t *testing.T, root, relative, content string) string {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	return path
-}
-
-// canonical resolves symlinks in path so expectations match the
-// canonical locations the loader reports.
-func canonical(t *testing.T, path string) string {
-	t.Helper()
-
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return resolved
 }
 
 // writeHelmModule creates a valid Helm module and returns its root.
@@ -447,20 +405,19 @@ func TestLoadHelmDefinition(t *testing.T) {
 
 	root := writeHelmModule(t)
 
-	document, err := New().Load(t.Context(), filepath.Join(root, "definition.yaml"))
+	definition, err := Load(t.Context(), os.DirFS(root), "definition.yaml")
 	g.Expect(err).NotTo(HaveOccurred())
 
-	g.Expect(document.DefinitionFile).To(Equal(filepath.Join(canonical(t, root), "definition.yaml")))
-	g.Expect(document.RendererEntry).To(Equal(filepath.Join(canonical(t, root), "manifests/chart")))
+	g.Expect(definition.Spec.Manifests.Helm.Path).To(Equal("./manifests/chart"))
 
 	// Authored strings are not replaced by canonical runtime state, and
 	// replacement references survive as literals.
-	g.Expect(document.Definition.Spec.Manifests.Helm.Path).To(Equal("./manifests/chart"))
-	g.Expect(document.Definition.Spec.Controller.Deployment.Container.Image).To(Equal("{{RELATED_IMAGE_SYNTHETIC_CONTROLLER}}"))
-	g.Expect(document.Definition.Spec.RelatedImages).To(Equal([]string{"RELATED_IMAGE_SYNTHETIC_OPERAND"}))
+	g.Expect(definition.Spec.Manifests.Helm.Path).To(Equal("./manifests/chart"))
+	g.Expect(definition.Spec.Controller.Deployment.Container.Image).To(Equal("{{RELATED_IMAGE_SYNTHETIC_CONTROLLER}}"))
+	g.Expect(definition.Spec.RelatedImages).To(Equal([]string{"RELATED_IMAGE_SYNTHETIC_OPERAND"}))
 
 	// Placement defaults are applied.
-	g.Expect(*document.Definition.Spec.Controller.Deployment.Container.Name).To(Equal(config.DefaultMainContainerName))
+	g.Expect(*definition.Spec.Controller.Deployment.Container.Name).To(Equal(config.DefaultMainContainerName))
 }
 
 func TestLoadKustomizeDefinitionWithSiblingBase(t *testing.T) {
@@ -470,46 +427,26 @@ func TestLoadKustomizeDefinitionWithSiblingBase(t *testing.T) {
 
 	root := writeKustomizeModule(t)
 
-	document, err := New().Load(t.Context(), filepath.Join(root, "definition.yaml"))
+	definition, err := Load(t.Context(), os.DirFS(root), "definition.yaml")
 	g.Expect(err).NotTo(HaveOccurred())
-
-	g.Expect(document.RendererEntry).To(Equal(filepath.Join(canonical(t, root), "manifests/overlays/development")))
 
 	// The explicit empty env literal is valid and the init container is
 	// preserved.
-	g.Expect(*document.Definition.Spec.Controller.Deployment.Container.Env[0].Value).To(Equal(""))
-	g.Expect(*document.Definition.Spec.Controller.Deployment.InitContainer.Name).To(Equal("copy-manifests"))
+	g.Expect(*definition.Spec.Controller.Deployment.Container.Env[0].Value).To(Equal(""))
+	g.Expect(*definition.Spec.Controller.Deployment.InitContainer.Name).To(Equal("copy-manifests"))
 }
 
-func TestLoadDefinitionByRelativePath(t *testing.T) {
+func TestLoadFromPathByRelativePath(t *testing.T) {
 	g := NewWithT(t)
 
 	root := writeHelmModule(t)
 	t.Chdir(root)
 
-	// A relative definition path resolves against the working
-	// directory; the chart path resolves against the module root.
-	document, err := New().Load(t.Context(), "definition.yaml")
+	// An operating-system path relative to the working directory
+	// resolves through the DirFS adapter.
+	definition, err := LoadFromPath(t.Context(), "definition.yaml")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(document.RendererEntry).To(Equal(filepath.Join(canonical(t, root), "manifests/chart")))
-}
-
-func TestLoadDefinitionThroughSymlink(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	root := writeHelmModule(t)
-
-	linkDir := t.TempDir()
-	err := os.Symlink(filepath.Join(root, "definition.yaml"), filepath.Join(linkDir, "definition.yaml"))
-	g.Expect(err).NotTo(HaveOccurred())
-
-	// The module root is the canonical descriptor directory, not the
-	// directory the symlink was invoked through.
-	document, err := New().Load(t.Context(), filepath.Join(linkDir, "definition.yaml"))
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(document.RendererEntry).To(Equal(filepath.Join(canonical(t, root), "manifests/chart")))
+	g.Expect(definition.Spec.Manifests.Helm.Path).To(Equal("./manifests/chart"))
 }
 
 func TestLoadJSONDefinition(t *testing.T) {
@@ -521,10 +458,9 @@ func TestLoadJSONDefinition(t *testing.T) {
 	writeModuleFile(t, root, "definition.json", definitionJSON)
 	writeModuleFile(t, root, "manifests/chart/Chart.yaml", chartYAML)
 
-	document, err := New().Load(t.Context(), filepath.Join(root, "definition.json"))
+	definition, err := Load(t.Context(), os.DirFS(root), "definition.json")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(document.Definition.Spec.Manifests.Format).To(Equal(config.FormatHelm))
-	g.Expect(document.RendererEntry).To(Equal(filepath.Join(canonical(t, root), "manifests/chart")))
+	g.Expect(definition.Spec.Manifests.Format).To(Equal(config.FormatHelm))
 }
 
 func TestLoadToleratesTrailingEmptyDocument(t *testing.T) {
@@ -536,7 +472,7 @@ func TestLoadToleratesTrailingEmptyDocument(t *testing.T) {
 	writeModuleFile(t, root, "definition.yaml", helmDefinitionYAML+"\n---\n")
 	writeModuleFile(t, root, "manifests/chart/Chart.yaml", chartYAML)
 
-	_, err := New().Load(t.Context(), filepath.Join(root, "definition.yaml"))
+	_, err := Load(t.Context(), os.DirFS(root), "definition.yaml")
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
@@ -550,9 +486,9 @@ func TestLoadResolvesDuplicateKeysLastWins(t *testing.T) {
 	root := t.TempDir()
 	writeModuleFile(t, root, "definition.yaml", duplicateKeyYAML)
 
-	document, err := New().Load(t.Context(), filepath.Join(root, "definition.yaml"))
+	definition, err := Load(t.Context(), os.DirFS(root), "definition.yaml")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(document.Definition.Metadata.Name).To(Equal("duplicate"))
+	g.Expect(definition.Metadata.Name).To(Equal("duplicate"))
 }
 
 func TestLoadRejectsInvalidDocuments(t *testing.T) {
@@ -624,10 +560,12 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 		{
 			// Merge keys resolve through the Kubernetes YAML
 			// machinery; this document still fails on its unknown
-			// root members.
+			// root members. Which one is reported first depends on
+			// map iteration order, so only the failure kind is
+			// asserted.
 			name:        "merge key",
 			content:     mergeKeyYAML,
-			errContains: `unknown object member name "base"`,
+			errContains: `unknown object member name`,
 		},
 		{
 			name:        "malformed yaml",
@@ -679,9 +617,10 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 			g := NewWithT(t)
 
 			root := t.TempDir()
-			path := writeModuleFile(t, root, "definition.yaml", test.content)
+			const path = "definition.yaml"
+			writeModuleFile(t, root, path, test.content)
 
-			_, err := New().Load(t.Context(), path)
+			_, err := Load(t.Context(), os.DirFS(root), path)
 			g.Expect(err).To(HaveOccurred())
 			g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
 			g.Expect(err.Error()).To(ContainSubstring(test.errContains))
@@ -760,9 +699,10 @@ func TestLoadRejectsNonStringScalars(t *testing.T) {
 			g := NewWithT(t)
 
 			root := t.TempDir()
-			path := writeModuleFile(t, root, "definition.yaml", test.content)
+			const path = "definition.yaml"
+			writeModuleFile(t, root, path, test.content)
 
-			_, err := New().Load(t.Context(), path)
+			_, err := Load(t.Context(), os.DirFS(root), path)
 			g.Expect(err).To(HaveOccurred())
 			g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
 			g.Expect(err.Error()).To(ContainSubstring(test.errContains))
@@ -779,11 +719,11 @@ func TestLoadKeepsTimestampLiteralsAsStrings(t *testing.T) {
 	writeModuleFile(t, root, "definition.yaml", timestampValueYAML)
 	writeModuleFile(t, root, "manifests/overlays/development/kustomization.yaml", kustomizationYAML)
 
-	document, err := New().Load(t.Context(), filepath.Join(root, "definition.yaml"))
+	definition, err := Load(t.Context(), os.DirFS(root), "definition.yaml")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// The unquoted date stays literal text; it is never a parsed date.
-	g.Expect(*document.Definition.Spec.Controller.Deployment.Container.Env[0].Value).To(Equal("2026-01-02"))
+	g.Expect(*definition.Spec.Controller.Deployment.Container.Env[0].Value).To(Equal("2026-01-02"))
 }
 
 func TestLoadRejectsMissingAndNonRegularFiles(t *testing.T) {
@@ -791,46 +731,22 @@ func TestLoadRejectsMissingAndNonRegularFiles(t *testing.T) {
 
 	g := NewWithT(t)
 
-	_, err := New().Load(t.Context(), filepath.Join(t.TempDir(), "missing.yaml"))
+	_, err := Load(t.Context(), os.DirFS(t.TempDir()), "missing.yaml")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
 
-	_, err = New().Load(t.Context(), t.TempDir())
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
-
-	_, err = New().Load(t.Context(), "")
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
-}
-
-func TestLoadAcceptsAbsoluteInsideRendererPath(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	root := writeHelmModule(t)
-	chart := filepath.Join(canonical(t, root), "manifests/chart")
-
-	writeModuleFile(t, root, "definition.yaml", fmt.Sprintf(helmAbsolutePathYAML, chart))
-
-	document, err := New().Load(t.Context(), filepath.Join(root, "definition.yaml"))
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(document.RendererEntry).To(Equal(chart))
-}
-
-func TestLoadAcceptsKustomizationYml(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
+	// A directory is not a definition file; ReadFile rejects it.
 	root := t.TempDir()
-	writeModuleFile(t, root, "definition.yaml", kustomizeDefinitionYAML)
-	writeModuleFile(t, root, "manifests/overlays/development/kustomization.yml", kustomizationYAML)
+	if err := os.Mkdir(filepath.Join(root, "subdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Load(t.Context(), os.DirFS(root), "subdir")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
 
-	document, err := New().Load(t.Context(), filepath.Join(root, "definition.yaml"))
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(document.RendererEntry).To(Equal(filepath.Join(canonical(t, root), "manifests/overlays/development")))
+	_, err = Load(t.Context(), os.DirFS(root), "")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
 }
 
 func TestLoadIgnoresEnvironment(t *testing.T) {
@@ -843,7 +759,7 @@ func TestLoadIgnoresEnvironment(t *testing.T) {
 
 	root := writeHelmModule(t)
 
-	_, err := New().Load(t.Context(), filepath.Join(root, "definition.yaml"))
+	_, err := Load(t.Context(), os.DirFS(root), "definition.yaml")
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
@@ -857,7 +773,7 @@ func TestLoadPropagatesCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	_, err := New().Load(ctx, filepath.Join(root, "definition.yaml"))
+	_, err := Load(ctx, os.DirFS(root), "definition.yaml")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
 	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeFalse())
@@ -873,7 +789,7 @@ func TestLoadPropagatesDeadline(t *testing.T) {
 	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
 	defer cancel()
 
-	_, err := New().Load(ctx, filepath.Join(root, "definition.yaml"))
+	_, err := Load(ctx, os.DirFS(root), "definition.yaml")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
 	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeFalse())

@@ -457,22 +457,3 @@ func TestNewDefinitionErrorPreservesCause(t *testing.T) {
 	g.Expect(errors.Is(err, ErrInvalidDefinition)).To(BeTrue())
 	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
 }
-
-func TestDocumentCarriesDefinitionAndSourceData(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	definition, err := validDefinition(FormatHelm).Normalize()
-	g.Expect(err).NotTo(HaveOccurred())
-
-	document := Document{
-		Definition:     definition,
-		DefinitionFile: "/modules/synthetic/definition.yaml",
-		RendererEntry:  "/modules/synthetic/manifests/chart",
-	}
-
-	// Authored strings stay separate from canonical source paths.
-	g.Expect(document.Definition.Spec.Manifests.Helm.Path).To(Equal("./manifests/chart"))
-	g.Expect(document.RendererEntry).To(Equal("/modules/synthetic/manifests/chart"))
-}

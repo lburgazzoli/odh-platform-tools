@@ -36,8 +36,8 @@ implies a runnable controller or a cluster.
 A module is described by one file, `definition.yaml`, typed as plain
 data (`config.opendatahub.io/v1`, kind `PlatformModuleDefinition`). It
 is a file-only document: no Kubernetes Scheme, no generated deepcopy, no
-cluster API submission. Loading is strict — unknown members, duplicate
-YAML keys, and structural violations are rejected with file and line
+cluster API submission. Loading is strict — unknown members and
+structural violations are rejected with file and line
 positions.
 
 ```yaml
@@ -53,7 +53,7 @@ spec:
   manifests:
     format: helm                     # helm | kustomize; exactly one backend block
     helm:
-      path: ./manifests/chart        # chart root, relative to the module root
+      path: ./manifests/chart        # chart root, relative to the definition file
   relatedImages:                     # optional, see below
   - RELATED_IMAGE_EXAMPLE_CONTROLLER
   controller:
@@ -72,8 +72,8 @@ spec:
 | --- | --- |
 | `spec.type` | Group, version, and kind of the Module custom resource. All three are required. |
 | `spec.manifests.format` | `helm` or `kustomize`. The block matching the format is required; the other must be absent. |
-| `spec.manifests.helm.path` | Chart directory relative to the module root. Must contain `Chart.yaml`. The release name is `metadata.name`; no repositories, credentials, or extra values are involved. Chart dependencies must be vendored under `charts/`. |
-| `spec.manifests.kustomize.path` | Directory containing `kustomization.yaml` (or `.yml`), relative to the module root. Sibling bases and resource files inside the module root are allowed; there is no `default/` fallback. |
+| `spec.manifests.helm.path` | Chart directory relative to the definition file. Must contain `Chart.yaml`. The release name is `metadata.name`; no repositories, credentials, or extra values are involved. Chart dependencies must be vendored under `charts/`. |
+| `spec.manifests.kustomize.path` | Directory containing `kustomization.yaml` (or `.yml`), relative to the definition file. Sibling bases and resource files are allowed; there is no `default/` fallback. |
 | `spec.controller.deployment.name` | The controller Deployment the rendered manifests must contain exactly once. |
 | `spec.controller.deployment.container` | The main container. `name` defaults to `manager` when omitted; `image` is required and may be a literal or a whole-value `{{VARIABLE}}` reference. |
 | `spec.controller.deployment.initContainer` | Optional init container; same type as `container` but requires an explicit `name`. There is no inheritance between the two placements. |
@@ -194,11 +194,11 @@ error `SINGLETON_EVIDENCE_MISSING`.
              ┌──────────────────── pkg/module/linter (action) ───────────────────┐
              │  options → load → select backend → render → pure validate        │
              └───────┬────────────────────────────────────────┬──────────────────┘
-                     │ loader.New().Load                      │ helm.Render / kustomize.Render
+                     │ loader.LoadFromPath                     │ helm.Render / kustomize.Render
      ┌───────────────▼──────────────┐        ┌────────────────▼───────────────────┐
      │ pkg/module/loader            │        │ pkg/module/renderer/{helm,kustomize}│
-     │ strict YAML → typed config,  │        │ framework render action wrappers,  │
-     │ entry resolution, validation │        │ engine-faithful, restrictions off   │
+     │ strict YAML → typed config,  │        │ request adapter + render wrappers,  │
+     │ validation                   │        │ engine-faithful, restrictions off   │
      └──────────────────────────────┘        └────────────────▼───────────────────┘
                                                              │ []unstructured.Unstructured
                                              ┌───────────────▼────────────────────┐
@@ -210,7 +210,7 @@ error `SINGLETON_EVIDENCE_MISSING`.
 - **Cobra configures options only.** All orchestration lives in the
   Cobra-free action; the command holds no business logic, and no
   `pkg/` package imports Cobra.
-- **Plain JSON, no Scheme.** The definition document is plain data with
+- **Plain JSON, no Scheme.** The definition is plain data with
   JSON tags — no runtime.Object, no Scheme registration, no generated
   deepcopy. The framework's renderer interface requirement is met by a
   renderer-private, non-owning in-memory adapter; the definition type
@@ -225,8 +225,8 @@ error `SINGLETON_EVIDENCE_MISSING`.
   authored, and any input the engine rejects fails the lint with the
   engine's own error. No Kubernetes client, cluster access, release
   state, or action cache is attached; the definition's entry path is
-  resolved against the module root, and its existence and shape are the
-  engine's to validate.
+  resolved against the definition file's location by the render
+  request, and its existence and shape are the engine's to validate.
 
 ## Limits
 

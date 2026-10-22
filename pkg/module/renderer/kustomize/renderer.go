@@ -16,8 +16,9 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
 
-// Render renders the module described by document through the actual
-// framework Kustomize action and returns the rendered objects.
+// Render renders the module described by definition, whose file was
+// loaded from definitionFile, through the actual framework Kustomize
+// action and returns the rendered objects.
 //
 // The action renders the configured entry directory directly, with
 // caching disabled and no client attached. The declared path maps
@@ -35,12 +36,12 @@ import (
 // The returned list contains every object the framework action
 // rendered; callers filtering it must not assume they hold the raw
 // kustomization output.
-func Render(ctx context.Context, document config.Document) ([]unstructured.Unstructured, error) {
+func Render(ctx context.Context, definition config.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	request := renderer.NewRequest(document)
+	request := renderer.NewRequest(definition, definitionFile)
 
 	action := fwkustomize.NewAction(
 		fwkustomize.WithCache(false),
@@ -57,7 +58,7 @@ func Render(ctx context.Context, document config.Document) ([]unstructured.Unstr
 	)
 
 	if err := action(ctx, request); err != nil {
-		return nil, fmt.Errorf("kustomize render for module %s: %w", document.Definition.Metadata.Name, err)
+		return nil, fmt.Errorf("kustomize render for module %s: %w", definition.Metadata.Name, err)
 	}
 
 	return request.Resources, nil

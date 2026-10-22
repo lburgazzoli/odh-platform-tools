@@ -199,15 +199,16 @@ func TestLintChainPreservesDescriptorIsolation(t *testing.T) {
 	root := t.TempDir()
 	writeHelmModule(t, root)
 
-	document, err := loader.New().Load(t.Context(),
+	definition, err := loader.LoadFromPath(t.Context(),
 		filepath.Join(root, "definition.yaml"))
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// The loader preserves authored descriptor strings verbatim.
-	g.Expect(document.Definition.Spec.Controller.Deployment.Container.Image).
+	g.Expect(definition.Spec.Controller.Deployment.Container.Image).
 		To(Equal("quay.io/example/controller:v1"))
 
-	resources, err := helm.Render(t.Context(), document)
+	resources, err := helm.Render(t.Context(), definition,
+		filepath.Join(root, "definition.yaml"))
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var deployment *unstructured.Unstructured

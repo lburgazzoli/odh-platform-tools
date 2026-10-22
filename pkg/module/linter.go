@@ -17,7 +17,7 @@ import (
 // resolution.
 func NewLinter() *linter.Action {
 	return linter.NewAction(
-		linter.DefinitionLoad(loader.New().Load),
+		linter.DefinitionLoad(loader.LoadFromPath),
 		linter.ManifestRender(helm.Render),
 		linter.ManifestRender(kustomize.Render),
 	)

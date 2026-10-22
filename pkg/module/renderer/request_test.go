@@ -43,51 +43,49 @@ spec:
 `
 )
 
-// helmDocument is a fully normalized Helm module document with resolved
-// canonical paths.
-func helmDocument() config.Document {
-	return config.Document{
-		Definition: config.PlatformModuleDefinition{
-			APIVersion: config.APIVersion,
-			Kind:       config.Kind,
-			Metadata:   config.Metadata{Name: "synthetic"},
-			Spec: config.Spec{
-				Type: config.Type{
-					Group:   "components.platform.opendatahub.io",
-					Version: "v1alpha1",
-					Kind:    "SyntheticModule",
-				},
-				Manifests: config.Manifests{
-					Format: config.FormatHelm,
-					Helm:   &config.HelmManifests{Path: "./manifests/chart"},
-				},
-				Controller: config.Controller{
-					Deployment: config.Deployment{
-						Name: "synthetic-controller",
-						Container: &config.ContainerDefinition{
-							Name:  new(config.DefaultMainContainerName),
-							Image: "quay.io/example/controller:v1",
-						},
+// helmDefinition is a fully normalized Helm module definition.
+func helmDefinition() config.PlatformModuleDefinition {
+	return config.PlatformModuleDefinition{
+		APIVersion: config.APIVersion,
+		Kind:       config.Kind,
+		Metadata:   config.Metadata{Name: "synthetic"},
+		Spec: config.Spec{
+			Type: config.Type{
+				Group:   "components.platform.opendatahub.io",
+				Version: "v1alpha1",
+				Kind:    "SyntheticModule",
+			},
+			Manifests: config.Manifests{
+				Format: config.FormatHelm,
+				Helm:   &config.HelmManifests{Path: "./manifests/chart"},
+			},
+			Controller: config.Controller{
+				Deployment: config.Deployment{
+					Name: "synthetic-controller",
+					Container: &config.ContainerDefinition{
+						Name:  new(config.DefaultMainContainerName),
+						Image: "quay.io/example/controller:v1",
 					},
 				},
 			},
 		},
-		DefinitionFile: "/modules/synthetic/definition.yaml",
-		RendererEntry:  "/modules/synthetic/manifests/chart",
 	}
 }
 
-// kustomizeDocument is a fully normalized Kustomize module document
-// whose renderer entry points at the in-memory tree built by the test.
-func kustomizeDocument(entry string) config.Document {
-	document := helmDocument()
-	document.Definition.Spec.Manifests = config.Manifests{
-		Format:    config.FormatKustomize,
-		Kustomize: &config.KustomizeManifests{Path: "./manifests/overlays/development"},
-	}
-	document.RendererEntry = entry
+// definitionFile locates helmDefinition on disk; its directory is the
+// root renderer paths resolve against.
+const definitionFile = "/modules/synthetic/definition.yaml"
 
-	return document
+// kustomizeDefinition is a fully normalized Kustomize module
+// definition whose entry path is the argument.
+func kustomizeDefinition(path string) config.PlatformModuleDefinition {
+	definition := helmDefinition()
+	definition.Spec.Manifests = config.Manifests{
+		Format:    config.FormatKustomize,
+		Kustomize: &config.KustomizeManifests{Path: path},
+	}
+
+	return definition
 }
 
 func TestNewRequestHelm(t *testing.T) {
@@ -95,8 +93,8 @@ func TestNewRequestHelm(t *testing.T) {
 
 	g := NewWithT(t)
 
-	document := helmDocument()
-	request := NewRequest(document)
+	definition := helmDefinition()
+	request := NewRequest(definition, definitionFile)
 
 	// The chart source is the contained local entry, and the release
 	// name is the module name. No values are attached: replacement
@@ -124,10 +122,10 @@ func TestNewRequestHelm(t *testing.T) {
 	g.Expect(instance.GetGeneration()).To(Equal(int64(0)))
 	g.Expect(instance.GetNamespace()).To(BeEmpty())
 
-	// The source document is not aliased or mutated.
-	g.Expect(document.Definition.Spec.Controller.Deployment.Container.Name).NotTo(BeNil())
+	// The source definition is not aliased or mutated.
+	g.Expect(definition.Spec.Controller.Deployment.Container.Name).NotTo(BeNil())
 	instance.SetName("mutated")
-	g.Expect(document.Definition.Metadata.Name).To(Equal("synthetic"))
+	g.Expect(definition.Metadata.Name).To(Equal("synthetic"))
 }
 
 func TestNewRequestKustomize(t *testing.T) {
@@ -135,11 +133,28 @@ func TestNewRequestKustomize(t *testing.T) {
 
 	g := NewWithT(t)
 
-	request := NewRequest(kustomizeDocument("/modules/synthetic/manifests/overlays/development"))
+	request := NewRequest(kustomizeDefinition("./manifests/overlays/development"), definitionFile)
 
+	// The authored relative path resolves against the definition
+	// file's directory.
 	g.Expect(request.Manifests).To(HaveLen(1))
 	g.Expect(request.Manifests[0].Path).To(Equal("/modules/synthetic/manifests/overlays/development"))
 	g.Expect(request.HelmCharts).To(BeEmpty())
+}
+
+func TestNewRequestHonorsAbsoluteEntryPath(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	// An absolute path is used exactly as configured; it is not
+	// joined onto the definition file's directory.
+	definition := helmDefinition()
+	definition.Spec.Manifests.Helm.Path = "/elsewhere/chart"
+
+	request := NewRequest(definition, definitionFile)
+
+	g.Expect(request.HelmCharts[0].Chart).To(Equal("/elsewhere/chart"))
 }
 
 func TestRequestsAreIndependent(t *testing.T) {
@@ -147,10 +162,10 @@ func TestRequestsAreIndependent(t *testing.T) {
 
 	g := NewWithT(t)
 
-	document := helmDocument()
+	definition := helmDefinition()
 
-	first := NewRequest(document)
-	second := NewRequest(document)
+	first := NewRequest(definition, definitionFile)
+	second := NewRequest(definition, definitionFile)
 
 	first.Instance.SetName("mutated")
 
@@ -169,7 +184,7 @@ func TestModuleInstanceConditionsAreCopied(t *testing.T) {
 
 	g := NewWithT(t)
 
-	instance := NewInstance(helmDocument().Definition)
+	instance := NewInstance(helmDefinition())
 
 	conditions := []api.Condition{{Type: "Ready", Status: "True"}}
 	instance.SetConditions(conditions)
@@ -186,7 +201,7 @@ func TestModuleInstanceDeepCopyDoesNotAlias(t *testing.T) {
 
 	g := NewWithT(t)
 
-	instance := NewInstance(helmDocument().Definition)
+	instance := NewInstance(helmDefinition())
 	instance.SetLabels(map[string]string{"app": "synthetic"})
 	instance.SetAnnotations(map[string]string{"note": "original"})
 	instance.SetConditions([]api.Condition{{Type: "Ready", Status: "True"}})
@@ -221,7 +236,7 @@ func TestFrameworkKustomizeActionRunsCacheDisabled(t *testing.T) {
 	// A real in-memory Kustomize tree rendered through the actual
 	// pinned framework action, with caching disabled.
 	fs := filesys.MakeFsInMemory()
-	entry := path.Join("module", "manifests", "overlays", "development")
+	entry := path.Join("/", "module", "manifests", "overlays", "development")
 	_ = fs.MkdirAll(entry)
 	_ = fs.WriteFile(path.Join(entry, "kustomization.yaml"), []byte(kustomizationYAML))
 	_ = fs.WriteFile(path.Join(entry, "configmap.yaml"), []byte(configMapYAML))
@@ -232,7 +247,7 @@ func TestFrameworkKustomizeActionRunsCacheDisabled(t *testing.T) {
 		kustomize.WithManifestsOptions(mk.WithEngineFS(fs)),
 	)
 
-	request := NewRequest(kustomizeDocument(entry))
+	request := NewRequest(kustomizeDefinition(entry), definitionFile)
 
 	// First run renders: the cacher reads the instance kind for
 	// metrics even with caching disabled, so the authored module type
@@ -243,7 +258,7 @@ func TestFrameworkKustomizeActionRunsCacheDisabled(t *testing.T) {
 
 	// Second run re-renders instead of serving a cached result, so no
 	// cluster identity (UID, generation) is ever required.
-	request2 := NewRequest(kustomizeDocument(entry))
+	request2 := NewRequest(kustomizeDefinition(entry), definitionFile)
 	g.Expect(action(t.Context(), request2)).To(Succeed())
 	g.Expect(request2.Resources).To(HaveLen(2))
 	g.Expect(request2.Generated).To(BeTrue())
@@ -255,7 +270,7 @@ func TestFrameworkKustomizeActionSkipDeploy(t *testing.T) {
 
 	g := NewWithT(t)
 
-	request := NewRequest(kustomizeDocument("unused"))
+	request := NewRequest(kustomizeDefinition("unused"), definitionFile)
 	request.SkipDeploy = true
 
 	action := kustomize.NewAction(kustomize.WithCache(false))

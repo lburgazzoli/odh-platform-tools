@@ -34,6 +34,12 @@ func NewDefinitionError(err error) error {
 	return fmt.Errorf("%w: %w", ErrInvalidDefinition, err)
 }
 
+// NewDefinitionErrorf is NewDefinitionError with fmt.Errorf-style
+// formatting.
+func NewDefinitionErrorf(format string, args ...any) error {
+	return NewDefinitionError(fmt.Errorf(format, args...))
+}
+
 // UnmarshalJSONFrom decodes a container definition while distinguishing
 // an omitted name from an explicit null or empty one: an omitted name
 // leaves Name nil so placement defaulting applies, while null decodes

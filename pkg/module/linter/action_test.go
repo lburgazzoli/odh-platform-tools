@@ -14,20 +14,21 @@ import (
 
 // actionCalls records the service invocations of one action run.
 type actionCalls struct {
-	sequence  []string
-	contexts  []context.Context
-	paths     []string
-	documents []config.Document
+	sequence    []string
+	contexts    []context.Context
+	paths       []string
+	definitions []config.PlatformModuleDefinition
 }
 
-// loader returns a fake definition loader returning document and err.
-func (r *actionCalls) loader(document config.Document, err error) DefinitionLoad {
-	return func(ctx context.Context, path string) (config.Document, error) {
+// loader returns a fake definition loader returning definition and
+// err.
+func (r *actionCalls) loader(definition config.PlatformModuleDefinition, err error) DefinitionLoad {
+	return func(ctx context.Context, path string) (config.PlatformModuleDefinition, error) {
 		r.sequence = append(r.sequence, "load")
 		r.contexts = append(r.contexts, ctx)
 		r.paths = append(r.paths, path)
 
-		return document, err
+		return definition, err
 	}
 }
 
@@ -38,37 +39,39 @@ func (r *actionCalls) renderer(
 	resources []unstructured.Unstructured,
 	err error,
 ) ManifestRender {
-	return func(ctx context.Context, document config.Document) ([]unstructured.Unstructured, error) {
+	return func(ctx context.Context, definition config.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error) {
 		r.sequence = append(r.sequence, "render:"+backend)
 		r.contexts = append(r.contexts, ctx)
-		r.documents = append(r.documents, document)
+		r.definitions = append(r.definitions, definition)
+		r.paths = append(r.paths, definitionFile)
 
 		return resources, err
 	}
 }
 
-// helmDocument returns a loaded document selecting the Helm backend.
-func helmDocument() config.Document {
+// helmDefinition returns a loaded definition selecting the Helm
+// backend.
+func helmDefinition() config.PlatformModuleDefinition {
 	definition := testDefinition()
 	definition.Spec.Manifests.Format = config.FormatHelm
 
-	return config.Document{Definition: definition}
+	return definition
 }
 
-// kustomizeDocument returns a loaded document selecting the
+// kustomizeDefinition returns a loaded definition selecting the
 // Kustomize backend.
-func kustomizeDocument() config.Document {
+func kustomizeDefinition() config.PlatformModuleDefinition {
 	definition := testDefinition()
 	definition.Spec.Manifests.Format = config.FormatKustomize
 
-	return config.Document{Definition: definition}
+	return definition
 }
 
 func TestActionRunValidatesOptions(t *testing.T) {
 	g := NewWithT(t)
 
 	calls := &actionCalls{}
-	action := NewAction(calls.loader(helmDocument(), nil), calls.renderer("helm", nil, nil),
+	action := NewAction(calls.loader(helmDefinition(), nil), calls.renderer("helm", nil, nil),
 		calls.renderer("kustomize", nil, nil))
 
 	result, err := action.Run(t.Context(), Options{})
@@ -86,7 +89,7 @@ func TestActionRunCancellationPrecedesInvalidOptions(t *testing.T) {
 	cancel()
 
 	calls := &actionCalls{}
-	action := NewAction(calls.loader(helmDocument(), nil), calls.renderer("helm", nil, nil),
+	action := NewAction(calls.loader(helmDefinition(), nil), calls.renderer("helm", nil, nil),
 		calls.renderer("kustomize", nil, nil))
 
 	_, err := action.Run(ctx, Options{})
@@ -100,7 +103,7 @@ func TestActionRunStopsOnLoadError(t *testing.T) {
 	loadFailure := errors.New("load failure")
 
 	calls := &actionCalls{}
-	action := NewAction(calls.loader(config.Document{}, loadFailure),
+	action := NewAction(calls.loader(config.PlatformModuleDefinition{}, loadFailure),
 		calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil))
 
 	result, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
@@ -116,7 +119,7 @@ func TestActionRunStopsOnRenderError(t *testing.T) {
 	renderFailure := errors.New("render failure")
 
 	calls := &actionCalls{}
-	action := NewAction(calls.loader(helmDocument(), nil),
+	action := NewAction(calls.loader(helmDefinition(), nil),
 		calls.renderer("helm", nil, renderFailure), calls.renderer("kustomize", nil, nil))
 
 	result, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
@@ -134,7 +137,7 @@ func TestActionRunSelectsBackendFromFormat(t *testing.T) {
 		g := NewWithT(t)
 
 		calls := &actionCalls{}
-		action := NewAction(calls.loader(helmDocument(), nil),
+		action := NewAction(calls.loader(helmDefinition(), nil),
 			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil))
 
 		_, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
@@ -147,7 +150,7 @@ func TestActionRunSelectsBackendFromFormat(t *testing.T) {
 		g := NewWithT(t)
 
 		calls := &actionCalls{}
-		action := NewAction(calls.loader(kustomizeDocument(), nil),
+		action := NewAction(calls.loader(kustomizeDefinition(), nil),
 			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil))
 
 		_, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
@@ -163,7 +166,7 @@ func TestActionRunSelectsBackendFromFormat(t *testing.T) {
 		definition.Spec.Manifests.Format = config.Format("bogus")
 
 		calls := &actionCalls{}
-		action := NewAction(calls.loader(config.Document{Definition: definition}, nil),
+		action := NewAction(calls.loader(definition, nil),
 			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil))
 
 		result, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
@@ -179,7 +182,7 @@ func TestActionRunPropagatesContextAndInputs(t *testing.T) {
 	g := NewWithT(t)
 
 	calls := &actionCalls{}
-	action := NewAction(calls.loader(helmDocument(), nil),
+	action := NewAction(calls.loader(helmDefinition(), nil),
 		calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil))
 
 	ctx := t.Context()
@@ -190,18 +193,20 @@ func TestActionRunPropagatesContextAndInputs(t *testing.T) {
 	g.Expect(calls.contexts).To(HaveLen(2))
 	g.Expect(calls.contexts[0]).To(Equal(ctx))
 	g.Expect(calls.contexts[1]).To(Equal(ctx))
-	g.Expect(calls.paths).To(Equal([]string{"some/definition.yaml"}))
+	g.Expect(calls.paths).To(Equal([]string{"some/definition.yaml", "some/definition.yaml"}))
 
-	// The renderer receives the loaded document unchanged.
-	g.Expect(calls.documents).To(HaveLen(1))
-	g.Expect(calls.documents[0].Definition).To(Equal(helmDocument().Definition))
+	// The renderer receives the loaded definition unchanged, and the
+	// definition file exactly as the caller passed it.
+	g.Expect(calls.definitions).To(HaveLen(1))
+	g.Expect(calls.definitions[0]).To(Equal(helmDefinition()))
+	g.Expect(calls.paths).To(Equal([]string{"some/definition.yaml", "some/definition.yaml"}))
 }
 
 func TestActionRunReturnsFindingsAsResults(t *testing.T) {
 	g := NewWithT(t)
 
 	calls := &actionCalls{}
-	action := NewAction(calls.loader(helmDocument(), nil),
+	action := NewAction(calls.loader(helmDefinition(), nil),
 		calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil))
 
 	result, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
@@ -226,7 +231,7 @@ func TestActionRunWarningOnlyResultSucceeds(t *testing.T) {
 	}...)
 
 	calls := &actionCalls{}
-	action := NewAction(calls.loader(helmDocument(), nil),
+	action := NewAction(calls.loader(helmDefinition(), nil),
 		calls.renderer("helm", resources, nil), calls.renderer("kustomize", nil, nil))
 
 	result, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
@@ -246,7 +251,7 @@ func TestActionRunForwardsErrorCategories(t *testing.T) {
 		definitionFailure := config.NewDefinitionError(errors.New("bad spec"))
 
 		calls := &actionCalls{}
-		action := NewAction(calls.loader(config.Document{}, definitionFailure),
+		action := NewAction(calls.loader(config.PlatformModuleDefinition{}, definitionFailure),
 			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil))
 
 		_, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
@@ -258,7 +263,7 @@ func TestActionRunForwardsErrorCategories(t *testing.T) {
 		g := NewWithT(t)
 
 		calls := &actionCalls{}
-		action := NewAction(calls.loader(config.Document{}, context.Canceled),
+		action := NewAction(calls.loader(config.PlatformModuleDefinition{}, context.Canceled),
 			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil))
 
 		_, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})

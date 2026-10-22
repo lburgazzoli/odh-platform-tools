@@ -9,14 +9,14 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
 )
 
-// DefinitionLoad loads and validates one module definition file into
-// its document. The strict loader is the concrete implementation.
-type DefinitionLoad func(ctx context.Context, path string) (config.Document, error)
+// DefinitionLoad loads and validates one module definition file. The
+// strict loader is the concrete implementation.
+type DefinitionLoad func(ctx context.Context, path string) (config.PlatformModuleDefinition, error)
 
 // ManifestRender renders the manifest backend selected by a loaded
-// document and returns the rendered objects. The Helm and Kustomize
+// definition and returns the rendered objects. The Helm and Kustomize
 // backend wrappers are the concrete implementations.
-type ManifestRender func(ctx context.Context, document config.Document) ([]unstructured.Unstructured, error)
+type ManifestRender func(ctx context.Context, definition config.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error)
 
 // Action composes loading, backend rendering, and pure validation
 // into one lint invocation. It is Cobra-free, performs no environment
@@ -65,37 +65,37 @@ func (a *Action) Run(ctx context.Context, options Options) (Result, error) {
 		return Result{}, err
 	}
 
-	document, err := a.load(ctx, options.DefinitionFile)
+	definition, err := a.load(ctx, options.DefinitionFile)
 	if err != nil {
 		return Result{}, err
 	}
 
-	render, err := a.backendFor(document)
+	render, err := a.backendFor(definition)
 	if err != nil {
 		return Result{}, err
 	}
 
-	resources, err := render(ctx, document)
+	resources, err := render(ctx, definition, options.DefinitionFile)
 	if err != nil {
 		return Result{}, err
 	}
 
-	return Validate(ctx, document.Definition, resources)
+	return Validate(ctx, definition, resources)
 }
 
-// backendFor selects the rendering service for the loaded
-// definition's manifest format. The strict loader already restricts
-// the format, so an unexpected value is a defensive internal error,
-// not a user category.
-func (a *Action) backendFor(document config.Document) (ManifestRender, error) {
-	switch document.Definition.Spec.Manifests.Format {
+// backendFor selects the rendering service for the loaded definition's
+// manifest format. The strict loader already restricts the format, so
+// an unexpected value is a defensive internal error, not a user
+// category.
+func (a *Action) backendFor(definition config.PlatformModuleDefinition) (ManifestRender, error) {
+	switch definition.Spec.Manifests.Format {
 	case config.FormatHelm:
 		return a.renderHelm, nil
 	case config.FormatKustomize:
 		return a.renderKustomize, nil
 	default:
 		return nil, fmt.Errorf("unsupported manifest format %q for module %s",
-			document.Definition.Spec.Manifests.Format,
-			document.Definition.Metadata.Name)
+			definition.Spec.Manifests.Format,
+			definition.Metadata.Name)
 	}
 }

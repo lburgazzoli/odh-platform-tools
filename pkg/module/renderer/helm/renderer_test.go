@@ -121,15 +121,15 @@ func writeModuleFile(t *testing.T, root, rel, content string) {
 }
 
 // loadDefinition loads the module definition through the real loader.
-func loadDefinition(t *testing.T, root string) config.Document {
+func loadDefinition(t *testing.T, root string) config.PlatformModuleDefinition {
 	t.Helper()
 
 	g := NewWithT(t)
 
-	document, err := loader.New().Load(t.Context(), filepath.Join(root, "definition.yaml"))
+	definition, err := loader.LoadFromPath(t.Context(), filepath.Join(root, "definition.yaml"))
 	g.Expect(err).NotTo(HaveOccurred())
 
-	return document
+	return definition
 }
 
 // buildArchive builds a gzipped tar chart archive.
@@ -206,7 +206,7 @@ func TestRenderHelmChart(t *testing.T) {
 	root := t.TempDir()
 	writeChartFixture(t, root)
 
-	resources, err := Render(t.Context(), loadDefinition(t, root))
+	resources, err := Render(t.Context(), loadDefinition(t, root), filepath.Join(root, "definition.yaml"))
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(resources).NotTo(BeEmpty())
 
@@ -233,7 +233,7 @@ func TestRenderHelmRejectsInvalidValuesAgainstSchema(t *testing.T) {
 	// values.schema.json, validated offline.
 	writeModuleFile(t, root, "manifests/chart/values.yaml", "replicas: 0\n")
 
-	resources, err := Render(t.Context(), loadDefinition(t, root))
+	resources, err := Render(t.Context(), loadDefinition(t, root), filepath.Join(root, "definition.yaml"))
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(resources).To(BeNil())
 	g.Expect(err.Error()).To(ContainSubstring("helm render for module synthetic"))
@@ -251,10 +251,10 @@ func TestRenderHelmIgnoresControllerDescriptor(t *testing.T) {
 	withoutDescriptor := t.TempDir()
 	writeChartFixture(t, withoutDescriptor)
 
-	first, err := Render(t.Context(), loadDefinition(t, withDescriptor))
+	first, err := Render(t.Context(), loadDefinition(t, withDescriptor), filepath.Join(withDescriptor, "definition.yaml"))
 	g.Expect(err).NotTo(HaveOccurred())
 
-	second, err := Render(t.Context(), loadDefinition(t, withoutDescriptor))
+	second, err := Render(t.Context(), loadDefinition(t, withoutDescriptor), filepath.Join(withoutDescriptor, "definition.yaml"))
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Descriptor images and env entries never reach rendering: no
@@ -274,13 +274,13 @@ func TestRenderHelmIsStatelessAcrossCalls(t *testing.T) {
 	writeChartFixture(t, second)
 	writeModuleFile(t, second, "definition.yaml", strings.Replace(definitionYAML, "name: synthetic", "name: other", 1))
 
-	firstOutput, err := Render(t.Context(), loadDefinition(t, first))
+	firstOutput, err := Render(t.Context(), loadDefinition(t, first), filepath.Join(first, "definition.yaml"))
 	g.Expect(err).NotTo(HaveOccurred())
 
-	_, err = Render(t.Context(), loadDefinition(t, second))
+	_, err = Render(t.Context(), loadDefinition(t, second), filepath.Join(second, "definition.yaml"))
 	g.Expect(err).NotTo(HaveOccurred())
 
-	repeated, err := Render(t.Context(), loadDefinition(t, first))
+	repeated, err := Render(t.Context(), loadDefinition(t, first), filepath.Join(first, "definition.yaml"))
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Repeated renders of the same module are identical: no state
@@ -299,7 +299,7 @@ func TestRenderHelmPropagatesCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	resources, err := Render(ctx, loadDefinition(t, root))
+	resources, err := Render(ctx, loadDefinition(t, root), filepath.Join(root, "definition.yaml"))
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(resources).To(BeNil())
 	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())

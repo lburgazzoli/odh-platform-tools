@@ -14,8 +14,9 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
 
-// Render renders the module described by document through the actual
-// framework Helm action and returns the rendered objects.
+// Render renders the module described by definition, whose file was
+// loaded from definitionFile, through the actual framework Helm
+// action and returns the rendered objects.
 //
 // The action renders the configured chart directory directly, with
 // caching disabled and no client or release state attached. Chart
@@ -30,16 +31,16 @@ import (
 // The returned list contains every object the framework action
 // rendered for the chart; callers filtering it must not assume they
 // hold the raw chart documents.
-func Render(ctx context.Context, document config.Document) ([]unstructured.Unstructured, error) {
+func Render(ctx context.Context, definition config.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	request := renderer.NewRequest(document)
+	request := renderer.NewRequest(definition, definitionFile)
 	action := fwhelm.NewAction(fwhelm.WithCache(false))
 
 	if err := action(ctx, request); err != nil {
-		return nil, fmt.Errorf("helm render for module %s: %w", document.Definition.Metadata.Name, err)
+		return nil, fmt.Errorf("helm render for module %s: %w", definition.Metadata.Name, err)
 	}
 
 	return request.Resources, nil
