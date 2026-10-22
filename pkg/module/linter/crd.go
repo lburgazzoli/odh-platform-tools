@@ -225,6 +225,8 @@ func validateCRDSchema(
 				strings.Join(messages, "; ")))
 	}
 
+	validateCELSyntax(c, object, schema)
+
 	validateStatusSchemaShape(c, object, schema)
 }
 

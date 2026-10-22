@@ -74,8 +74,14 @@ func validateObjectContract(c *collector, module moduleContext, resources []unst
 
 		key := gvk.String() + "/" + effectiveNamespace(object.GetNamespace()) + "/" + name
 		if _, duplicate := seen[key]; duplicate {
-			c.add(objectDiagnostic(CheckDuplicateObject, PhaseResources, object,
-				"metadata.name", "duplicate object identity in the rendered set"))
+			// The canonical effective namespace makes the finding
+			// identical regardless of which spelling (omitted or
+			// explicit default) appears second in the input.
+			diagnostic := objectDiagnostic(CheckDuplicateObject, PhaseResources, object,
+				"metadata.name", "duplicate object identity in the rendered set")
+			diagnostic.Namespace = effectiveNamespace(object.GetNamespace())
+
+			c.add(diagnostic)
 			continue
 		}
 
@@ -240,8 +246,12 @@ func validateDeploymentSelector(c *collector, deployment *unstructured.Unstructu
 		deployment.Object, "spec", "template", "metadata", "labels")
 
 	mismatched := make([]string, 0, len(selector))
-	for key, value := range selector {
-		if labels[key] != value {
+	for key, want := range selector {
+		// Kubernetes equality selectors require the key to exist:
+		// a template without the key never matches, even when the
+		// selector value is the empty string.
+		value, found := labels[key]
+		if !found || value != want {
 			mismatched = append(mismatched, key)
 		}
 	}

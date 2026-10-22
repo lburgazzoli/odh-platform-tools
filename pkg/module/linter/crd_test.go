@@ -446,3 +446,130 @@ func TestModuleCRDStatusPreserveUnknownStillDemonstrable(t *testing.T) {
 
 	g.Expect(result.Diagnostics).To(BeEmpty())
 }
+
+func TestModuleCRDRejectsUnparseableCELRules(t *testing.T) {
+	t.Parallel()
+
+	t.Run("incomplete root rule", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		result := validate(t, []unstructured.Unstructured{
+			controllerDeployment(testDeployment, testContainer),
+			serviceAccountObject(testNamespace),
+			moduleCRDObject(t, crdWithRootRule("self.metadata.name ==")),
+		})
+
+		g.Expect(diagnosticIDs(result)).To(ConsistOf(
+			CheckModuleCRDSchemaStructural,
+			CheckSingletonEvidenceMissing,
+		))
+
+		finding := diagnosticsWithID(result, CheckModuleCRDSchemaStructural)[0]
+		g.Expect(finding.Field).To(Equal(
+			"schema.openAPIV3Schema.x-kubernetes-validations[0].rule"))
+		g.Expect(finding.Message).To(ContainSubstring("does not parse"))
+	})
+
+	t.Run("whitespace-camouflaged rule is not singleton evidence", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		result := validate(t, []unstructured.Unstructured{
+			controllerDeployment(testDeployment, testContainer),
+			serviceAccountObject(testNamespace),
+			moduleCRDObject(t, crdWithRootRule(
+				"s e l f.metadata.name == 'default-"+testModuleName+"'")),
+		})
+
+		g.Expect(diagnosticIDs(result)).To(ConsistOf(
+			CheckModuleCRDSchemaStructural,
+			CheckSingletonEvidenceMissing,
+		))
+	})
+
+	t.Run("nested property rule reports its path", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		result := validate(t, []unstructured.Unstructured{
+			controllerDeployment(testDeployment, testContainer),
+			serviceAccountObject(testNamespace),
+			moduleCRDObject(t, func(b *crdTestBuilder) {
+				status := statusSchema()
+				status.XValidations = []apiextensionsv1.ValidationRule{
+					{Rule: "self.count =="},
+				}
+
+				b.version().Schema.OpenAPIV3Schema = &apiextensionsv1.JSONSchemaProps{
+					Type: "object",
+					XValidations: []apiextensionsv1.ValidationRule{
+						{Rule: "self.metadata.name == 'default-" + testModuleName + "'"},
+					},
+					Properties: map[string]apiextensionsv1.JSONSchemaProps{
+						"status": status,
+					},
+				}
+			}),
+		})
+
+		findings := diagnosticsWithID(result, CheckModuleCRDSchemaStructural)
+		g.Expect(findings).To(HaveLen(1))
+		g.Expect(findings[0].Field).To(Equal(
+			"schema.openAPIV3Schema.properties.status.x-kubernetes-validations[0].rule"))
+	})
+
+	t.Run("invalid message expression", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		result := validate(t, []unstructured.Unstructured{
+			controllerDeployment(testDeployment, testContainer),
+			serviceAccountObject(testNamespace),
+			moduleCRDObject(t, func(b *crdTestBuilder) {
+				b.version().Schema.OpenAPIV3Schema.XValidations = []apiextensionsv1.ValidationRule{{
+					Rule:              "self.metadata.name == 'default-" + testModuleName + "'",
+					MessageExpression: "'unbalanced",
+				}}
+			}),
+		})
+
+		findings := diagnosticsWithID(result, CheckModuleCRDSchemaStructural)
+		g.Expect(findings).To(HaveLen(1))
+		g.Expect(findings[0].Field).To(Equal(
+			"schema.openAPIV3Schema.x-kubernetes-validations[0].messageExpression"))
+	})
+
+	t.Run("valid rules produce no findings", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		result := validate(t, []unstructured.Unstructured{
+			controllerDeployment(testDeployment, testContainer),
+			serviceAccountObject(testNamespace),
+			moduleCRDObject(t, func(b *crdTestBuilder) {
+				status := statusSchema()
+				status.XValidations = []apiextensionsv1.ValidationRule{
+					{Rule: "has(self.conditions)"},
+				}
+
+				b.version().Schema.OpenAPIV3Schema = &apiextensionsv1.JSONSchemaProps{
+					Type: "object",
+					XValidations: []apiextensionsv1.ValidationRule{
+						{Rule: "self.metadata.name == 'default-" + testModuleName + "'"},
+					},
+					Properties: map[string]apiextensionsv1.JSONSchemaProps{
+						"status": status,
+					},
+				}
+			}),
+		})
+
+		g.Expect(result.Diagnostics).To(BeEmpty())
+	})
+}

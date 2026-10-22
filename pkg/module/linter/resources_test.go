@@ -662,3 +662,51 @@ func TestRBACSubjectMatrix(t *testing.T) {
 		g.Expect(diagnosticIDs(result)).NotTo(ContainElement(CheckServiceAccountUnresolved))
 	})
 }
+
+func TestDeploymentSelectorRequiresKeyPresence(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	// An empty-valued selector key never matches a template that
+	// omits the label, even though the missing key reads as "".
+	deployment := controllerDeployment(testDeployment, testContainer)
+
+	spec := deployment.Object["spec"].(map[string]any)
+	spec["selector"] = map[string]any{"matchLabels": map[string]any{"app": ""}}
+
+	template := spec["template"].(map[string]any)
+	template["metadata"] = map[string]any{"labels": map[string]any{}}
+
+	result := validate(t, []unstructured.Unstructured{deployment})
+
+	findings := diagnosticsWithID(result, CheckDeploymentSelectorMismatch)
+	g.Expect(findings).To(HaveLen(1))
+	g.Expect(findings[0].Message).To(ContainSubstring("app"))
+}
+
+func TestDuplicateObjectFindingIsInputOrderIndependent(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	// The same identity spelled with an omitted and an explicit
+	// default namespace is a duplicate in either input order, and the
+	// finding is byte-identical in both.
+	base := func() []unstructured.Unstructured {
+		return []unstructured.Unstructured{
+			controllerDeployment(testDeployment, testContainer),
+			moduleCRDObject(t, nil),
+		}
+	}
+
+	omitted := object("v1", "ServiceAccount", "", "shared-sa")
+	explicit := object("v1", "ServiceAccount", "default", "shared-sa")
+
+	forward := validate(t, append(base(), omitted, explicit))
+	reverse := validate(t, append(base(), explicit, omitted))
+
+	g.Expect(forward.Diagnostics).To(Equal(reverse.Diagnostics))
+	g.Expect(diagnosticIDs(forward)).To(ConsistOf(CheckDuplicateObject))
+	g.Expect(forward.Diagnostics[0].Namespace).To(Equal("default"))
+}

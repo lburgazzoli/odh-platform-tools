@@ -131,8 +131,14 @@ func fixedNameEvidence(schema *apiextensionsv1.JSONSchemaProps) (string, bool) {
 // fixedNameRule recognizes one x-kubernetes-validations rule string
 // as a fixed-name equality at the given anchor. Whitespace and
 // equality operand order do not matter; the literal must be a valid
-// nonempty object name.
+// nonempty object name. A rule the CEL parser rejects is never
+// evidence: it cannot be admitted with the CRD, so it cannot enforce
+// anything.
 func fixedNameRule(rule string, position celSelfPosition) (string, bool) {
+	if parseCEL(rule) != nil {
+		return "", false
+	}
+
 	normalized := strings.Join(strings.Fields(rule), "")
 
 	for _, pattern := range celFixedNamePatterns[position] {

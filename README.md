@@ -236,8 +236,11 @@ error `SINGLETON_EVIDENCE_MISSING`.
 - Empty object namespaces are treated as `default` for local reference
   comparisons only. No cluster state is read or written.
 - Webhook and CEL presence is static evidence with explicit proof
-  limits, not semantic certification; CEL expressions are parsed, never
-  executed.
+  limits, not semantic certification. CEL rules and message
+  expressions are syntax-checked with the API machinery's expression
+  engine (parse only — no schema type-checking) and never executed;
+  a rule that fails to parse is an error and is never counted as
+  singleton evidence.
 - Missing bundle references are findings, not assumed external
   prerequisites.
 
