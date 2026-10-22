@@ -529,52 +529,79 @@ func TestContainerDefinitionJSONDecoding(t *testing.T) {
 	}
 }
 
-// The instance wire members shared by the JSON decoding tests.
+// Instance wire documents exercising the name presence rules through
+// the JSON decoder.
 const (
-	instanceTypeJSON = `"type": {
+	instanceJSONOmittedName = `{
+	"type": {
 		"group": "components.platform.opendatahub.io",
 		"version": "v1alpha1",
 		"kind": "SyntheticModule"
-	}`
-
-	instanceJSONOmittedName = `{
-	` + instanceTypeJSON + `
+	}
 }`
 
 	instanceJSONNullName = `{
 	"name": null,
-	` + instanceTypeJSON + `
+	"type": {
+		"group": "components.platform.opendatahub.io",
+		"version": "v1alpha1",
+		"kind": "SyntheticModule"
+	}
 }`
 
 	instanceJSONEmptyName = `{
 	"name": "",
-	` + instanceTypeJSON + `
+	"type": {
+		"group": "components.platform.opendatahub.io",
+		"version": "v1alpha1",
+		"kind": "SyntheticModule"
+	}
 }`
 
 	instanceJSONValidName = `{
 	"name": "trainer",
-	` + instanceTypeJSON + `
+	"type": {
+		"group": "components.platform.opendatahub.io",
+		"version": "v1alpha1",
+		"kind": "SyntheticModule"
+	}
 }`
 
 	instanceJSONNonStringName = `{
 	"name": 42,
-	` + instanceTypeJSON + `
+	"type": {
+		"group": "components.platform.opendatahub.io",
+		"version": "v1alpha1",
+		"kind": "SyntheticModule"
+	}
 }`
 
 	instanceJSONUnknownMember = `{
 	"namespace": "opendatahub",
-	` + instanceTypeJSON + `
+	"type": {
+		"group": "components.platform.opendatahub.io",
+		"version": "v1alpha1",
+		"kind": "SyntheticModule"
+	}
 }`
 
 	instanceJSONCaseMismatch = `{
 	"Name": "trainer",
-	` + instanceTypeJSON + `
+	"type": {
+		"group": "components.platform.opendatahub.io",
+		"version": "v1alpha1",
+		"kind": "SyntheticModule"
+	}
 }`
 
 	instanceJSONDuplicateName = `{
 	"name": "trainer",
 	"name": "other",
-	` + instanceTypeJSON + `
+	"type": {
+		"group": "components.platform.opendatahub.io",
+		"version": "v1alpha1",
+		"kind": "SyntheticModule"
+	}
 }`
 )
 
@@ -749,16 +776,8 @@ const (
 }`
 )
 
-func TestDefinitionJSONRejectsMissingInstance(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		json string
-	}{
-		{name: "null instance", json: definitionJSONNullInstance},
-		{name: "null type", json: definitionJSONNullType},
-		{name: "omitted instance", json: `{
+// definitionJSONOmittedInstance drops the instance block entirely.
+const definitionJSONOmittedInstance = `{
 	"apiVersion": "config.opendatahub.io/v1",
 	"kind": "PlatformModuleDefinition",
 	"metadata": {"name": "synthetic"},
@@ -774,7 +793,18 @@ func TestDefinitionJSONRejectsMissingInstance(t *testing.T) {
 			}
 		}
 	}
-}`},
+}`
+
+func TestDefinitionJSONRejectsMissingInstance(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		json string
+	}{
+		{name: "null instance", json: definitionJSONNullInstance},
+		{name: "null type", json: definitionJSONNullType},
+		{name: "omitted instance", json: definitionJSONOmittedInstance},
 	}
 
 	for _, test := range tests {
@@ -838,10 +868,9 @@ func TestDefinitionJSONRoundTrip(t *testing.T) {
 	// top-level spec.type location.
 	g.Expect(string(encoded)).To(SatisfyAll(
 		jq.Match(`.spec.instance.name == "synthetic"`),
-		jq.Match(`.spec.instance.type == {`+
-			`"group":"components.platform.opendatahub.io",`+
-			`"version":"v1alpha1",`+
-			`"kind":"SyntheticModule"}`),
+		jq.Match(`.spec.instance.type.group == "components.platform.opendatahub.io"`),
+		jq.Match(`.spec.instance.type.version == "v1alpha1"`),
+		jq.Match(`.spec.instance.type.kind == "SyntheticModule"`),
 		jq.Match(`.spec | has("type") | not`),
 	))
 
