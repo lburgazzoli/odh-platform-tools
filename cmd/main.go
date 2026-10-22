@@ -9,6 +9,9 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/spf13/cobra"
+
+	climodule "github.com/lburgazzoli/odh-platform-tools/cmd/module"
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module"
 )
@@ -40,4 +43,40 @@ func run() int {
 	}
 
 	return lint.ExitSuccess
+}
+
+// NewRootCommand returns the binary root command with exactly one
+// registered command tree, `module lint`. Deferred commands such as
+// `module run` are not stubbed: Cobra rejects them as unknown
+// commands, and legacy descriptor override flags are rejected as
+// unknown flags.
+func NewRootCommand(run lint.Run) *cobra.Command {
+	root := &cobra.Command{
+		Use:   "odh-platform-tools",
+		Short: "Offline platform module tooling",
+		// Reports and failure lines are printed by the lint command
+		// itself; usage and flag errors are printed by main.
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+
+	root.AddCommand(climodule.NewModuleCommand(run))
+
+	return root
+}
+
+// ExitCode maps one command execution error to its process exit
+// status: classified lint outcomes keep their own code, and every
+// other command or flag failure is a usage failure.
+func ExitCode(err error) int {
+	if err == nil {
+		return lint.ExitSuccess
+	}
+
+	var exitErr *lint.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.Code
+	}
+
+	return lint.ExitUsage
 }

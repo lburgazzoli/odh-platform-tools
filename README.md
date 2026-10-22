@@ -188,6 +188,10 @@ execution error instead of reporting a finding.
              │  command tree wiring, exit-status mapping, signal context        │
              └───────────────────────────────┬───────────────────────────────────┘
                                              │
+             ┌──────────────────── cmd/module (command group) ───────────────────┐
+             │  `module` group: attaches the lint subcommand                     │
+             └───────────────────────────────┬───────────────────────────────────┘
+                                             │
              ┌─────────────────── cmd/module/lint (command) ───────────────────┐
              │  `module lint`: --config/--output flags → plain linter.Options,  │
              │  report formatting, exit-code classification                     │

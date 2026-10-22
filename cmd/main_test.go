@@ -48,24 +48,6 @@ func execute(
 	return stdout.String(), err
 }
 
-func TestRootCommandRejectsDeferredCommands(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	recorder := &recordingRun{}
-
-	stdout, err := execute(t.Context(), t, recorder.run,
-		"module", "run", "--config", "definition.yaml")
-
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(ExitCode(err)).To(Equal(lint.ExitUsage))
-	// The deferred command is rejected, never stubbed.
-	g.Expect(err.Error()).To(ContainSubstring("unknown"))
-	g.Expect(recorder.calls).To(Equal(0))
-	g.Expect(stdout).To(BeEmpty())
-}
-
 func TestRootCommandHelp(t *testing.T) {
 	t.Parallel()
 
@@ -99,6 +81,24 @@ func TestRootCommandHelp(t *testing.T) {
 		g.Expect(stdout).To(ContainSubstring("--output"))
 		g.Expect(recorder.calls).To(Equal(0))
 	})
+}
+
+func TestRootCommandRejectsUnknownCommands(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	recorder := &recordingRun{}
+
+	stdout, err := execute(t.Context(), t, recorder.run,
+		"frobnicate", "--config", "definition.yaml")
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(ExitCode(err)).To(Equal(lint.ExitUsage))
+	// The unknown command is rejected, never stubbed.
+	g.Expect(err.Error()).To(ContainSubstring("unknown"))
+	g.Expect(recorder.calls).To(Equal(0))
+	g.Expect(stdout).To(BeEmpty())
 }
 
 func TestExitCode(t *testing.T) {
