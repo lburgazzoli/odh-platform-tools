@@ -13,6 +13,9 @@ import (
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/crd"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/deployments"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/types"
 )
 
 // recordingRun is a fake action boundary recording every invocation.
@@ -103,19 +106,20 @@ func TestLintCommandClassification(t *testing.T) {
 	t.Parallel()
 
 	warningFinding := linter.Result{Diagnostics: []linter.Diagnostic{{
-		ID:       linter.CheckSingletonWebhookUnverified,
+		ID:       "EXAMPLE_WARNING",
 		Severity: linter.SeverityWarning,
-		Phase:    linter.PhaseSingleton,
-		Message:  "singleton enforcement is only evidenced by an unverified webhook",
+		Message:  "a claim that could not be verified",
 	}}}
 
 	errorFinding := linter.Result{Diagnostics: []linter.Diagnostic{{
-		ID:       linter.CheckDeploymentMissing,
+		ID:       deployments.Missing,
 		Severity: linter.SeverityError,
-		Phase:    linter.PhaseDeployment,
-		GVK:      schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
-		Name:     "synthetic-controller",
-		Message:  "controller deployment not found in rendered objects",
+		GVK: schema.GroupVersionKind{
+			Group:   "components.platform.opendatahub.io",
+			Version: "v1alpha1",
+			Kind:    "SyntheticModule",
+		},
+		Message: "module must bundle exactly one Deployment, found 0",
 	}}}
 
 	cases := []struct {
@@ -247,20 +251,24 @@ func TestLintCommandTextReportGolden(t *testing.T) {
 
 		recorder := &recordingRun{result: linter.Result{Diagnostics: []linter.Diagnostic{
 			{
-				ID:       linter.CheckSingletonEvidenceMissing,
+				ID:       crd.Missing,
 				Severity: linter.SeverityError,
-				Phase:    linter.PhaseSingleton,
-				Message:  "no fixed-name schema or webhook evidence found",
+				GVK: schema.GroupVersionKind{
+					Group:   "components.platform.opendatahub.io",
+					Version: "v1alpha1",
+					Kind:    "SyntheticModule",
+				},
+				Message: "no CustomResourceDefinition for " +
+					"components.platform.opendatahub.io, Kind=SyntheticModule in the rendered set",
 			},
 			{
-				ID:        linter.CheckServiceAccountUnresolved,
+				ID:        types.ResourceKindDisallowed,
 				Severity:  linter.SeverityWarning,
-				Phase:     linter.PhaseRBAC,
-				GVK:       schema.GroupVersionKind{Version: "v1", Kind: "RoleBinding"},
-				Namespace: "default",
-				Name:      "synthetic-binding",
-				Field:     "subjects[0]",
-				Message:   "service account default/synthetic-sa not found",
+				GVK:       schema.GroupVersionKind{Version: "v1", Kind: "Namespace"},
+				Namespace: "synthetic",
+				Name:      "odh-applications",
+				Field:     "metadata.name",
+				Message:   "resource kind is not allowed for module manifests",
 			},
 		}}}
 
@@ -271,8 +279,8 @@ func TestLintCommandTextReportGolden(t *testing.T) {
 		g.Expect(stderr).To(BeEmpty())
 
 		g.Expect(stdout).To(Equal(`module lint definition.yaml: findings
-error SINGLETON_EVIDENCE_MISSING: no fixed-name schema or webhook evidence found
-warning SERVICEACCOUNT_UNRESOLVED v1, Kind=RoleBinding/default/synthetic-binding/subjects[0]: service account default/synthetic-sa not found
+error MODULE_CRD_MISSING components.platform.opendatahub.io/v1alpha1, Kind=SyntheticModule: no CustomResourceDefinition for components.platform.opendatahub.io, Kind=SyntheticModule in the rendered set
+warning RESOURCE_KIND_DISALLOWED v1, Kind=Namespace/synthetic/odh-applications/metadata.name: resource kind is not allowed for module manifests
 `))
 	})
 
@@ -318,10 +326,9 @@ func TestLintCommandJSONReportGolden(t *testing.T) {
 		g := NewWithT(t)
 
 		recorder := &recordingRun{result: linter.Result{Diagnostics: []linter.Diagnostic{{
-			ID:       linter.CheckSingletonWebhookUnverified,
+			ID:       "EXAMPLE_WARNING",
 			Severity: linter.SeverityWarning,
-			Phase:    linter.PhaseSingleton,
-			Message:  "singleton enforcement is only evidenced by an unverified webhook",
+			Message:  "a claim that could not be verified",
 		}}}}
 
 		stdout, _, err := executeLint(t.Context(), t, recorder.run,
@@ -330,9 +337,8 @@ func TestLintCommandJSONReportGolden(t *testing.T) {
 
 		g.Expect(stdout).To(Equal(
 			`{"definition":"definition.yaml","status":"findings","hasErrors":false,"hasWarnings":true,` +
-				`"diagnostics":[{"id":"SINGLETON_WEBHOOK_UNVERIFIED","severity":"warning",` +
-				`"phase":"singleton",` +
-				`"message":"singleton enforcement is only evidenced by an unverified webhook"}]}` + "\n"))
+				`"diagnostics":[{"id":"EXAMPLE_WARNING","severity":"warning",` +
+				`"message":"a claim that could not be verified"}]}` + "\n"))
 	})
 
 	t.Run("failed", func(t *testing.T) {

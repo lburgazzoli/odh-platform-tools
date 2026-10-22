@@ -128,8 +128,7 @@ process signals are handled through the command context.
     {
       "id": "DEPLOYMENT_MISSING",
       "severity": "error",
-      "phase": "deployment",
-      "message": "controller deployment not found in rendered objects"
+      "message": "module must bundle exactly one Deployment, found 0"
     }
   ]
 }
@@ -141,43 +140,42 @@ when execution did not complete.
 
 ## What the linter checks
 
-All rules are fixed and upstream-based; there are no custom policies.
+The default check set mirrors the compliance checks the
+opendatahub-operator applies to its own module manifests
+(`manifests_compliance_test.go`). Each check lives in its own package
+under `pkg/module/linter/checks` and exposes a `Validate` function;
+the linter runs the composed set and reports the findings.
 
-**Packaging** (`resources` phase): every rendered object must be a
-supported kind at its pinned version and scope (`apps/v1 Deployment`,
-core `Service`/`ServiceAccount`/`ConfigMap`, `rbac.authorization.k8s.io/v1`
-Role/RoleBinding/ClusterRole/ClusterRoleBinding, `apiextensions.k8s.io/v1`
-CustomResourceDefinition, admissionregistration and cert-manager kinds,
-`networking.k8s.io/v1` NetworkPolicy). SecurityContextConstraints are
-allowed only for the `ray` module. List objects are unsupported, and
-duplicate objects are findings.
+**Allowed resource kinds** (`types`): every rendered object must be
+of an allowed kind — `apps/v1 Deployment`, core
+`Service`/`ServiceAccount`/`ConfigMap`, `rbac.authorization.k8s.io/v1`
+Role/RoleBinding/ClusterRole/ClusterRoleBinding,
+`apiextensions.k8s.io/v1` CustomResourceDefinition, the
+admissionregistration and cert-manager kinds, and
+`networking.k8s.io/v1` NetworkPolicy. An allowed kind is allowed for
+every module: there are no per-module exceptions, so anything else —
+including OpenShift SecurityContextConstraints — is the error
+`RESOURCE_KIND_DISALLOWED`.
 
-**Controller** (`deployment` phase): exactly one `apps/v1` Deployment
-with the declared name; the selected main (and init) container must
-exist exactly once per list; `matchLabels` must be covered by the pod
-template labels; a non-default `serviceAccountName` must resolve
-against the bundle.
+**Controller Deployment** (`deployments`): the bundle must contain
+exactly one Deployment (`DEPLOYMENT_MISSING` /
+`DEPLOYMENT_MULTIPLE`), and every container the definition selects —
+the main container, defaulting to `manager`, and any init container —
+must appear exactly once in its configured pod spec list
+(`CONTAINER_MISSING`, `CONTAINER_DUPLICATE`, and
+`CONTAINER_LIST_MISMATCH` for a container found in the wrong list).
 
-**References** (`rbac` phase): RoleBinding `roleRef` and subjects must
-resolve within the rendered bundle. Empty namespaces are interpreted as
-`default` for these local comparisons only; objects are never mutated.
+**Module CRD** (`crd`): the bundle must contain exactly one
+CustomResourceDefinition declaring the module's own group and kind
+(`MODULE_CRD_MISSING` / `MODULE_CRD_DUPLICATE`). A CRD declares its
+type through `spec.group` and `spec.names.kind`, not its own
+metadata.
 
-**Module CRD** (`crd` phase): one cluster-scoped CRD for the declared
-group/kind with a correct plural-derived name, unique version names,
-exactly one storage version, the configured version served, a status
-subresource, and a structural schema whose `status` demonstrably
-exposes `observedGeneration`, the standard condition fields, and
-`releases` items with `name` and `version`.
-
-**Singleton evidence** (`singleton` phase): the module CR must be
-enforced to a fixed name. Recognized static evidence is an
-unconditional CEL equality on `self.metadata.name` (or equivalent
-anchor, operand-order insensitive) against a literal valid name, or a
-single-value name enum. Otherwise, a relevant validating webhook
-(`failurePolicy: Fail`, create on the exact group/version/plural,
-cluster scope, referencing a bundled Service) downgrades the outcome to
-the warning `SINGLETON_WEBHOOK_UNVERIFIED`; no evidence at all is the
-error `SINGLETON_EVIDENCE_MISSING`.
+Checks evaluate their objects with jq expressions through
+`pkg/util/jq` (`Matchesf`, `Countf`): a missing field is a clean
+non-match, while a malformed object is an evaluation error — never a
+silent zero. A check that fails to evaluate aborts the run as an
+execution error instead of reporting a finding.
 
 ## Architecture
 
@@ -202,8 +200,8 @@ error `SINGLETON_EVIDENCE_MISSING`.
      └──────────────────────────────┘        └────────────────▼───────────────────┘
                                                              │ []unstructured.Unstructured
                                              ┌───────────────▼────────────────────┐
-                                             │ pkg/module/linter (pure validator) │
-                                             │ in-memory rules, no I/O            │
+                                             │ pkg/module/linter/checks           │
+                                             │ operator-parity checks, no I/O     │
                                              └────────────────────────────────────┘
 ```
 
@@ -216,8 +214,9 @@ error `SINGLETON_EVIDENCE_MISSING`.
   renderer-private, non-owning in-memory adapter; the definition type
   is never turned into a cluster object.
 - **Services stay reusable.** The loader and both renderer wrappers
-  remain independently callable; the linter's pure validator accepts a
-  context, the typed definition, and an object list.
+  remain independently callable; validation is a plain function of the
+  typed definition and the rendered object list, and each check can
+  run on its own.
 - **Engine-faithful rendering.** The framework actions render the
   configured entry directly with engine load restrictions off, so
   rendering behaves like a plain `kustomize build` or `helm template`
@@ -236,16 +235,10 @@ error `SINGLETON_EVIDENCE_MISSING`.
   presented as a partial success.
 - Framework actions are not interruptible mid-call; cancellation is
   honored before and after each call.
-- Empty object namespaces are treated as `default` for local reference
-  comparisons only. No cluster state is read or written.
-- Webhook and CEL presence is static evidence with explicit proof
-  limits, not semantic certification. CEL rules and message
-  expressions are syntax-checked with the API machinery's expression
-  engine (parse only — no schema type-checking) and never executed;
-  a rule that fails to parse is an error and is never counted as
-  singleton evidence.
-- Missing bundle references are findings, not assumed external
-  prerequisites.
+- Checks are static: they never read cluster state, resolve images,
+  or execute policy. A container the definition does not select is
+  not examined; the deployment name declared by the definition is not
+  itself enforced.
 
 ## Deferred
 

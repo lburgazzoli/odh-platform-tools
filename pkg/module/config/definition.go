@@ -8,6 +8,8 @@
 // filesystem, environment, renderer, or cluster access.
 package config
 
+import "k8s.io/apimachinery/pkg/runtime/schema"
+
 // Constants describing the only supported definition envelope.
 const (
 	// APIVersion is the only supported definition API version.
@@ -58,11 +60,13 @@ type Spec struct {
 }
 
 // Type identifies the Module custom resource the module controller
-// owns.
+// owns. It embeds schema.GroupVersionKind, so its fields and the
+// GroupKind, String, and Empty methods are available directly and the
+// embedded value needs no conversion. Only the wire format is defined
+// elsewhere, because apimachinery stopped tagging those fields and
+// the loader's JSON decoding is case-sensitive.
 type Type struct {
-	Group   string `json:"group"`
-	Version string `json:"version"`
-	Kind    string `json:"kind"`
+	schema.GroupVersionKind
 }
 
 // Manifests selects a rendering backend and its single local input

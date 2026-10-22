@@ -7,6 +7,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	. "github.com/onsi/gomega"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
@@ -18,6 +20,7 @@ type actionCalls struct {
 	contexts    []context.Context
 	paths       []string
 	definitions []config.PlatformModuleDefinition
+	resources   [][]unstructured.Unstructured
 }
 
 // loader returns a fake definition loader returning definition and
@@ -49,6 +52,39 @@ func (r *actionCalls) renderer(
 	}
 }
 
+// validator returns a fake validation function returning diagnostics.
+func (r *actionCalls) validator(diagnostics ...Diagnostic) Validation {
+	return func(definition config.PlatformModuleDefinition, resources []unstructured.Unstructured) ([]Diagnostic, error) {
+		r.sequence = append(r.sequence, "validate")
+		r.definitions = append(r.definitions, definition)
+		r.resources = append(r.resources, resources)
+
+		return diagnostics, nil
+	}
+}
+
+// failingValidator returns a fake validation function returning err.
+func failingValidator(err error) Validation {
+	return func(config.PlatformModuleDefinition, []unstructured.Unstructured) ([]Diagnostic, error) {
+		return nil, err
+	}
+}
+
+// testDefinition returns a minimal loaded definition for the action
+// tests.
+func testDefinition() config.PlatformModuleDefinition {
+	return config.PlatformModuleDefinition{
+		Metadata: config.Metadata{Name: "synthetic"},
+		Spec: config.Spec{
+			Type: config.Type{GroupVersionKind: schema.GroupVersionKind{
+				Group:   "components.platform.opendatahub.io",
+				Version: "v1alpha1",
+				Kind:    "SyntheticModule",
+			}},
+		},
+	}
+}
+
 // helmDefinition returns a loaded definition selecting the Helm
 // backend.
 func helmDefinition() config.PlatformModuleDefinition {
@@ -67,12 +103,22 @@ func kustomizeDefinition() config.PlatformModuleDefinition {
 	return definition
 }
 
+// diagnosticIDs collects the check IDs of a lint result.
+func diagnosticIDs(result Result) []string {
+	ids := make([]string, 0, len(result.Diagnostics))
+	for _, diagnostic := range result.Diagnostics {
+		ids = append(ids, diagnostic.ID)
+	}
+
+	return ids
+}
+
 func TestActionRunValidatesOptions(t *testing.T) {
 	g := NewWithT(t)
 
 	calls := &actionCalls{}
 	action := NewAction(calls.loader(helmDefinition(), nil), calls.renderer("helm", nil, nil),
-		calls.renderer("kustomize", nil, nil))
+		calls.renderer("kustomize", nil, nil), calls.validator())
 
 	result, err := action.Run(t.Context(), Options{})
 
@@ -90,7 +136,7 @@ func TestActionRunCancellationPrecedesInvalidOptions(t *testing.T) {
 
 	calls := &actionCalls{}
 	action := NewAction(calls.loader(helmDefinition(), nil), calls.renderer("helm", nil, nil),
-		calls.renderer("kustomize", nil, nil))
+		calls.renderer("kustomize", nil, nil), calls.validator())
 
 	_, err := action.Run(ctx, Options{})
 
@@ -104,7 +150,7 @@ func TestActionRunStopsOnLoadError(t *testing.T) {
 
 	calls := &actionCalls{}
 	action := NewAction(calls.loader(config.PlatformModuleDefinition{}, loadFailure),
-		calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil))
+		calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil), calls.validator())
 
 	result, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
 
@@ -120,7 +166,8 @@ func TestActionRunStopsOnRenderError(t *testing.T) {
 
 	calls := &actionCalls{}
 	action := NewAction(calls.loader(helmDefinition(), nil),
-		calls.renderer("helm", nil, renderFailure), calls.renderer("kustomize", nil, nil))
+		calls.renderer("helm", nil, renderFailure), calls.renderer("kustomize", nil, nil),
+		calls.validator())
 
 	result, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
 
@@ -138,12 +185,13 @@ func TestActionRunSelectsBackendFromFormat(t *testing.T) {
 
 		calls := &actionCalls{}
 		action := NewAction(calls.loader(helmDefinition(), nil),
-			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil))
+			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil),
+			calls.validator())
 
 		_, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
 		g.Expect(err).NotTo(HaveOccurred())
 
-		g.Expect(calls.sequence).To(Equal([]string{"load", "render:helm"}))
+		g.Expect(calls.sequence).To(Equal([]string{"load", "render:helm", "validate"}))
 	})
 
 	t.Run("kustomize", func(t *testing.T) {
@@ -151,12 +199,13 @@ func TestActionRunSelectsBackendFromFormat(t *testing.T) {
 
 		calls := &actionCalls{}
 		action := NewAction(calls.loader(kustomizeDefinition(), nil),
-			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil))
+			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil),
+			calls.validator())
 
 		_, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
 		g.Expect(err).NotTo(HaveOccurred())
 
-		g.Expect(calls.sequence).To(Equal([]string{"load", "render:kustomize"}))
+		g.Expect(calls.sequence).To(Equal([]string{"load", "render:kustomize", "validate"}))
 	})
 
 	t.Run("unexpected format is a defensive error", func(t *testing.T) {
@@ -167,7 +216,8 @@ func TestActionRunSelectsBackendFromFormat(t *testing.T) {
 
 		calls := &actionCalls{}
 		action := NewAction(calls.loader(definition, nil),
-			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil))
+			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil),
+			calls.validator())
 
 		result, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
 
@@ -181,9 +231,16 @@ func TestActionRunSelectsBackendFromFormat(t *testing.T) {
 func TestActionRunPropagatesContextAndInputs(t *testing.T) {
 	g := NewWithT(t)
 
+	rendered := []unstructured.Unstructured{{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata":   map[string]any{"name": "synthetic-controller"},
+	}}}
+
 	calls := &actionCalls{}
 	action := NewAction(calls.loader(helmDefinition(), nil),
-		calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil))
+		calls.renderer("helm", rendered, nil), calls.renderer("kustomize", nil, nil),
+		calls.validator())
 
 	ctx := t.Context()
 	_, err := action.Run(ctx, Options{DefinitionFile: "some/definition.yaml"})
@@ -195,51 +252,72 @@ func TestActionRunPropagatesContextAndInputs(t *testing.T) {
 	g.Expect(calls.contexts[1]).To(Equal(ctx))
 	g.Expect(calls.paths).To(Equal([]string{"some/definition.yaml", "some/definition.yaml"}))
 
-	// The renderer receives the loaded definition unchanged, and the
-	// definition file exactly as the caller passed it.
-	g.Expect(calls.definitions).To(HaveLen(1))
-	g.Expect(calls.definitions[0]).To(Equal(helmDefinition()))
-	g.Expect(calls.paths).To(Equal([]string{"some/definition.yaml", "some/definition.yaml"}))
+	// The renderer and the validation function receive the loaded
+	// definition unchanged, and validation receives the rendered
+	// objects as returned by the backend.
+	g.Expect(calls.definitions).To(HaveLen(2))
+	g.Expect(calls.definitions).To(ConsistOf(helmDefinition(), helmDefinition()))
+	g.Expect(calls.resources).To(Equal([][]unstructured.Unstructured{rendered}))
 }
 
 func TestActionRunReturnsFindingsAsResults(t *testing.T) {
 	g := NewWithT(t)
 
+	// Deliberately unsorted: the action aggregates deterministically.
+	findings := []Diagnostic{
+		{ID: "B_FINDING", Severity: SeverityError, Message: "second"},
+		{ID: "A_FINDING", Severity: SeverityError, Message: "first"},
+	}
+
 	calls := &actionCalls{}
 	action := NewAction(calls.loader(helmDefinition(), nil),
-		calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil))
+		calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil),
+		calls.validator(findings...))
 
 	result, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
 
 	// Manifest defects are structured findings, not execution errors.
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.HasErrors()).To(BeTrue())
-	g.Expect(diagnosticIDs(result)).To(ConsistOf(
-		CheckDeploymentMissing,
-		CheckModuleCRDMissing,
-		CheckSingletonEvidenceMissing,
-	))
+	g.Expect(result.HasWarnings()).To(BeFalse())
+	g.Expect(diagnosticIDs(result)).To(Equal([]string{"A_FINDING", "B_FINDING"}))
 }
 
 func TestActionRunWarningOnlyResultSucceeds(t *testing.T) {
 	g := NewWithT(t)
 
-	resources := append(singletonWebhook(nil), []unstructured.Unstructured{
-		controllerDeployment(testDeployment, testContainer),
-		serviceAccountObject(testNamespace),
-		moduleCRDObject(t, crdWithRootRule("self.spec.replicas >= 0")),
-	}...)
+	findings := []Diagnostic{{ID: "A_FINDING", Severity: SeverityWarning, Message: "unverified"}}
 
 	calls := &actionCalls{}
 	action := NewAction(calls.loader(helmDefinition(), nil),
-		calls.renderer("helm", resources, nil), calls.renderer("kustomize", nil, nil))
+		calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil),
+		calls.validator(findings...))
 
 	result, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.HasErrors()).To(BeFalse())
 	g.Expect(result.HasWarnings()).To(BeTrue())
-	g.Expect(diagnosticIDs(result)).To(ConsistOf(CheckSingletonWebhookUnverified))
+	g.Expect(diagnosticIDs(result)).To(ConsistOf("A_FINDING"))
+}
+
+func TestActionRunStopsOnValidationError(t *testing.T) {
+	g := NewWithT(t)
+
+	validationFailure := errors.New("validation failure")
+
+	calls := &actionCalls{}
+	action := NewAction(calls.loader(helmDefinition(), nil),
+		calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil),
+		failingValidator(validationFailure))
+
+	result, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
+
+	// A check that fails to evaluate is an execution error, not a
+	// finding: no partial result is reported as success.
+	g.Expect(err).To(MatchError(validationFailure))
+	g.Expect(result.Diagnostics).To(BeEmpty())
+	g.Expect(calls.sequence).To(Equal([]string{"load", "render:helm"}))
 }
 
 func TestActionRunForwardsErrorCategories(t *testing.T) {
@@ -252,7 +330,8 @@ func TestActionRunForwardsErrorCategories(t *testing.T) {
 
 		calls := &actionCalls{}
 		action := NewAction(calls.loader(config.PlatformModuleDefinition{}, definitionFailure),
-			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil))
+			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil),
+			calls.validator())
 
 		_, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
 
@@ -264,7 +343,8 @@ func TestActionRunForwardsErrorCategories(t *testing.T) {
 
 		calls := &actionCalls{}
 		action := NewAction(calls.loader(config.PlatformModuleDefinition{}, context.Canceled),
-			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil))
+			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil),
+			calls.validator())
 
 		_, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
 

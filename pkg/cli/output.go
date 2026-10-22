@@ -34,7 +34,6 @@ type Report struct {
 type Diagnostic struct {
 	ID        string `json:"id"`
 	Severity  string `json:"severity"`
-	Phase     string `json:"phase"`
 	Group     string `json:"group,omitzero"`
 	Version   string `json:"version,omitzero"`
 	Kind      string `json:"kind,omitzero"`
@@ -79,7 +78,6 @@ func newReport(definition string, result linter.Result, failure *Failure) Report
 			report.Diagnostics = append(report.Diagnostics, Diagnostic{
 				ID:        finding.ID,
 				Severity:  string(finding.Severity),
-				Phase:     string(finding.Phase),
 				Group:     finding.GVK.Group,
 				Version:   finding.GVK.Version,
 				Kind:      finding.GVK.Kind,

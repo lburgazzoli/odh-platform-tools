@@ -7,6 +7,8 @@ import (
 
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
+
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // ErrInvalidDefinition identifies configuration-level module definition
@@ -83,6 +85,42 @@ func decodeContainerName(raw jsontext.Value) (*string, error) {
 		}
 		return new(name), nil
 	}
+}
+
+// UnmarshalJSONFrom decodes a module type from its definition wire
+// format: lower-case group, version, and kind members. apimachinery
+// stopped tagging those fields and the loader's JSON decoding is
+// case-sensitive, so the wire form is defined here.
+func (t *Type) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	var wire struct {
+		Group   string `json:"group"`
+		Version string `json:"version"`
+		Kind    string `json:"kind"`
+	}
+	if err := jsonv2.UnmarshalDecode(dec, &wire, dec.Options()); err != nil {
+		return err
+	}
+
+	*t = Type{GroupVersionKind: schema.GroupVersionKind{
+		Group:   wire.Group,
+		Version: wire.Version,
+		Kind:    wire.Kind,
+	}}
+
+	return nil
+}
+
+// MarshalJSONTo encodes a module type in its definition wire format.
+func (t Type) MarshalJSONTo(enc *jsontext.Encoder) error {
+	return jsonv2.MarshalEncode(enc, &struct {
+		Group   string `json:"group"`
+		Version string `json:"version"`
+		Kind    string `json:"kind"`
+	}{
+		Group:   t.Group,
+		Version: t.Version,
+		Kind:    t.Kind,
+	})
 }
 
 // problems collects independent field errors during validation.
@@ -177,15 +215,15 @@ func (d *PlatformModuleDefinition) validateHelmReleaseName(p *problems) {
 
 // validate checks the spec sections and their cross-field rules.
 func (s *Spec) validate(p *problems) {
-	s.Type.validate(p)
+	validateType(s.Type.GroupVersionKind, p)
 	s.Manifests.validate(p)
 	s.Controller.Deployment.validate(p)
 	s.validateRelatedImages(p)
 }
 
-// validate checks that the module type names a complete group, version,
-// and kind.
-func (t *Type) validate(p *problems) {
+// validateType checks that the module type names a complete group,
+// version, and kind.
+func validateType(t schema.GroupVersionKind, p *problems) {
 	if t.Group == "" {
 		p.add("spec.type.group", "group is required")
 	}

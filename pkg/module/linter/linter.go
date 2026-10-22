@@ -1,18 +1,17 @@
-// Package linter validates in-memory module manifest objects against
-// the platform module packaging contract.
+// Package linter runs manifest validators over rendered module
+// objects and reports their findings.
 //
-// Validation is a pure function of the rendered object list and the
-// definition's identity and selector context: it reads no files or
-// environment, contacts no cluster, invokes no renderer, and never
-// mutates its inputs. Manifest defects are aggregated as diagnostics
-// with stable check IDs and object paths; a nil execution error means
-// validation ran to completion, not that the manifests are valid.
-// Only cancellation and internal execution problems return an error.
+// The linter itself owns no rules: checks implement the Validator
+// interface and are registered on the action, so the check set is the
+// caller's choice. Validation is a pure function of the rendered
+// object list and the definition: it reads no files or environment,
+// contacts no cluster, invokes no renderer, and never mutates its
+// inputs. Findings are aggregated as diagnostics with stable check
+// IDs; a nil execution error means validation ran to completion, not
+// that the manifests are valid.
 package linter
 
 import (
-	"cmp"
-	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -38,67 +37,16 @@ const (
 	SeverityInfo Severity = "info"
 )
 
-// Phase names the rule area that produced a diagnostic. It groups
-// checks for reports; the check ID remains the stable identifier.
-type Phase string
-
-const (
-	// PhaseResources covers object identity, API version, scope, and
-	// the manifest kind allowlist.
-	PhaseResources Phase = "resources"
-
-	// PhaseDeployment covers the controller Deployment and its
-	// selected containers, selector, and service account.
-	PhaseDeployment Phase = "deployment"
-
-	// PhaseRBAC covers RoleBinding role references and ServiceAccount
-	// subjects.
-	PhaseRBAC Phase = "rbac"
-
-	// PhaseCRD covers the selected Module custom resource definition.
-	PhaseCRD Phase = "crd"
-
-	// PhaseSingleton covers singleton name enforcement evidence.
-	PhaseSingleton Phase = "singleton"
-)
-
-// Stable check identifiers.
-const (
-	CheckObjectIdentityMissing      = "OBJECT_IDENTITY_MISSING"
-	CheckObjectListUnsupported      = "OBJECT_LIST_UNSUPPORTED"
-	CheckResourceKindDisallowed     = "RESOURCE_KIND_DISALLOWED"
-	CheckResourceVersionUnsupported = "RESOURCE_VERSION_UNSUPPORTED"
-	CheckResourceScopeMismatch      = "RESOURCE_SCOPE_MISMATCH"
-	CheckDuplicateObject            = "DUPLICATE_OBJECT"
-
-	CheckDeploymentMissing          = "DEPLOYMENT_MISSING"
-	CheckDeploymentMultiple         = "DEPLOYMENT_MULTIPLE"
-	CheckDeploymentNameMismatch     = "DEPLOYMENT_NAME_MISMATCH"
-	CheckContainerMissing           = "CONTAINER_MISSING"
-	CheckContainerDuplicate         = "CONTAINER_DUPLICATE"
-	CheckContainerListMismatch      = "CONTAINER_LIST_MISMATCH"
-	CheckDeploymentSelectorMissing  = "DEPLOYMENT_SELECTOR_MISSING"
-	CheckDeploymentSelectorMismatch = "DEPLOYMENT_SELECTOR_MISMATCH"
-	CheckServiceAccountUnresolved   = "SERVICEACCOUNT_UNRESOLVED"
-
-	CheckRoleReferenceUnresolved = "ROLE_REFERENCE_UNRESOLVED"
-	CheckRoleReferenceMalformed  = "ROLE_REFERENCE_MALFORMED"
-
-	CheckModuleCRDMissing           = "MODULE_CRD_MISSING"
-	CheckModuleCRDDuplicate         = "MODULE_CRD_DUPLICATE"
-	CheckModuleCRDMalformed         = "MODULE_CRD_MALFORMED"
-	CheckModuleCRDScope             = "MODULE_CRD_SCOPE"
-	CheckModuleCRDName              = "MODULE_CRD_NAME"
-	CheckModuleCRDVersionNotServed  = "MODULE_CRD_VERSION_NOT_SERVED"
-	CheckModuleCRDVersionDuplicate  = "MODULE_CRD_VERSION_DUPLICATE"
-	CheckModuleCRDStorage           = "MODULE_CRD_STORAGE"
-	CheckModuleCRDStatusSubresource = "MODULE_CRD_STATUS_SUBRESOURCE"
-	CheckModuleCRDSchemaStructural  = "MODULE_CRD_SCHEMA_STRUCTURAL"
-	CheckModuleCRDStatusSchema      = "MODULE_CRD_STATUS_SCHEMA"
-
-	CheckSingletonEvidenceMissing   = "SINGLETON_EVIDENCE_MISSING"
-	CheckSingletonWebhookUnverified = "SINGLETON_WEBHOOK_UNVERIFIED"
-)
+// Validation runs the manifest checks over the objects a manifest
+// backend rendered for one module and returns the findings. It is a
+// pure function of the definition and the rendered objects; the
+// checks package provides the default implementation. A non-nil
+// error means a check failed to evaluate — it is an execution error,
+// never a finding about the manifests.
+type Validation func(
+	definition config.PlatformModuleDefinition,
+	resources []unstructured.Unstructured,
+) ([]Diagnostic, error)
 
 // Diagnostic is one validation finding. GVK, Namespace, Name, and Field
 // identify the affected object location when relevant; Message is the
@@ -106,7 +54,6 @@ const (
 type Diagnostic struct {
 	ID        string
 	Severity  Severity
-	Phase     Phase
 	GVK       schema.GroupVersionKind
 	Namespace string
 	Name      string
@@ -159,53 +106,4 @@ func (r Result) HasWarnings() bool {
 	return slices.ContainsFunc(r.Diagnostics, func(d Diagnostic) bool {
 		return d.Severity == SeverityWarning
 	})
-}
-
-// Validate validates the objects a manifest backend rendered for the
-// module described by definition, and returns every finding.
-//
-// The definition supplies the in-memory identity and selector context
-// only: the module name (used by the fixed Ray SecurityContextConstraints
-// exception), the module custom resource type, the controller
-// Deployment name, and the selected container names. An omitted main
-// container name is interpreted as the config default; the definition
-// itself is never modified.
-//
-// A nil error means validation ran to completion over the whole list.
-// Findings, including error-severity ones, are returned in the Result;
-// only a cancelled context or an internal failure returns an error.
-func Validate(
-	ctx context.Context,
-	definition config.PlatformModuleDefinition,
-	resources []unstructured.Unstructured,
-) (Result, error) {
-	if err := ctx.Err(); err != nil {
-		return Result{}, err
-	}
-
-	module := newModuleContext(definition)
-
-	c := &collector{}
-	index := indexObjects(resources)
-
-	validateObjectContract(c, module, resources)
-	validateDeploymentContract(c, module, resources, index)
-	validateRBACContract(c, resources, index)
-
-	crd := validateModuleCRD(c, module, resources)
-	validateSingletonEvidence(c, module, resources, index, crd)
-
-	diagnostics := c.diagnostics
-	slices.SortStableFunc(diagnostics, func(a, b Diagnostic) int {
-		return cmp.Or(
-			cmp.Compare(a.ID, b.ID),
-			cmp.Compare(a.GVK.String(), b.GVK.String()),
-			cmp.Compare(a.Namespace, b.Namespace),
-			cmp.Compare(a.Name, b.Name),
-			cmp.Compare(a.Field, b.Field),
-			cmp.Compare(a.Message, b.Message),
-		)
-	})
-
-	return Result{Diagnostics: diagnostics}, nil
 }

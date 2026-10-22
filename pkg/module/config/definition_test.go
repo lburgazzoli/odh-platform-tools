@@ -8,6 +8,8 @@ import (
 
 	jsonv2 "encoding/json/v2"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	. "github.com/onsi/gomega"
 )
 
@@ -20,11 +22,11 @@ func validDefinition(format Format) PlatformModuleDefinition {
 		Kind:       Kind,
 		Metadata:   Metadata{Name: "synthetic"},
 		Spec: Spec{
-			Type: Type{
+			Type: Type{GroupVersionKind: schema.GroupVersionKind{
 				Group:   "components.platform.opendatahub.io",
 				Version: "v1alpha1",
 				Kind:    "SyntheticModule",
-			},
+			}},
 			RelatedImages: []string{"RELATED_IMAGE_SYNTHETIC_OPERAND"},
 			Controller: Controller{
 				Deployment: Deployment{

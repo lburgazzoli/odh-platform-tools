@@ -8,6 +8,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	. "github.com/onsi/gomega"
 
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
@@ -50,11 +52,11 @@ func helmDefinition() config.PlatformModuleDefinition {
 		Kind:       config.Kind,
 		Metadata:   config.Metadata{Name: "synthetic"},
 		Spec: config.Spec{
-			Type: config.Type{
+			Type: config.Type{GroupVersionKind: schema.GroupVersionKind{
 				Group:   "components.platform.opendatahub.io",
 				Version: "v1alpha1",
 				Kind:    "SyntheticModule",
-			},
+			}},
 			Manifests: config.Manifests{
 				Format: config.FormatHelm,
 				Helm:   &config.HelmManifests{Path: "./manifests/chart"},

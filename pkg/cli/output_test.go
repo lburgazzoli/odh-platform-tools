@@ -12,6 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/crd"
 )
 
 // jsonUnmarshal decodes one JSON report document.
@@ -42,8 +43,8 @@ func TestNewReportStatuses(t *testing.T) {
 		g := NewWithT(t)
 
 		result := linter.Result{Diagnostics: []linter.Diagnostic{
-			{ID: "A", Severity: linter.SeverityWarning, Phase: linter.PhaseSingleton},
-			{ID: "B", Severity: linter.SeverityInfo, Phase: linter.PhaseRBAC},
+			{ID: "A", Severity: linter.SeverityWarning},
+			{ID: "B", Severity: linter.SeverityInfo},
 		}}
 
 		report := newReport("definition.yaml", result, nil)
@@ -73,9 +74,8 @@ func TestNewReportDiagnosticFields(t *testing.T) {
 	g := NewWithT(t)
 
 	result := linter.Result{Diagnostics: []linter.Diagnostic{{
-		ID:        linter.CheckContainerMissing,
+		ID:        "A_FINDING",
 		Severity:  linter.SeverityError,
-		Phase:     linter.PhaseDeployment,
 		GVK:       schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
 		Namespace: "default",
 		Name:      "synthetic-controller",
@@ -87,9 +87,8 @@ func TestNewReportDiagnosticFields(t *testing.T) {
 
 	g.Expect(report.Diagnostics).To(HaveLen(1))
 	g.Expect(report.Diagnostics[0]).To(Equal(Diagnostic{
-		ID:        linter.CheckContainerMissing,
+		ID:        "A_FINDING",
 		Severity:  "error",
-		Phase:     "deployment",
 		Group:     "apps",
 		Version:   "v1",
 		Kind:      "Deployment",
@@ -123,9 +122,8 @@ func TestWriteJSONReportIsParseable(t *testing.T) {
 	g := NewWithT(t)
 
 	result := linter.Result{Diagnostics: []linter.Diagnostic{{
-		ID:       linter.CheckModuleCRDMissing,
+		ID:       crd.Missing,
 		Severity: linter.SeverityError,
-		Phase:    linter.PhaseCRD,
 		Message:  "module crd not found in rendered objects",
 	}}}
 

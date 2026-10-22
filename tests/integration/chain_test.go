@@ -16,6 +16,9 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/crd"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/deployments"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/types"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/helm"
 )
@@ -57,9 +60,10 @@ func TestLintChainHelmFindings(t *testing.T) {
 	writeModuleFile(t, root, "definition.yaml", helmDefinitionYAML)
 	writeModuleFile(t, root, "manifests/chart/Chart.yaml", plainChartYAML)
 	writeModuleFile(t, root, "manifests/chart/values.yaml", chartValuesYAML)
-	// Structural manifest defects, not execution errors: a disallowed
-	// kind, an unsupported List object, and dangling references on
-	// top of the missing controller Deployment and Module CRD.
+	// Structural manifest defects, not execution errors: two
+	// disallowed kinds (a Namespace and an unsupported List object)
+	// on top of the missing controller Deployment and Module CRD. The
+	// bundled RoleBinding is allowed and yields no finding.
 	writeModuleFile(t, root, "manifests/chart/templates/namespace.yaml", namespaceTemplateYAML)
 	writeModuleFile(t, root, "manifests/chart/templates/list.yaml", listTemplateYAML)
 	writeModuleFile(t, root, "manifests/chart/templates/rolebinding.yaml",
@@ -70,13 +74,10 @@ func TestLintChainHelmFindings(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.HasErrors()).To(BeTrue())
 	g.Expect(diagnosticIDs(result)).To(ConsistOf(
-		linter.CheckResourceKindDisallowed,
-		linter.CheckObjectListUnsupported,
-		linter.CheckRoleReferenceUnresolved,
-		linter.CheckServiceAccountUnresolved,
-		linter.CheckDeploymentMissing,
-		linter.CheckModuleCRDMissing,
-		linter.CheckSingletonEvidenceMissing,
+		types.ResourceKindDisallowed,
+		types.ResourceKindDisallowed,
+		deployments.Missing,
+		crd.Missing,
 	))
 }
 
