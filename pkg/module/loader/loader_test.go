@@ -637,7 +637,7 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 		{
 			name:        "duplicate key",
 			content:     duplicateKeyYAML,
-			errContains: `duplicate mapping key "name"`,
+			errContains: `key "name" already set in map`,
 		},
 		{
 			// The decoder reports type mismatches; the exact json
@@ -653,14 +653,16 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 			errContains: "exactly one document",
 		},
 		{
+			// The root is a JSON string, not an object; the typed
+			// decode rejects the document shape.
 			name:        "scalar root",
 			content:     scalarRootYAML,
-			errContains: "must be an object",
+			errContains: "cannot unmarshal JSON string",
 		},
 		{
 			name:        "list root",
 			content:     listRootYAML,
-			errContains: "must be an object",
+			errContains: "cannot unmarshal JSON array",
 		},
 		{
 			name:        "null root",
@@ -673,14 +675,19 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 			errContains: "one object document",
 		},
 		{
+			// The Kubernetes YAML machinery stringifies the key, so
+			// the typed decode rejects it as an unknown member.
 			name:        "non-string key",
 			content:     nonStringKeyYAML,
-			errContains: "keys must be plain strings",
+			errContains: `unknown object member name "123"`,
 		},
 		{
+			// Merge keys resolve through the Kubernetes YAML
+			// machinery; this document still fails on its unknown
+			// root members.
 			name:        "merge key",
 			content:     mergeKeyYAML,
-			errContains: "keys must be plain strings",
+			errContains: `unknown object member name "base"`,
 		},
 		{
 			name:        "malformed yaml",
@@ -802,7 +809,7 @@ func TestLoadRejectsNonStringScalars(t *testing.T) {
 		{
 			name:        "infinity is not a JSON number",
 			content:     infiniteNameYAML,
-			errContains: "unsupported number",
+			errContains: "unsupported value: +Inf",
 		},
 	}
 

@@ -5,15 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	jsonv2 "encoding/json/v2"
 
-	"go.yaml.in/yaml/v3"
+	yamlv2 "go.yaml.in/yaml/v2"
+	"sigs.k8s.io/yaml"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
 )
@@ -55,12 +54,7 @@ func readDefinitionFile(path string) (string, []byte, error) {
 // buildDocument parses, decodes, validates, and resolves the definition
 // read from file.
 func buildDocument(file string, data []byte) (config.Document, error) {
-	value, err := parseDocument(data)
-	if err != nil {
-		return config.Document{}, sourceError(file, err)
-	}
-
-	definition, err := decodeDefinition(value)
+	definition, err := decodeDefinition(data)
 	if err != nil {
 		return config.Document{}, sourceError(file, err)
 	}
@@ -93,186 +87,58 @@ func sourceError(file string, err error) error {
 	return config.NewDefinitionError(fmt.Errorf("%s: %w", file, err))
 }
 
-// parseDocument parses data as a single YAML (or JSON) object document
-// and converts it to JSON-compatible values. It rejects malformed
-// input, multiple nonempty documents, non-object roots, duplicate and
-// non-string keys, aliases, merge keys, and unsupported scalar forms.
-func parseDocument(data []byte) (any, error) {
-	var documents []any
-
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	for {
-		var node yaml.Node
-		err := decoder.Decode(&node)
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if len(node.Content) == 0 {
-			continue
-		}
-
-		value, err := convertNode(node.Content[0])
-		if err != nil {
-			return nil, err
-		}
-		if value != nil {
-			documents = append(documents, value)
-		}
+// decodeDefinition strictly decodes the definition bytes through the
+// Kubernetes YAML machinery. The stream must hold exactly one nonempty
+// document; the strict YAML-to-JSON conversion rejects duplicate keys
+// and malformed input, and the typed JSON decode rejects unknown
+// members and name-case mismatches.
+func decodeDefinition(data []byte) (config.PlatformModuleDefinition, error) {
+	if err := requireSingleDocument(data); err != nil {
+		return config.PlatformModuleDefinition{}, err
 	}
 
-	if len(documents) == 0 {
-		return nil, errors.New("definition must contain one object document")
-	}
-	if len(documents) > 1 {
-		return nil, errors.New("definition must contain exactly one document")
-	}
-
-	root := documents[0]
-	if _, ok := root.(map[string]any); !ok {
-		return nil, errors.New("definition document must be an object")
-	}
-
-	return root, nil
-}
-
-// convertNode converts a YAML node to a JSON-compatible value.
-func convertNode(node *yaml.Node) (any, error) {
-	switch node.Kind {
-	case yaml.MappingNode:
-		return convertMapping(node)
-	case yaml.SequenceNode:
-		return convertSequence(node)
-	case yaml.ScalarNode:
-		return convertScalar(node)
-	case yaml.AliasNode:
-		return nil, fmt.Errorf("line %d: YAML aliases are not supported", node.Line)
-	default:
-		return nil, fmt.Errorf("line %d: unsupported YAML node", node.Line)
-	}
-}
-
-// convertMapping converts a mapping node, requiring plain string keys
-// and rejecting duplicate keys. Merge keys fail the string-key rule
-// because they resolve to the !!merge tag.
-func convertMapping(node *yaml.Node) (any, error) {
-	mapping := make(map[string]any, len(node.Content)/2)
-
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		key := node.Content[i]
-
-		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
-			return nil, fmt.Errorf("line %d: mapping keys must be plain strings", key.Line)
-		}
-		if _, duplicate := mapping[key.Value]; duplicate {
-			return nil, fmt.Errorf("line %d: duplicate mapping key %q", key.Line, key.Value)
-		}
-
-		value, err := convertNode(node.Content[i+1])
-		if err != nil {
-			return nil, err
-		}
-
-		mapping[key.Value] = value
-	}
-
-	return mapping, nil
-}
-
-// convertSequence converts a sequence node.
-func convertSequence(node *yaml.Node) (any, error) {
-	sequence := make([]any, 0, len(node.Content))
-
-	for _, item := range node.Content {
-		value, err := convertNode(item)
-		if err != nil {
-			return nil, err
-		}
-
-		sequence = append(sequence, value)
-	}
-
-	return sequence, nil
-}
-
-// convertScalar converts a resolved YAML scalar to a JSON-compatible
-// value. Timestamps keep their literal text: a value such as 2026-01-02
-// is a string, never a parsed date. Numbers JSON cannot represent are
-// rejected.
-func convertScalar(node *yaml.Node) (any, error) {
-	switch node.Tag {
-	case "!!str", "!!timestamp":
-		return node.Value, nil
-	case "!!null":
-		return nil, nil
-	case "!!bool":
-		return convertBool(node)
-	case "!!int":
-		return convertInt(node)
-	case "!!float":
-		return convertFloat(node)
-	default:
-		return nil, fmt.Errorf("line %d: unsupported value %s", node.Line, node.Tag)
-	}
-}
-
-func convertBool(node *yaml.Node) (any, error) {
-	switch node.Value {
-	case "true", "True", "TRUE":
-		return true, nil
-	case "false", "False", "FALSE":
-		return false, nil
-	default:
-		return nil, fmt.Errorf("line %d: unsupported boolean %q", node.Line, node.Value)
-	}
-}
-
-func convertInt(node *yaml.Node) (any, error) {
-	value, base := node.Value, 10
-
-	if after, found := strings.CutPrefix(value, "0x"); found {
-		value, base = after, 16
-	} else if after, found := strings.CutPrefix(value, "0o"); found {
-		value, base = after, 8
-	}
-
-	if number, err := strconv.ParseInt(value, base, 64); err == nil {
-		return number, nil
-	}
-	if number, err := strconv.ParseUint(value, base, 64); err == nil {
-		return number, nil
-	}
-
-	return nil, fmt.Errorf("line %d: unsupported integer %q", node.Line, node.Value)
-}
-
-func convertFloat(node *yaml.Node) (any, error) {
-	number, err := strconv.ParseFloat(node.Value, 64)
-	if err != nil || math.IsInf(number, 0) || math.IsNaN(number) {
-		return nil, fmt.Errorf("line %d: unsupported number %q", node.Line, node.Value)
-	}
-
-	return number, nil
-}
-
-// decodeDefinition strictly decodes the parsed document into the
-// definition types, rejecting unknown members and name-case
-// mismatches.
-func decodeDefinition(value any) (config.PlatformModuleDefinition, error) {
-	encoded, err := jsonv2.Marshal(value)
+	encoded, err := yaml.YAMLToJSONStrict(data)
 	if err != nil {
 		return config.PlatformModuleDefinition{}, err
 	}
 
 	var definition config.PlatformModuleDefinition
-	err = jsonv2.Unmarshal(encoded, &definition, jsonv2.RejectUnknownMembers(true))
-	if err != nil {
+	if err := jsonv2.Unmarshal(encoded, &definition, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return config.PlatformModuleDefinition{}, err
 	}
 
 	return definition, nil
+}
+
+// requireSingleDocument rejects empty and multi-document streams: the
+// Kubernetes YAML conversion reads only the first stream document, so
+// a second document would otherwise be silently ignored.
+func requireSingleDocument(data []byte) error {
+	decoder := yamlv2.NewDecoder(bytes.NewReader(data))
+
+	documents := 0
+	for {
+		var document any
+		err := decoder.Decode(&document)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if document != nil {
+			documents++
+		}
+	}
+
+	switch {
+	case documents == 0:
+		return errors.New("definition must contain one object document")
+	case documents > 1:
+		return errors.New("definition must contain exactly one document")
+	default:
+		return nil
+	}
 }
 
 // resolveRendererEntry resolves the selected manifest backend path

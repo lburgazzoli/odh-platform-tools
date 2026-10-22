@@ -142,8 +142,6 @@ github.com/opencontainers/go-digest v1.0.0 h1:apOUWs51W5PlhuyGyz9FCeeBIOUDA/6nW8
 github.com/opencontainers/go-digest v1.0.0/go.mod h1:0JzlMkj0TRzQZfJkVvzbP0HBR3IKzErnv2BNG4W4MAM=
 github.com/opencontainers/image-spec v1.1.1 h1:y0fUlFfIZhPF1W537XOLg0/fcx6zcHCJwooC2xJA040=
 github.com/opencontainers/image-spec v1.1.1/go.mod h1:qpqAh3Dmcf36wStyyWU+kCeDgrGnAve2nCC8+7h8Q0M=
-github.com/opendatahub-io/odh-platform-utilities/framework v0.2.0 h1:m+d9t3SIGZZbFhb6JXdugN4hZWxbnI7lsM7+IgTwmB8=
-github.com/opendatahub-io/odh-platform-utilities/framework v0.2.0/go.mod h1:dbnC+EVIrhij8Crb3/digHuho2t82OdddnUjBgtaszc=
 github.com/opendatahub-io/odh-platform-utilities/framework v0.2.1-0.20261021162150-201e66e4e90a h1:RxKqOJE4nM2B4oAojGOLaUycbZrbzlF+96S/9jSomv0=
 github.com/opendatahub-io/odh-platform-utilities/framework v0.2.1-0.20261021162150-201e66e4e90a/go.mod h1:dbnC+EVIrhij8Crb3/digHuho2t82OdddnUjBgtaszc=
 github.com/operator-framework/api v0.42.0 h1:rkc5V3zW8RxZMjePAe12jdL7Co/hwsYo1pLnkkhuR7s=
