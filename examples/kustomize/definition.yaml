@@ -1,0 +1,23 @@
+apiVersion: config.opendatahub.io/v1
+kind: PlatformModuleDefinition
+metadata:
+  name: example
+spec:
+  type:
+    group: components.platform.opendatahub.io
+    version: v1alpha1
+    kind: Example
+  manifests:
+    format: kustomize
+    kustomize:
+      path: ./manifests
+  relatedImages:
+  - RELATED_IMAGE_EXAMPLE_CONTROLLER
+  controller:
+    deployment:
+      name: example-controller
+      container:
+        image: quay.io/example/example-controller:v1.0.0
+        env:
+        - name: LOG_LEVEL
+          value: debug
