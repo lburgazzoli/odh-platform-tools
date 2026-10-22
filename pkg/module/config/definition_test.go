@@ -649,9 +649,12 @@ func TestInstanceJSONDecoding(t *testing.T) {
 	}
 }
 
-// definitionJSONLegacyType is a definition that places the module type
-// at the superseded top-level spec.type location.
-const definitionJSONLegacyType = `{
+// Definition documents using the superseded top-level spec.type
+// location, alone and alongside the nested layout.
+const (
+	// definitionJSONLegacyType places the module type at the legacy
+	// location only.
+	definitionJSONLegacyType = `{
 	"apiVersion": "config.opendatahub.io/v1",
 	"kind": "PlatformModuleDefinition",
 	"metadata": {"name": "synthetic"},
@@ -674,9 +677,9 @@ const definitionJSONLegacyType = `{
 	}
 }`
 
-// definitionJSONLegacyAndNestedType adds the legacy location to the
-// nested layout: both distinct old and new fields appear together.
-const definitionJSONLegacyAndNestedType = `{
+	// definitionJSONLegacyAndNestedType carries both the legacy and
+	// the nested location.
+	definitionJSONLegacyAndNestedType = `{
 	"apiVersion": "config.opendatahub.io/v1",
 	"kind": "PlatformModuleDefinition",
 	"metadata": {"name": "synthetic"},
@@ -705,6 +708,7 @@ const definitionJSONLegacyAndNestedType = `{
 		}
 	}
 }`
+)
 
 func TestDefinitionJSONRejectsLegacySpecType(t *testing.T) {
 	t.Parallel()
@@ -732,8 +736,8 @@ func TestDefinitionJSONRejectsLegacySpecType(t *testing.T) {
 	}
 }
 
-// definitionJSONNullInstance replaces the instance block with an
-// explicit null; definitionJSONNullType replaces only its type.
+// Definition documents whose instance is missing: an explicit null
+// instance, an explicit null type, and no instance block at all.
 const (
 	definitionJSONNullInstance = `{
 	"apiVersion": "config.opendatahub.io/v1",
@@ -774,10 +778,8 @@ const (
 		}
 	}
 }`
-)
 
-// definitionJSONOmittedInstance drops the instance block entirely.
-const definitionJSONOmittedInstance = `{
+	definitionJSONOmittedInstance = `{
 	"apiVersion": "config.opendatahub.io/v1",
 	"kind": "PlatformModuleDefinition",
 	"metadata": {"name": "synthetic"},
@@ -794,6 +796,7 @@ const definitionJSONOmittedInstance = `{
 		}
 	}
 }`
+)
 
 func TestDefinitionJSONRejectsMissingInstance(t *testing.T) {
 	t.Parallel()
