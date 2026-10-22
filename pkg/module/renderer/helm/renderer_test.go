@@ -107,7 +107,7 @@ version: 1.2.3
 )
 
 // writeModuleFile writes content at a module-root-relative path.
-func writeModuleFile(t *testing.T, root, rel, content string) {
+func writeModuleFile(t *testing.T, root string, rel string, content string) {
 	t.Helper()
 
 	path := filepath.Join(root, filepath.FromSlash(rel))
@@ -184,7 +184,7 @@ func writeChartFixture(t *testing.T, root string) {
 }
 
 // findResource returns the rendered object of the given kind and name.
-func findResource(t *testing.T, resources []unstructured.Unstructured, kind, name string) unstructured.Unstructured {
+func findResource(t *testing.T, resources []unstructured.Unstructured, kind string, name string) unstructured.Unstructured {
 	t.Helper()
 
 	for _, resource := range resources {

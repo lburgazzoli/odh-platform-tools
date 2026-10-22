@@ -361,7 +361,7 @@ subjects:
 )
 
 // writeModuleFile writes content at a module-root-relative path.
-func writeModuleFile(t *testing.T, root, rel, content string) {
+func writeModuleFile(t *testing.T, root string, rel string, content string) {
 	t.Helper()
 
 	path := filepath.Join(root, filepath.FromSlash(rel))

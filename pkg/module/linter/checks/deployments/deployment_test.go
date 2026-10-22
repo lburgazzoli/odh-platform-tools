@@ -14,7 +14,7 @@ import (
 )
 
 // object builds one unstructured object with the given identity.
-func object(apiVersion, kind, name string) unstructured.Unstructured {
+func object(apiVersion string, kind string, name string) unstructured.Unstructured {
 	return unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": apiVersion,
 		"kind":       kind,
@@ -64,7 +64,7 @@ func initContainerDefinition(name string) config.PlatformModuleDefinition {
 
 // deployment builds one Deployment whose pod spec lists containers
 // with the given names.
-func deployment(containers, initContainers []string) unstructured.Unstructured {
+func deployment(containers []string, initContainers []string) unstructured.Unstructured {
 	res := object("apps/v1", "Deployment", "synthetic-controller")
 
 	podSpec := map[string]any{}
@@ -158,10 +158,10 @@ func TestDeploymentValidate(t *testing.T) {
 	})
 }
 
-func TestDeploymentValidateContainerSelection(t *testing.T) {
+func TestDeploymentValidateContainerExists(t *testing.T) {
 	t.Parallel()
 
-	t.Run("selected main container present exactly once passes", func(t *testing.T) {
+	t.Run("selected main container present passes", func(t *testing.T) {
 		t.Parallel()
 
 		g := NewWithT(t)
@@ -188,10 +188,10 @@ func TestDeploymentValidateContainerSelection(t *testing.T) {
 		g.Expect(diagnostics[0].GVK.Kind).To(Equal("Deployment"))
 		g.Expect(diagnostics[0].Name).To(Equal("synthetic-controller"))
 		g.Expect(diagnostics[0].Field).To(Equal("spec.template.spec.containers"))
-		g.Expect(diagnostics[0].Message).To(ContainSubstring(`main container "manager"`))
+		g.Expect(diagnostics[0].Message).To(ContainSubstring(`container "manager" is not present in containers`))
 	})
 
-	t.Run("selected container in the wrong list is reported", func(t *testing.T) {
+	t.Run("selected main container in the init container list is still missing", func(t *testing.T) {
 		t.Parallel()
 
 		g := NewWithT(t)
@@ -201,36 +201,21 @@ func TestDeploymentValidateContainerSelection(t *testing.T) {
 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(diagnostics).To(HaveLen(1))
-		g.Expect(diagnostics[0].ID).To(Equal(ContainerListMismatch))
-		g.Expect(diagnostics[0].Message).To(ContainSubstring("initContainers instead of containers"))
+		g.Expect(diagnostics[0].ID).To(Equal(ContainerMissing))
 	})
 
-	t.Run("selected container duplicated is reported", func(t *testing.T) {
+	t.Run("selected container present more than once still passes", func(t *testing.T) {
 		t.Parallel()
 
 		g := NewWithT(t)
 
+		// Existence is the contract: duplicates are not the check's
+		// concern.
 		diagnostics, err := Validate(managerDefinition(),
 			[]unstructured.Unstructured{deployment([]string{"manager", "manager"}, nil)})
 
 		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(diagnostics).To(HaveLen(1))
-		g.Expect(diagnostics[0].ID).To(Equal(ContainerDuplicate))
-		g.Expect(diagnostics[0].Message).To(ContainSubstring("appears 2 times"))
-	})
-
-	t.Run("selected container in both lists is reported", func(t *testing.T) {
-		t.Parallel()
-
-		g := NewWithT(t)
-
-		diagnostics, err := Validate(managerDefinition(),
-			[]unstructured.Unstructured{deployment([]string{"manager"}, []string{"manager"})})
-
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(diagnostics).To(HaveLen(1))
-		g.Expect(diagnostics[0].ID).To(Equal(ContainerListMismatch))
-		g.Expect(diagnostics[0].Message).To(ContainSubstring("also appears in initContainers"))
+		g.Expect(diagnostics).To(BeEmpty())
 	})
 
 	t.Run("selected init container validated in its list", func(t *testing.T) {
@@ -245,7 +230,21 @@ func TestDeploymentValidateContainerSelection(t *testing.T) {
 		g.Expect(diagnostics).To(HaveLen(1))
 		g.Expect(diagnostics[0].ID).To(Equal(ContainerMissing))
 		g.Expect(diagnostics[0].Field).To(Equal("spec.template.spec.initContainers"))
-		g.Expect(diagnostics[0].Message).To(ContainSubstring(`init container "wait-for-crd"`))
+		g.Expect(diagnostics[0].Message).To(ContainSubstring(`container "wait-for-crd" is not present in initContainers`))
+	})
+
+	t.Run("unconfigured init container is skipped", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		// No init container block: only the main container is
+		// validated.
+		diagnostics, err := Validate(managerDefinition(),
+			[]unstructured.Unstructured{deployment([]string{"manager"}, nil)})
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(diagnostics).To(BeEmpty())
 	})
 
 	t.Run("unconfigured placements are skipped", func(t *testing.T) {
@@ -262,7 +261,7 @@ func TestDeploymentValidateContainerSelection(t *testing.T) {
 		g.Expect(diagnostics).To(BeEmpty())
 	})
 
-	t.Run("deployment without pod spec counts zero containers", func(t *testing.T) {
+	t.Run("deployment without pod spec has no containers", func(t *testing.T) {
 		t.Parallel()
 
 		g := NewWithT(t)
@@ -275,7 +274,7 @@ func TestDeploymentValidateContainerSelection(t *testing.T) {
 		g.Expect(diagnostics[0].ID).To(Equal(ContainerMissing))
 	})
 
-	t.Run("malformed container list is an evaluation error, never a silent zero", func(t *testing.T) {
+	t.Run("malformed container list is an evaluation error, never a silent non-match", func(t *testing.T) {
 		t.Parallel()
 
 		g := NewWithT(t)
@@ -290,6 +289,6 @@ func TestDeploymentValidateContainerSelection(t *testing.T) {
 		_, err := Validate(managerDefinition(), []unstructured.Unstructured{malformed})
 
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(err.Error()).To(ContainSubstring(`count main container "manager" in containers`))
+		g.Expect(err.Error()).To(ContainSubstring(`match container "manager" in containers`))
 	})
 }

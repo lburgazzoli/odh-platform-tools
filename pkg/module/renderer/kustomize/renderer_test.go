@@ -110,7 +110,7 @@ spec:
 )
 
 // writeModuleFile writes content at a module-root-relative path.
-func writeModuleFile(t *testing.T, root, rel, content string) {
+func writeModuleFile(t *testing.T, root string, rel string, content string) {
 	t.Helper()
 
 	path := filepath.Join(root, filepath.FromSlash(rel))
@@ -154,7 +154,8 @@ func writeKustomizeFixture(t *testing.T, root string) {
 func findResource(
 	t *testing.T,
 	resources []unstructured.Unstructured,
-	kind, name string,
+	kind string,
+	name string,
 ) unstructured.Unstructured {
 	t.Helper()
 
@@ -174,7 +175,8 @@ func findResource(
 func findResourceByNamePrefix(
 	t *testing.T,
 	resources []unstructured.Unstructured,
-	kind, prefix string,
+	kind string,
+	prefix string,
 ) unstructured.Unstructured {
 	t.Helper()
 

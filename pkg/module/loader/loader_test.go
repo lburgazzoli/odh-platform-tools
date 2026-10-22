@@ -351,7 +351,7 @@ metadata:
 )
 
 // writeModuleFile writes content at a relative path inside root.
-func writeModuleFile(t *testing.T, root, relative, content string) {
+func writeModuleFile(t *testing.T, root string, relative string, content string) {
 	t.Helper()
 
 	path := filepath.Join(root, relative)
@@ -530,15 +530,19 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 		},
 		{
 			// The root is a JSON string, not an object; the typed
-			// decode rejects the document shape.
+			// decode rejects the document shape. The jsonv2 error
+			// wording is not stable across processes ("cannot" or
+			// "unable to unmarshal"), so assert the shared stem.
 			name:        "scalar root",
 			content:     scalarRootYAML,
-			errContains: "cannot unmarshal JSON string",
+			errContains: "unmarshal JSON string",
 		},
 		{
+			// See the scalar root case: assert only the stable stem
+			// of the jsonv2 type-mismatch wording.
 			name:        "list root",
 			content:     listRootYAML,
-			errContains: "cannot unmarshal JSON array",
+			errContains: "unmarshal JSON array",
 		},
 		{
 			name:        "null root",

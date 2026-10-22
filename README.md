@@ -159,11 +159,10 @@ including OpenShift SecurityContextConstraints — is the error
 
 **Controller Deployment** (`deployments`): the bundle must contain
 exactly one Deployment (`DEPLOYMENT_MISSING` /
-`DEPLOYMENT_MULTIPLE`), and every container the definition selects —
-the main container, defaulting to `manager`, and any init container —
-must appear exactly once in its configured pod spec list
-(`CONTAINER_MISSING`, `CONTAINER_DUPLICATE`, and
-`CONTAINER_LIST_MISMATCH` for a container found in the wrong list).
+`DEPLOYMENT_MULTIPLE`), and the containers the definition selects —
+the main container, defaulting to `manager`, and the optional init
+container when configured — must exist in the Deployment's pod spec
+(`CONTAINER_MISSING`).
 
 **Module CRD** (`crd`): the bundle must contain exactly one
 CustomResourceDefinition declaring the module's own group and kind

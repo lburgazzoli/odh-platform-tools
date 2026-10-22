@@ -14,7 +14,7 @@ import (
 )
 
 // object builds one unstructured object with the given identity.
-func object(apiVersion, kind, name string) unstructured.Unstructured {
+func object(apiVersion string, kind string, name string) unstructured.Unstructured {
 	return unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": apiVersion,
 		"kind":       kind,
@@ -24,7 +24,7 @@ func object(apiVersion, kind, name string) unstructured.Unstructured {
 
 // moduleCRD builds one CustomResourceDefinition declaring the given
 // type.
-func moduleCRD(name, group, kind string) unstructured.Unstructured {
+func moduleCRD(name string, group string, kind string) unstructured.Unstructured {
 	res := object("apiextensions.k8s.io/v1", "CustomResourceDefinition", name)
 	res.Object["spec"] = map[string]any{
 		"group": group,

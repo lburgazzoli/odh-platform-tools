@@ -127,7 +127,7 @@ func (t Type) MarshalJSONTo(enc *jsontext.Encoder) error {
 type problems []error
 
 // add records a problem at a definition field path.
-func (p *problems) add(path, format string, args ...any) {
+func (p *problems) add(path string, format string, args ...any) {
 	*p = append(*p, &FieldError{Path: path, Message: fmt.Sprintf(format, args...)})
 }
 

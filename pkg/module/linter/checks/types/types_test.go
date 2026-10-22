@@ -13,7 +13,7 @@ import (
 )
 
 // object builds one unstructured object with the given identity.
-func object(apiVersion, kind, name string) unstructured.Unstructured {
+func object(apiVersion string, kind string, name string) unstructured.Unstructured {
 	return unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": apiVersion,
 		"kind":       kind,
@@ -22,7 +22,7 @@ func object(apiVersion, kind, name string) unstructured.Unstructured {
 }
 
 // objectWithNamespace builds one namespaced unstructured object.
-func objectWithNamespace(apiVersion, kind, namespace, name string) unstructured.Unstructured {
+func objectWithNamespace(apiVersion string, kind string, namespace string, name string) unstructured.Unstructured {
 	res := object(apiVersion, kind, name)
 	res.Object["metadata"] = map[string]any{"namespace": namespace, "name": name}
 

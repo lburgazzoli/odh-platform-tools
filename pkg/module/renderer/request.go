@@ -62,7 +62,7 @@ func NewRequest(definition config.PlatformModuleDefinition, definitionFile strin
 // and an absolute path is honored as is. Existence and shape of the
 // entry are the render engines' to validate, so a missing or
 // unsuitable entry fails at render time.
-func resolveEntry(root, authored string) string {
+func resolveEntry(root string, authored string) string {
 	if filepath.IsAbs(authored) {
 		return filepath.Clean(authored)
 	}
