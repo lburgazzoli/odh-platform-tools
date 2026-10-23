@@ -1,3 +1,6 @@
+# The co-located layout: this definition file sits inside the chart
+# directory, next to Chart.yaml, so the manifests entry needs no path
+# — it defaults to this file's own directory.
 apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
@@ -12,7 +15,8 @@ spec:
   manifests:
     format: helm
     helm:
-      path: ./manifests/chart
+      values:                           # literal values, merged over the chart defaults
+        replicas: 2
   relatedImages:
   - RELATED_IMAGE_EXAMPLE_CONTROLLER
   controller:

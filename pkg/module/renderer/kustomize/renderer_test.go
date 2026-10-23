@@ -169,6 +169,36 @@ spec:
 const paramsEnv = `LOG_LEVEL=info
 `
 
+// coLocatedDefinitionYAML selects the Kustomize backend with no
+// kustomize block: the entry defaults to the definition file's own
+// directory.
+const coLocatedDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: kustomize
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        image: quay.io/example/controller:v1
+`
+
+// coLocatedKustomizationYAML is a self-contained entry with one
+// direct resource.
+const coLocatedKustomizationYAML = `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- deployment.yaml
+`
+
 // writeModuleFile writes content at a module-root-relative path.
 func writeModuleFile(t *testing.T, root string, rel string, content string) {
 	t.Helper()
@@ -187,9 +217,17 @@ func writeModuleFile(t *testing.T, root string, rel string, content string) {
 func loadDefinition(t *testing.T, root string) v1alpha1.PlatformModuleDefinition {
 	t.Helper()
 
+	return loadDefinitionFile(t, root, "definition.yaml")
+}
+
+// loadDefinitionFile loads the module definition at a
+// module-root-relative path through the real loader.
+func loadDefinitionFile(t *testing.T, root string, rel string) v1alpha1.PlatformModuleDefinition {
+	t.Helper()
+
 	g := NewWithT(t)
 
-	definition, err := loader.LoadFromPath(t.Context(), filepath.Join(root, "definition.yaml"))
+	definition, err := loader.LoadFromPath(t.Context(), filepath.Join(root, filepath.FromSlash(rel)))
 	g.Expect(err).NotTo(HaveOccurred())
 
 	return definition
@@ -280,6 +318,30 @@ func TestRenderKustomize(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(found).To(BeTrue())
 	g.Expect(data).To(HaveKeyWithValue("LOG_LEVEL", "info"))
+}
+
+// TestRenderKustomizeCoLocated proves a definition that omits the
+// kustomize block renders the entry co-located with the definition
+// file through the real engine: kustomization.yaml, resources, and
+// the definition file share one directory.
+func TestRenderKustomizeCoLocated(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeModuleFile(t, root, "kustomization.yaml", coLocatedKustomizationYAML)
+	writeModuleFile(t, root, "deployment.yaml", deploymentResourceYAML)
+	writeModuleFile(t, root, "module.yaml", coLocatedDefinitionYAML)
+
+	resources, err := Render(t.Context(), loadDefinitionFile(t, root, "module.yaml"), filepath.Join(root, "module.yaml"))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	deployment := findResource(t, resources, "Deployment", "module-controller")
+	replicas, found, err := unstructured.NestedInt64(deployment.Object, "spec", "replicas")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(replicas).To(Equal(int64(1)))
 }
 
 func TestRenderKustomizeYmlExtension(t *testing.T) {

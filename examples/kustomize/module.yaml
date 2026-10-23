@@ -1,3 +1,6 @@
+# The co-located layout: this definition file sits next to
+# kustomization.yaml, so the manifests entry needs no path — it
+# defaults to this file's own directory.
 apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
@@ -10,8 +13,6 @@ spec:
       kind: Example
   manifests:
     format: kustomize
-    kustomize:
-      path: ./manifests
   relatedImages:
   - RELATED_IMAGE_EXAMPLE_CONTROLLER
   controller:

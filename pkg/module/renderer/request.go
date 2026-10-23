@@ -9,8 +9,15 @@
 package renderer
 
 import (
+	"context"
+	"fmt"
 	"path/filepath"
 
+	jsonv2 "encoding/json/v2"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+
+	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
 	helm "github.com/k8s-manifest-kit/renderer-helm/pkg"
 
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
@@ -67,30 +74,55 @@ func NewRequestWithOptions(definition v1alpha1.PlatformModuleDefinition, definit
 
 	root := filepath.Dir(definitionFile)
 
-	// Structural validation is deferred, so a decodable definition may
-	// select a backend without its block: no entry is attached and the
-	// render action reports the empty result downstream instead of
-	// this adapter panicking on a nil block.
+	// Structural validation is deferred, and an omitted backend block
+	// or path is a default, not an error: the entry resolves to the
+	// definition file's own directory — the co-located layout where
+	// Chart.yaml or kustomization.yaml sits next to the definition
+	// file. Existence and shape of the entry are the render engine's
+	// to validate, so an unsuitable directory fails at render time
+	// with the engine's own error.
 	switch definition.Spec.Manifests.Format {
 	case v1alpha1.FormatHelm:
+		path := ""
+		var values map[string]apiextensionsv1.JSON
 		if manifests := definition.Spec.Manifests.Helm; manifests != nil {
-			request.HelmCharts = []types.HelmChartInfo{{
-				Source: helm.Source{
-					Chart:            resolveEntry(root, manifests.Path),
-					ReleaseName:      definition.Name,
-					ReleaseNamespace: options.Namespace,
-				},
-			}}
+			path = manifests.Path
+			values = manifests.Values
 		}
-	case v1alpha1.FormatKustomize:
-		if manifests := definition.Spec.Manifests.Kustomize; manifests != nil {
-			// The namespace is deliberately not carried on the
-			// manifest entry: like the operator's Kustomize render
-			// action, the backend applies it through the engine's
-			// namespace transformer at render time.
-			request.Manifests = []types.ManifestInfo{
-				{Path: resolveEntry(root, manifests.Path)},
+
+		source := helm.Source{
+			Chart:            resolveEntry(root, path),
+			ReleaseName:      definition.Name,
+			ReleaseNamespace: options.Namespace,
+		}
+
+		if values != nil {
+			// Authored literal values carried on the chart source
+			// exactly as the operator carries its module handler
+			// values: chart defaults apply first and definition
+			// values override them. The arbitrary JSON entries
+			// decode inside the source's own values function — the
+			// framework's error channel — so a malformed entry
+			// surfaces as a render failure, not a new error seam
+			// here.
+			source.Values = func(context.Context) (enginetypes.Values, error) {
+				return decodeHelmValues(values)
 			}
+		}
+
+		request.HelmCharts = []types.HelmChartInfo{{Source: source}}
+	case v1alpha1.FormatKustomize:
+		path := ""
+		if manifests := definition.Spec.Manifests.Kustomize; manifests != nil {
+			path = manifests.Path
+		}
+
+		// The namespace is deliberately not carried on the
+		// manifest entry: like the operator's Kustomize render
+		// action, the backend applies it through the engine's
+		// namespace transformer at render time.
+		request.Manifests = []types.ManifestInfo{
+			{Path: resolveEntry(root, path)},
 		}
 	}
 
@@ -98,14 +130,35 @@ func NewRequestWithOptions(definition v1alpha1.PlatformModuleDefinition, definit
 }
 
 // resolveEntry resolves an authored manifest path against the
-// definition file's directory. The path is used exactly as configured,
-// and an absolute path is honored as is. Existence and shape of the
-// entry are the render engines' to validate, so a missing or
-// unsuitable entry fails at render time.
+// definition file's directory. An empty path — an omitted block or an
+// omitted path — resolves to the definition file's directory itself;
+// the path is otherwise used exactly as configured, and an absolute
+// path is honored as is. Existence and shape of the entry are the
+// render engines' to validate, so a missing or unsuitable entry fails
+// at render time.
 func resolveEntry(root string, authored string) string {
 	if filepath.IsAbs(authored) {
 		return filepath.Clean(authored)
 	}
 
 	return filepath.Join(root, authored)
+}
+
+// decodeHelmValues decodes authored literal chart values to the map
+// the Helm renderer consumes. Each entry is raw JSON exactly as
+// authored — placeholder-looking text stays literal — and the round
+// trip cannot fail for content that loaded successfully, but a
+// malformed entry is reported rather than dropped.
+func decodeHelmValues(values map[string]apiextensionsv1.JSON) (enginetypes.Values, error) {
+	result := make(enginetypes.Values, len(values))
+	for key, value := range values {
+		var decoded any
+		if err := jsonv2.Unmarshal(value.Raw, &decoded); err != nil {
+			return nil, fmt.Errorf("helm value %q: %w", key, err)
+		}
+
+		result[key] = decoded
+	}
+
+	return result, nil
 }

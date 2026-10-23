@@ -25,8 +25,10 @@ func crdJSON(t *testing.T) []byte {
 
 // TestEmbeddedPlatformModuleDefinitionCRD proves the generated CRD is
 // accessible from the built package without a source checkout or
-// working-directory dependency, with the expected identity and
-// optional+nullable env value schema.
+// working-directory dependency, with the expected identity, the
+// optional+nullable env value schema, and the authored-values schema:
+// each value accepts every JSON kind, and the backend paths are
+// optional — co-located entries default at render time.
 func TestEmbeddedPlatformModuleDefinitionCRD(t *testing.T) {
 	t.Parallel()
 
@@ -45,5 +47,9 @@ func TestEmbeddedPlatformModuleDefinitionCRD(t *testing.T) {
 		jq.Match(`.spec.versions[0].storage == true`),
 		jq.Match(`.spec.versions[0].subresources.status == {}`),
 		jq.Match(`.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.controller.properties.deployment.properties.container.properties.env.items.properties.value.nullable == true`),
+		jq.Match(`.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.manifests.properties.helm.properties.values.type == "object"`),
+		jq.Match(`.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.manifests.properties.helm.properties.values.additionalProperties."x-kubernetes-preserve-unknown-fields" == true`),
+		jq.Match(`.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.manifests.properties.helm | has("required") | not`),
+		jq.Match(`.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.manifests.properties.kustomize | has("required") | not`),
 	))
 }

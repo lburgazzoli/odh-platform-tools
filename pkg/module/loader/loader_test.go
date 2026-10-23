@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+
 	. "github.com/onsi/gomega"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
@@ -39,6 +41,35 @@ spec:
         env:
           - name: LOG_LEVEL
             value: "{{CONTROLLER_LOG_LEVEL}}"
+`
+
+// helmValuesDefinitionYAML is a co-located Helm module definition
+// authoring literal chart values with an omitted backend path.
+const helmValuesDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: helm
+    helm:
+      values:
+        replicas: 2
+        image:
+          tag: v1.0.0
+        logLevel: "{{RELATED_IMAGE_SYNTHETIC_CONTROLLER}}"
+  relatedImages:
+    - RELATED_IMAGE_SYNTHETIC_OPERAND
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        image: "{{RELATED_IMAGE_SYNTHETIC_CONTROLLER}}"
 `
 
 // kustomizeDefinitionYAML is the valid Kustomize module definition.
@@ -389,6 +420,33 @@ func TestLoadHelmDefinition(t *testing.T) {
 
 	// The omitted instance name defaults to the module name.
 	g.Expect(definition.Spec.Instance.Name).To(Equal("synthetic"))
+}
+
+// TestLoadHelmValuesAndOmittedPath proves authored literal chart
+// values survive loading as the raw JSON the renderer decodes —
+// scalars, nested objects, and placeholder-looking text stay literal —
+// and an omitted backend path loads without defaulting: the entry
+// defaults to the definition file's directory at render time, not at
+// load time.
+func TestLoadHelmValuesAndOmittedPath(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeModuleFile(t, root, "definition.yaml", helmValuesDefinitionYAML)
+	writeModuleFile(t, root, "Chart.yaml", chartYAML)
+
+	definition, err := Load(t.Context(), os.DirFS(root), "definition.yaml")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(definition.Spec.Manifests.Helm.Path).To(BeEmpty())
+	g.Expect(definition.Spec.Manifests.Helm.Values).To(SatisfyAll(
+		HaveLen(3),
+		HaveKeyWithValue("replicas", apiextensionsv1.JSON{Raw: []byte("2")}),
+		HaveKeyWithValue("image", apiextensionsv1.JSON{Raw: []byte(`{"tag":"v1.0.0"}`)}),
+		HaveKeyWithValue("logLevel", apiextensionsv1.JSON{Raw: []byte(`"{{RELATED_IMAGE_SYNTHETIC_CONTROLLER}}"`)}),
+	))
 }
 
 // TestLoadKeepsExplicitInstanceName proves the nested instance name

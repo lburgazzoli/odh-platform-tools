@@ -5,6 +5,7 @@ import (
 	"path"
 	"testing"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
@@ -88,27 +89,77 @@ func kustomizeDefinition(path string) v1alpha1.PlatformModuleDefinition {
 	return definition
 }
 
-// TestNewRequestWithoutBackendBlock proves a definition that selects a
-// backend without its block — decodable now that structural validation
-// is deferred — yields a request with no entry instead of a panic.
-func TestNewRequestWithoutBackendBlock(t *testing.T) {
+// TestNewRequestDefaultsEntryToDefinitionDirectory proves a
+// definition that omits the backend block, or authors it with an
+// empty path, defaults its entry to the definition file's own
+// directory — the co-located layout — instead of yielding no entry:
+// existence and shape of the entry are the render engine's to
+// validate.
+func TestNewRequestDefaultsEntryToDefinitionDirectory(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	helmless := helmDefinition()
-	helmless.Spec.Manifests = v1alpha1.Manifests{Format: v1alpha1.FormatHelm}
+	blockless := helmDefinition()
+	blockless.Spec.Manifests = v1alpha1.Manifests{Format: v1alpha1.FormatHelm}
 
-	request := NewRequest(helmless, definitionFile)
-	g.Expect(request.HelmCharts).To(BeEmpty())
+	request := NewRequest(blockless, definitionFile)
+	g.Expect(request.HelmCharts).To(HaveLen(1))
+	g.Expect(request.HelmCharts[0].Chart).To(Equal("/modules/synthetic"))
 	g.Expect(request.Manifests).To(BeEmpty())
 
-	blockless := kustomizeDefinition("./manifests/controller")
-	blockless.Spec.Manifests = v1alpha1.Manifests{Format: v1alpha1.FormatKustomize}
+	emptyPath := helmDefinition()
+	emptyPath.Spec.Manifests.Helm = &v1alpha1.HelmManifests{}
 
-	request = NewRequest(blockless, definitionFile)
+	request = NewRequest(emptyPath, definitionFile)
+	g.Expect(request.HelmCharts).To(HaveLen(1))
+	g.Expect(request.HelmCharts[0].Chart).To(Equal("/modules/synthetic"))
+
+	kustomizeBlockless := kustomizeDefinition("./manifests/controller")
+	kustomizeBlockless.Spec.Manifests = v1alpha1.Manifests{Format: v1alpha1.FormatKustomize}
+
+	request = NewRequest(kustomizeBlockless, definitionFile)
 	g.Expect(request.HelmCharts).To(BeEmpty())
-	g.Expect(request.Manifests).To(BeEmpty())
+	g.Expect(request.Manifests).To(HaveLen(1))
+	g.Expect(request.Manifests[0].Path).To(Equal("/modules/synthetic"))
+
+	kustomizeEmpty := kustomizeDefinition("")
+
+	request = NewRequest(kustomizeEmpty, definitionFile)
+	g.Expect(request.Manifests).To(HaveLen(1))
+	g.Expect(request.Manifests[0].Path).To(Equal("/modules/synthetic"))
+}
+
+// TestNewRequestHelmValues proves authored literal values ride the
+// chart source as the decoded map the renderer consumes — scalars,
+// nested objects, and placeholder-looking text stay literal, matching
+// the env contract — without replacing the source definition's
+// authored copy.
+func TestNewRequestHelmValues(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	definition := helmDefinition()
+	definition.Spec.Manifests.Helm.Values = map[string]apiextensionsv1.JSON{
+		"replicas": {Raw: []byte("2")},
+		"image":    {Raw: []byte(`{"tag":"v1.0.0"}`)},
+		"logLevel": {Raw: []byte(`"{{RELATED_IMAGE_EXAMPLE_CONTROLLER}}"`)},
+	}
+
+	request := NewRequest(definition, definitionFile)
+	g.Expect(request.HelmCharts).To(HaveLen(1))
+
+	values, err := request.HelmCharts[0].Values(context.Background())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(values).To(SatisfyAll(
+		HaveKeyWithValue("replicas", float64(2)),
+		HaveKeyWithValue("image", map[string]any{"tag": "v1.0.0"}),
+		HaveKeyWithValue("logLevel", "{{RELATED_IMAGE_EXAMPLE_CONTROLLER}}"),
+	))
+
+	// The source definition keeps its authored values untouched.
+	g.Expect(definition.Spec.Manifests.Helm.Values).To(HaveLen(3))
 }
 
 func TestNewRequestHelm(t *testing.T) {
@@ -120,8 +171,8 @@ func TestNewRequestHelm(t *testing.T) {
 	request := NewRequest(definition, definitionFile)
 
 	// The chart source is the contained local entry, and the release
-	// name is the module name. No values are attached: replacement
-	// resolution does not exist yet and never belongs to requests.
+	// name is the module name. No values function is attached when the
+	// definition authors none, so chart defaults apply alone.
 	g.Expect(request.HelmCharts).To(HaveLen(1))
 	g.Expect(request.HelmCharts[0].Chart).To(Equal("/modules/synthetic/manifests/chart"))
 	g.Expect(request.HelmCharts[0].ReleaseName).To(Equal("synthetic"))

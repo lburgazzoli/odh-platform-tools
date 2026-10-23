@@ -12,24 +12,25 @@ credentials, containers, or external renderer binaries.
 
 ```sh
 go run github.com/lburgazzoli/odh-platform-tools/cmd module lint \
-  --config examples/helm/definition.yaml
+  --config examples/helm/chart/module.yaml
 ```
 
 ```
-module lint examples/helm/definition.yaml: pass
+module lint examples/helm/chart/module.yaml: pass
 ```
 
 The Kustomize example works the same way:
 
 ```sh
 go run github.com/lburgazzoli/odh-platform-tools/cmd module lint \
-  --config examples/kustomize/definition.yaml
+  --config examples/kustomize/module.yaml
 ```
 
 Both examples under [`examples/`](examples/) are complete, self-contained
-module roots: the definition sits at the root and every referenced file
-(chart, kustomization, sibling base) lives inside it. Neither example
-implies a runnable controller or a cluster.
+module roots using the co-located layout: each definition file sits
+inside the entry it renders — next to `Chart.yaml` or
+`kustomization.yaml` — so neither authors a manifests path. Neither
+example implies a runnable controller or a cluster.
 
 ## The module definition
 
@@ -54,9 +55,10 @@ spec:
       version: v1alpha1
       kind: Example
   manifests:
-    format: helm                     # helm | kustomize; exactly one backend block
+    format: helm                     # helm | kustomize; the backend block is optional
     helm:
-      path: ./manifests/chart        # chart root, relative to the definition file
+      values:                        # optional literal values, over the chart defaults
+        replicas: 2
   relatedImages:                     # optional, see below
   - RELATED_IMAGE_EXAMPLE_CONTROLLER
   controller:
@@ -69,6 +71,16 @@ spec:
           value: debug
 ```
 
+The manifests entry may instead be co-located with the definition
+file — the form both bundled examples use — in which case the backend
+block or its path is omitted and the entry defaults to the
+definition file's own directory:
+
+```yaml
+  manifests:
+    format: helm                     # Chart.yaml sits next to this file
+```
+
 ### Fields
 
 | Field | Notes |
@@ -76,8 +88,9 @@ spec:
 | `spec.instance.type` | Group, version, and kind of the Module custom resource. |
 | `spec.instance.name` | Optional name of the module's custom resource instance; defaults to `metadata.name` when omitted. Must be a valid object name (DNS subdomain). It is reserved for a future runner that creates and looks up the custom resource — it is not a rendering input. |
 | `spec.manifests.format` | `helm` or `kustomize`, selecting the backend block to render. |
-| `spec.manifests.helm.path` | Chart directory relative to the definition file. Must contain `Chart.yaml`. The release name is `metadata.name`; no repositories, credentials, or extra values are involved. Chart dependencies must be vendored under `charts/`. |
-| `spec.manifests.kustomize.path` | Directory containing `kustomization.yaml` (or `.yml`), relative to the definition file. Sibling bases and resource files are allowed; there is no `default/` fallback. |
+| `spec.manifests.helm.path` | Optional chart directory relative to the definition file. Must contain `Chart.yaml`. Omitted or empty — or the whole `helm` block omitted — defaults to the definition file's own directory (the co-located layout). The release name is `metadata.name`; no repositories or credentials are involved. Chart dependencies must be vendored under `charts/`. |
+| `spec.manifests.helm.values` | Optional literal Helm values, merged over the chart defaults with the definition winning. No interpolation: `{{NAME}}`-looking text stays literal, like env values. Validated against the chart's `values.schema.json` when present. |
+| `spec.manifests.kustomize.path` | Optional directory containing `kustomization.yaml` (or `.yml`), relative to the definition file. Omitted or empty — or the whole `kustomize` block omitted — defaults to the definition file's own directory. Sibling bases and resource files are allowed; there is no `default/` fallback. |
 | `spec.controller.deployment.name` | The controller Deployment the rendered manifests must contain exactly once. |
 | `spec.controller.deployment.container` | The main container. `name` defaults to `manager` when omitted; `image` may be a literal or a whole-value `{{VARIABLE}}` reference. |
 | `spec.controller.deployment.initContainer` | Optional init container, selected by `name` only. A resolved main image overrides the named init container too; init-specific image or env settings do not exist. |
@@ -131,7 +144,7 @@ process signals are handled through the command context.
 
 ```json
 {
-  "definition": "examples/helm/definition.yaml",
+  "definition": "examples/helm/chart/module.yaml",
   "status": "findings",
   "hasErrors": true,
   "hasWarnings": false,

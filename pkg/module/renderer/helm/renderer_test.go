@@ -95,6 +95,52 @@ spec:
         image: quay.io/example/controller:v1
 `
 
+// coLocatedDefinitionYAML selects the Helm backend with no helm
+// block: the entry defaults to the definition file's own directory.
+const coLocatedDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: helm
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        image: quay.io/example/controller:v1
+`
+
+// definitionWithValuesYAML authors literal chart values with an
+// omitted path: the entry defaults to the definition file's own
+// directory and the values merge over the chart defaults.
+const definitionWithValuesYAML = `apiVersion: config.opendatahub.io/v1alpha1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: helm
+    helm:
+      values:
+        replicas: 2
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        image: quay.io/example/controller:v1
+`
+
 // chartYAML declares a chart with a vendored dependency.
 const chartYAML = `apiVersion: v2
 name: synthetic
@@ -171,9 +217,17 @@ func writeModuleFile(t *testing.T, root string, rel string, content string) {
 func loadDefinition(t *testing.T, root string) v1alpha1.PlatformModuleDefinition {
 	t.Helper()
 
+	return loadDefinitionFile(t, root, "definition.yaml")
+}
+
+// loadDefinitionFile loads the module definition at a
+// module-root-relative path through the real loader.
+func loadDefinitionFile(t *testing.T, root string, rel string) v1alpha1.PlatformModuleDefinition {
+	t.Helper()
+
 	g := NewWithT(t)
 
-	definition, err := loader.LoadFromPath(t.Context(), filepath.Join(root, "definition.yaml"))
+	definition, err := loader.LoadFromPath(t.Context(), filepath.Join(root, filepath.FromSlash(rel)))
 	g.Expect(err).NotTo(HaveOccurred())
 
 	return definition
@@ -230,6 +284,18 @@ func writeChartFixture(t *testing.T, root string) {
 	writeModuleFile(t, root, "manifests/chart/charts/vendored-1.2.3.tgz", string(archive))
 }
 
+// writeCoLocatedChartFixture writes the chart with the definition
+// file inside it, next to Chart.yaml.
+func writeCoLocatedChartFixture(t *testing.T, root string, definitionContent string) {
+	t.Helper()
+
+	writeModuleFile(t, root, "Chart.yaml", chartYAML)
+	writeModuleFile(t, root, "values.yaml", valuesYAML)
+	writeModuleFile(t, root, "values.schema.json", valuesSchemaJSON)
+	writeModuleFile(t, root, "templates/deployment.yaml", templateYAML)
+	writeModuleFile(t, root, "module.yaml", definitionContent)
+}
+
 // findResource returns the rendered object of the given kind and name.
 func findResource(t *testing.T, resources []unstructured.Unstructured, kind string, name string) unstructured.Unstructured {
 	t.Helper()
@@ -267,6 +333,52 @@ func TestRenderHelmChart(t *testing.T) {
 
 	// Vendored dependency templates render from the chart's charts/ archive.
 	g.Expect(findResource(t, resources, "Service", "synthetic-service")).NotTo(BeZero())
+}
+
+// TestRenderHelmCoLocatedChart proves a definition that omits the
+// helm block renders the chart co-located with the definition file:
+// the entry defaults to the definition file's own directory through
+// the real engine, and the chart loader carries the definition file
+// as inert chart content.
+func TestRenderHelmCoLocatedChart(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeCoLocatedChartFixture(t, root, coLocatedDefinitionYAML)
+
+	resources, err := Render(t.Context(), loadDefinitionFile(t, root, "module.yaml"), filepath.Join(root, "module.yaml"))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The chart defaults apply: the definition authors no values.
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+	replicas, found, err := unstructured.NestedInt64(deployment.Object, "spec", "replicas")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(replicas).To(Equal(int64(1)))
+}
+
+// TestRenderHelmDefinitionValues proves authored literal values merge
+// over the chart defaults with operator-identical precedence — chart
+// default 1, definition value 2 — through the real engine, with the
+// omitted path defaulting to the definition file's directory.
+func TestRenderHelmDefinitionValues(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeCoLocatedChartFixture(t, root, definitionWithValuesYAML)
+
+	resources, err := Render(t.Context(), loadDefinitionFile(t, root, "module.yaml"), filepath.Join(root, "module.yaml"))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+	replicas, found, err := unstructured.NestedInt64(deployment.Object, "spec", "replicas")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(replicas).To(Equal(int64(2)))
 }
 
 func TestRenderHelmRejectsInvalidValuesAgainstSchema(t *testing.T) {

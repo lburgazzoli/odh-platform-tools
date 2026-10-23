@@ -19,6 +19,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -173,17 +174,49 @@ type Manifests struct {
 }
 
 // HelmManifests locates the Helm chart root, relative to the module
-// root. The chart release name is the definition metadata.name.
+// root, and carries authored chart values. The chart release name is
+// the definition metadata.name.
 type HelmManifests struct {
-	// +required
-	Path string `json:"path"`
+	// Path is the chart root, relative to the module root. It is
+	// empty when the definition omits it or authors an explicit
+	// empty string; both are equivalent here, and the entry then
+	// defaults to the definition file's own directory — the
+	// co-located layout where Chart.yaml sits next to the definition
+	// file. Existence and shape of the chart are the render engine's
+	// to validate.
+	//
+	// +optional
+	Path string `json:"path,omitzero"`
+
+	// Values are authored literal Helm values, merged over the chart
+	// defaults exactly as the operator carries its module handler
+	// values: chart defaults apply first and definition values
+	// override them. No interpolation, placeholder resolution, or
+	// secret handling exists here — {{NAME}}-looking text stays
+	// literal, matching the env contract. The canonical
+	// apiextensions JSON type carries the arbitrary authored
+	// content; the pinned controller-gen cannot deepcopy
+	// interface{}-valued maps, and it is the only representation
+	// whose CRD schema accepts every JSON value kind.
+	//
+	// +optional
+	Values map[string]apiextensionsv1.JSON `json:"values,omitzero"`
 }
 
 // KustomizeManifests locates the directory containing
 // kustomization.yaml, relative to the module root.
 type KustomizeManifests struct {
-	// +required
-	Path string `json:"path"`
+	// Path is the directory containing kustomization.yaml (or
+	// .yml), relative to the module root. It is empty when the
+	// definition omits it or authors an explicit empty string; both
+	// are equivalent here, and the entry then defaults to the
+	// definition file's own directory — the co-located layout where
+	// kustomization.yaml sits next to the definition file.
+	// Existence and shape of the entry are the render engine's to
+	// validate.
+	//
+	// +optional
+	Path string `json:"path,omitzero"`
 }
 
 // Controller describes the module controller deployment.
