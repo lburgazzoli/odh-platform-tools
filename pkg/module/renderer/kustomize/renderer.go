@@ -18,7 +18,7 @@ import (
 
 // Render renders the module described by definition, whose file was
 // loaded from definitionFile, through the actual framework Kustomize
-// action and returns the rendered objects.
+// action with no runtime options, and returns the rendered objects.
 //
 // The action renders the configured entry directory directly, with
 // caching disabled and no client attached. The declared path maps
@@ -37,14 +37,27 @@ import (
 // rendered; callers filtering it must not assume they hold the raw
 // kustomization output.
 func Render(ctx context.Context, definition v1alpha1.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error) {
+	return RenderWithOptions(ctx, definition, definitionFile, renderer.Options{})
+}
+
+// RenderWithOptions renders the module with runtime options: the
+// options' namespace is applied by the engine's real namespace
+// transformer — the same one the operator's Kustomize render action
+// uses — to namespaced objects, RoleBinding and ClusterRoleBinding
+// subjects, and cross-object references. Cluster-scoped objects keep
+// their scope, and an empty namespace transforms nothing.
+func RenderWithOptions(ctx context.Context, definition v1alpha1.PlatformModuleDefinition, definitionFile string, options renderer.Options) ([]unstructured.Unstructured, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	request := renderer.NewRequest(definition, definitionFile)
+	request := renderer.NewRequestWithOptions(definition, definitionFile, options)
 
 	action := fwkustomize.NewAction(
 		fwkustomize.WithCache(false),
+		// An empty namespace is the engine's no-op, so the zero
+		// options render exactly like the offline lint path.
+		fwkustomize.WithNamespace(options.Namespace),
 		fwkustomize.WithManifestsOptions(
 			// The framework redirects an entry without
 			// kustomization.yaml to a default/ subdirectory; an

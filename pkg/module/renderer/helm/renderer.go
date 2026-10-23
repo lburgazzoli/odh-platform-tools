@@ -16,7 +16,7 @@ import (
 
 // Render renders the module described by definition, whose file was
 // loaded from definitionFile, through the actual framework Helm
-// action and returns the rendered objects.
+// action with no runtime options, and returns the rendered objects.
 //
 // The action renders the configured chart directory directly, with
 // caching disabled and no client or release state attached. Chart
@@ -32,11 +32,21 @@ import (
 // rendered for the chart; callers filtering it must not assume they
 // hold the raw chart documents.
 func Render(ctx context.Context, definition v1alpha1.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error) {
+	return RenderWithOptions(ctx, definition, definitionFile, renderer.Options{})
+}
+
+// RenderWithOptions renders the module with runtime options: the
+// options' namespace becomes the Helm release namespace, exposing
+// .Release.Namespace to chart templates. The renderer never fills
+// metadata.namespace itself — a template that does not use
+// .Release.Namespace renders namespace-less output, exactly as with
+// no options.
+func RenderWithOptions(ctx context.Context, definition v1alpha1.PlatformModuleDefinition, definitionFile string, options renderer.Options) ([]unstructured.Unstructured, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	request := renderer.NewRequest(definition, definitionFile)
+	request := renderer.NewRequestWithOptions(definition, definitionFile, options)
 	action := fwhelm.NewAction(fwhelm.WithCache(false))
 
 	if err := action(ctx, request); err != nil {

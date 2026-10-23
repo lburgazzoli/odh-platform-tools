@@ -11,14 +11,15 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
+
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
 
-// Module and kustomization inputs exercised through the real framework
-// action.
-const (
-	definitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
+// definitionYAML is the valid Kustomize module definition.
+const definitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -39,7 +40,9 @@ spec:
         image: quay.io/example/controller:v1
 `
 
-	definitionWithEnvYAML = `apiVersion: config.opendatahub.io/v1alpha1
+// definitionWithEnvYAML is the Kustomize module definition with
+// controller descriptor env entries.
+const definitionWithEnvYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -63,9 +66,9 @@ spec:
           value: debug
 `
 
-	// definitionWithInstanceNameYAML sets an explicit instance name
-	// different from the module name.
-	definitionWithInstanceNameYAML = `apiVersion: config.opendatahub.io/v1alpha1
+// definitionWithInstanceNameYAML sets an explicit instance name
+// different from the module name.
+const definitionWithInstanceNameYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -87,10 +90,14 @@ spec:
         image: quay.io/example/controller:v1
 `
 
-	overlayKustomizationYAML = `apiVersion: kustomize.config.k8s.io/v1beta1
+// overlayKustomizationYAML is the overlay entry with a direct
+// resource, a sibling base, a patch, and a generator.
+const overlayKustomizationYAML = `apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
 - deployment.yaml
+- rolebinding.yaml
+- crd.yaml
 - ../../base
 configMapGenerator:
 - name: params
@@ -103,13 +110,15 @@ patches:
     name: module-controller
 `
 
-	baseKustomizationYAML = `apiVersion: kustomize.config.k8s.io/v1beta1
+// baseKustomizationYAML is the sibling base entry.
+const baseKustomizationYAML = `apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
 - service.yaml
 `
 
-	deploymentResourceYAML = `apiVersion: apps/v1
+// deploymentResourceYAML is the namespaced Deployment resource.
+const deploymentResourceYAML = `apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: module-controller
@@ -117,13 +126,38 @@ spec:
   replicas: 1
 `
 
-	serviceResourceYAML = `apiVersion: v1
+// serviceResourceYAML is the namespaced Service resource.
+const serviceResourceYAML = `apiVersion: v1
 kind: Service
 metadata:
   name: module-service
 `
 
-	patchYAML = `apiVersion: apps/v1
+// roleBindingResourceYAML is a RoleBinding whose subject carries no
+// authored namespace.
+const roleBindingResourceYAML = `apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: module-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: module-role
+subjects:
+- kind: ServiceAccount
+  name: module-controller
+`
+
+// clusterScopedResourceYAML is a cluster-scoped CRD that must not
+// receive a namespace.
+const clusterScopedResourceYAML = `apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: syntheticmodules.components.platform.opendatahub.io
+`
+
+// patchYAML patches the Deployment replica count.
+const patchYAML = `apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: module-controller
@@ -131,9 +165,9 @@ spec:
   replicas: 2
 `
 
-	paramsEnv = `LOG_LEVEL=info
+// paramsEnv feeds the ConfigMap generator.
+const paramsEnv = `LOG_LEVEL=info
 `
-)
 
 // writeModuleFile writes content at a module-root-relative path.
 func writeModuleFile(t *testing.T, root string, rel string, content string) {
@@ -169,6 +203,8 @@ func writeKustomizeFixture(t *testing.T, root string) {
 	writeModuleFile(t, root, "definition.yaml", definitionYAML)
 	writeModuleFile(t, root, "manifests/overlays/development/kustomization.yaml", overlayKustomizationYAML)
 	writeModuleFile(t, root, "manifests/overlays/development/deployment.yaml", deploymentResourceYAML)
+	writeModuleFile(t, root, "manifests/overlays/development/rolebinding.yaml", roleBindingResourceYAML)
+	writeModuleFile(t, root, "manifests/overlays/development/crd.yaml", clusterScopedResourceYAML)
 	writeModuleFile(t, root, "manifests/overlays/development/patch.yaml", patchYAML)
 	writeModuleFile(t, root, "manifests/overlays/development/params.env", paramsEnv)
 	writeModuleFile(t, root, "manifests/base/kustomization.yaml", baseKustomizationYAML)
@@ -369,4 +405,79 @@ func TestRenderKustomizePropagatesCancellation(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(resources).To(BeNil())
 	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
+}
+
+func TestRenderKustomizeWithOptionsAppliesNamespace(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeKustomizeFixture(t, root)
+
+	definition := loadDefinition(t, root)
+	definitionFile := filepath.Join(root, "definition.yaml")
+
+	resources, err := RenderWithOptions(t.Context(), definition, definitionFile, renderer.Options{
+		Namespace: "opendatahub",
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The engine's real namespace transformer applies the options'
+	// namespace to namespaced resources, including generated ones.
+	deployment := findResource(t, resources, "Deployment", "module-controller")
+	g.Expect(deployment.Object).To(SatisfyAll(
+		jq.Match(`.metadata.namespace == "opendatahub"`),
+	))
+
+	service := findResource(t, resources, "Service", "module-service")
+	g.Expect(service.Object).To(SatisfyAll(
+		jq.Match(`.metadata.namespace == "opendatahub"`),
+	))
+
+	configMap := findResourceByNamePrefix(t, resources, "ConfigMap", "params-")
+	g.Expect(configMap.Object).To(SatisfyAll(
+		jq.Match(`.metadata.namespace == "opendatahub"`),
+	))
+
+	// RoleBinding subjects receive the namespace.
+	roleBinding := findResource(t, resources, "RoleBinding", "module-rolebinding")
+	g.Expect(roleBinding.Object).To(SatisfyAll(
+		jq.Match(`.subjects[0].namespace == "opendatahub"`),
+	))
+
+	// Cluster-scoped objects keep their scope.
+	crd := findResource(
+		t, resources, "CustomResourceDefinition", "syntheticmodules.components.platform.opendatahub.io")
+	g.Expect(crd.Object).To(SatisfyAll(
+		jq.Match(`.metadata | has("namespace") | not`),
+	))
+}
+
+func TestRenderKustomizeZeroOptionsReproduceOfflineRender(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeKustomizeFixture(t, root)
+
+	definition := loadDefinition(t, root)
+	definitionFile := filepath.Join(root, "definition.yaml")
+
+	offline, err := Render(t.Context(), definition, definitionFile)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	zeroOptions, err := RenderWithOptions(t.Context(), definition, definitionFile, renderer.Options{})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Render is the zero-option adapter over the same implementation:
+	// the offline lint output is reproduced exactly, namespace-less.
+	g.Expect(zeroOptions).To(Equal(offline))
+
+	for _, resource := range zeroOptions {
+		g.Expect(resource.Object).To(SatisfyAll(
+			jq.Match(`.metadata | has("namespace") | not`),
+		))
+	}
 }

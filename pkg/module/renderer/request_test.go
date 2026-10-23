@@ -18,16 +18,15 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
-// Kustomize inputs exercised through the real framework engine on an
-// in-memory filesystem.
-const (
-	kustomizationYAML = `apiVersion: kustomize.config.k8s.io/v1beta1
+// kustomizationYAML is the in-memory Kustomize entry.
+const kustomizationYAML = `apiVersion: kustomize.config.k8s.io/v1beta1
 resources:
 - configmap.yaml
 - deployment.yaml
 `
 
-	configMapYAML = `apiVersion: v1
+// configMapYAML is the in-memory ConfigMap resource.
+const configMapYAML = `apiVersion: v1
 kind: ConfigMap
 metadata:
   name: module-cm
@@ -35,14 +34,14 @@ data:
   foo: bar
 `
 
-	deploymentResourceYAML = `apiVersion: apps/v1
+// deploymentResourceYAML is the in-memory Deployment resource.
+const deploymentResourceYAML = `apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: module-controller
 spec:
   replicas: 1
 `
-)
 
 // helmDefinition is a fully normalized Helm module definition.
 func helmDefinition() v1alpha1.PlatformModuleDefinition {
@@ -198,6 +197,32 @@ func TestNewRequestHonorsAbsoluteEntryPath(t *testing.T) {
 	request := NewRequest(definition, definitionFile)
 
 	g.Expect(request.HelmCharts[0].Chart).To(Equal("/elsewhere/chart"))
+}
+
+func TestNewRequestWithOptionsNamespace(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	options := Options{Namespace: "opendatahub"}
+
+	// The Helm backend carries the options' namespace as the release
+	// namespace, exactly as the operator passes the applications
+	// namespace to module charts.
+	request := NewRequestWithOptions(helmDefinition(), definitionFile, options)
+	g.Expect(request.HelmCharts[0].ReleaseNamespace).To(Equal("opendatahub"))
+	g.Expect(request.HelmCharts[0].ReleaseName).To(Equal("synthetic"))
+
+	// The Kustomize backend deliberately does not carry the namespace
+	// on the manifest entry: like the operator's render action, the
+	// backend applies it through the engine's namespace transformer
+	// at render time.
+	request = NewRequestWithOptions(kustomizeDefinition("./manifests/controller"), definitionFile, options)
+	g.Expect(request.Manifests[0].Namespace).To(BeEmpty())
+
+	// The zero-option adapter reproduces the offline request.
+	offline := NewRequest(helmDefinition(), definitionFile)
+	g.Expect(offline.HelmCharts[0].ReleaseNamespace).To(BeEmpty())
 }
 
 func TestRequestsAreIndependent(t *testing.T) {

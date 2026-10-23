@@ -16,13 +16,15 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
+
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
 
-// Module and chart inputs exercised through the real framework action.
-const (
-	definitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
+// definitionYAML is the valid Helm module definition.
+const definitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -43,7 +45,9 @@ spec:
         image: quay.io/example/controller:v1
 `
 
-	definitionWithEnvYAML = `apiVersion: config.opendatahub.io/v1alpha1
+// definitionWithEnvYAML is the Helm module definition with controller
+// descriptor env entries.
+const definitionWithEnvYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -67,9 +71,9 @@ spec:
           value: debug
 `
 
-	// definitionWithInstanceNameYAML sets an explicit instance name
-	// different from the module name.
-	definitionWithInstanceNameYAML = `apiVersion: config.opendatahub.io/v1alpha1
+// definitionWithInstanceNameYAML sets an explicit instance name
+// different from the module name.
+const definitionWithInstanceNameYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -91,7 +95,8 @@ spec:
         image: quay.io/example/controller:v1
 `
 
-	chartYAML = `apiVersion: v2
+// chartYAML declares a chart with a vendored dependency.
+const chartYAML = `apiVersion: v2
 name: synthetic
 version: 1.0.0
 dependencies:
@@ -100,10 +105,12 @@ dependencies:
   repository: https://charts.example.com
 `
 
-	valuesYAML = `replicas: 1
+// valuesYAML is the chart default values.
+const valuesYAML = `replicas: 1
 `
 
-	valuesSchemaJSON = `{
+// valuesSchemaJSON constrains the chart values.
+const valuesSchemaJSON = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
@@ -112,7 +119,8 @@ dependencies:
 }
 `
 
-	templateYAML = `apiVersion: apps/v1
+// templateYAML is the chart's namespace-less deployment template.
+const templateYAML = `apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}-controller
@@ -120,17 +128,30 @@ spec:
   replicas: {{ .Values.replicas }}
 `
 
-	vendoredTemplateYAML = `apiVersion: v1
+// namespacedTemplateYAML is the chart's deployment template with the
+// namespace templated from the release.
+const namespacedTemplateYAML = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-controller
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.replicas }}
+`
+
+// vendoredTemplateYAML is the vendored dependency's namespace-less
+// service template.
+const vendoredTemplateYAML = `apiVersion: v1
 kind: Service
 metadata:
   name: {{ .Release.Name }}-service
 `
 
-	vendoredChartYAML = `apiVersion: v2
+// vendoredChartYAML declares the vendored dependency chart.
+const vendoredChartYAML = `apiVersion: v2
 name: vendored
 version: 1.2.3
 `
-)
 
 // writeModuleFile writes content at a module-root-relative path.
 func writeModuleFile(t *testing.T, root string, rel string, content string) {
@@ -353,4 +374,59 @@ func TestRenderHelmPropagatesCancellation(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(resources).To(BeNil())
 	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
+}
+
+func TestRenderHelmWithOptionsReleaseNamespace(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeChartFixture(t, root)
+	writeModuleFile(t, root, "manifests/chart/templates/deployment.yaml", namespacedTemplateYAML)
+
+	definition := loadDefinition(t, root)
+	definitionFile := filepath.Join(root, "definition.yaml")
+
+	resources, err := RenderWithOptions(t.Context(), definition, definitionFile, renderer.Options{
+		Namespace: "opendatahub",
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The options' namespace is the release namespace: a template
+	// using .Release.Namespace renders into it.
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+	g.Expect(deployment.Object).To(SatisfyAll(
+		jq.Match(`.metadata.namespace == "opendatahub"`),
+	))
+
+	// Helm does not fill metadata.namespace itself: a template that
+	// does not use .Release.Namespace stays namespace-less, exactly
+	// as the operator's normal deploy action would see it.
+	service := findResource(t, resources, "Service", "synthetic-service")
+	g.Expect(service.Object).To(SatisfyAll(
+		jq.Match(`.metadata | has("namespace") | not`),
+	))
+}
+
+func TestRenderHelmZeroOptionsReproduceOfflineRender(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeChartFixture(t, root)
+
+	definition := loadDefinition(t, root)
+	definitionFile := filepath.Join(root, "definition.yaml")
+
+	offline, err := Render(t.Context(), definition, definitionFile)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	zeroOptions, err := RenderWithOptions(t.Context(), definition, definitionFile, renderer.Options{})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Render is the zero-option adapter over the same implementation:
+	// the offline lint output is reproduced exactly.
+	g.Expect(zeroOptions).To(Equal(offline))
 }
