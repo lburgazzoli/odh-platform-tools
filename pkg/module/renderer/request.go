@@ -15,7 +15,7 @@ import (
 
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // NewRequest builds the framework reconciliation request for
@@ -33,7 +33,7 @@ import (
 // which offline rendering does not have. With caching disabled the
 // cacher still reads the instance kind for metrics, so the request
 // instance always carries the module's custom resource type.
-func NewRequest(definition config.PlatformModuleDefinition, definitionFile string) *types.ReconciliationRequest {
+func NewRequest(definition v1alpha1.PlatformModuleDefinition, definitionFile string) *types.ReconciliationRequest {
 	request := &types.ReconciliationRequest{
 		Instance: NewInstance(definition),
 	}
@@ -45,16 +45,16 @@ func NewRequest(definition config.PlatformModuleDefinition, definitionFile strin
 	// render action reports the empty result downstream instead of
 	// this adapter panicking on a nil block.
 	switch definition.Spec.Manifests.Format {
-	case config.FormatHelm:
+	case v1alpha1.FormatHelm:
 		if manifests := definition.Spec.Manifests.Helm; manifests != nil {
 			request.HelmCharts = []types.HelmChartInfo{{
 				Source: helm.Source{
 					Chart:       resolveEntry(root, manifests.Path),
-					ReleaseName: definition.Metadata.Name,
+					ReleaseName: definition.Name,
 				},
 			}}
 		}
-	case config.FormatKustomize:
+	case v1alpha1.FormatKustomize:
 		if manifests := definition.Spec.Manifests.Kustomize; manifests != nil {
 			request.Manifests = []types.ManifestInfo{
 				{Path: resolveEntry(root, manifests.Path)},

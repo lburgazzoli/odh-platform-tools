@@ -5,7 +5,7 @@ import (
 
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // ModuleInstance is an in-memory framework PlatformObject carrying only
@@ -37,14 +37,14 @@ var _ api.PlatformObject = (*ModuleInstance)(nil)
 // name. The configured instance name is deliberately not used here: it
 // is reserved for future custom resource creation and lookup, while
 // rendering stays metadata.name-based.
-func NewInstance(definition config.PlatformModuleDefinition) *ModuleInstance {
+func NewInstance(definition v1alpha1.PlatformModuleDefinition) *ModuleInstance {
 	return &ModuleInstance{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: definition.Spec.Instance.Type.Group + "/" + definition.Spec.Instance.Type.Version,
 			Kind:       definition.Spec.Instance.Type.Kind,
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: definition.Metadata.Name,
+			Name: definition.Name,
 		},
 	}
 }

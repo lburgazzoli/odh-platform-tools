@@ -11,7 +11,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/crd"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/deployments"
@@ -174,7 +174,7 @@ func TestLintCommandClassification(t *testing.T) {
 		},
 		{
 			name:     "definition error",
-			err:      config.NewDefinitionError(errors.New(`unknown object member name "type"`)),
+			err:      moduleerrors.NewDefinitionError(errors.New(`unknown object member name "type"`)),
 			exitCode: ExitUsage,
 			status:   StatusFailed,
 			category: FailureDefinition,
@@ -226,7 +226,7 @@ func TestLintCommandClassificationPrecedence(t *testing.T) {
 
 	// Cancellation wins even when the same error also matches the
 	// definition category through wrapping.
-	combined := fmt.Errorf("%w: %w", config.ErrInvalidDefinition, context.Canceled)
+	combined := fmt.Errorf("%w: %w", moduleerrors.ErrInvalidDefinition, context.Canceled)
 
 	category, code := classify(combined)
 	g.Expect(category).To(Equal(FailureCancelled))
@@ -294,7 +294,7 @@ warning RESOURCE_KIND_DISALLOWED v1, Kind=Namespace/synthetic/odh-applications/m
 		g := NewWithT(t)
 
 		recorder := &recordingRun{
-			err: config.NewDefinitionError(errors.New(`unknown object member name "type"`)),
+			err: moduleerrors.NewDefinitionError(errors.New(`unknown object member name "type"`)),
 		}
 
 		stdout, stderr, err := executeLint(t.Context(), t, recorder.run,
@@ -505,7 +505,7 @@ func TestLintCommandWriteFailuresExitAsExecutionFailures(t *testing.T) {
 
 		g := NewWithT(t)
 
-		definitionFailure := config.NewDefinitionError(errors.New("bad spec"))
+		definitionFailure := moduleerrors.NewDefinitionError(errors.New("bad spec"))
 
 		recorder := &recordingRun{err: definitionFailure}
 
@@ -517,7 +517,7 @@ func TestLintCommandWriteFailuresExitAsExecutionFailures(t *testing.T) {
 		err := command.ExecuteContext(t.Context())
 
 		g.Expect(exitCode(err)).To(Equal(ExitFailure))
-		g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
+		g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
 		g.Expect(err.Error()).To(ContainSubstring("write failure summary"))
 	})
 }

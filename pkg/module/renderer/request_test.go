@@ -5,10 +5,9 @@ import (
 	"path"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
-
-	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	. "github.com/onsi/gomega"
 
@@ -16,7 +15,7 @@ import (
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/render/kustomize"
 	mk "github.com/opendatahub-io/odh-platform-utilities/framework/render/kustomize"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // Kustomize inputs exercised through the real framework engine on an
@@ -46,26 +45,26 @@ spec:
 )
 
 // helmDefinition is a fully normalized Helm module definition.
-func helmDefinition() config.PlatformModuleDefinition {
-	return config.PlatformModuleDefinition{
-		APIVersion: config.APIVersion,
-		Kind:       config.Kind,
-		Metadata:   config.Metadata{Name: "synthetic"},
-		Spec: config.Spec{
-			Instance: config.Instance{Type: config.Type{GroupVersionKind: schema.GroupVersionKind{
+func helmDefinition() v1alpha1.PlatformModuleDefinition {
+	return v1alpha1.PlatformModuleDefinition{
+		APIVersion: v1alpha1.APIVersion,
+		Kind:       v1alpha1.Kind,
+		ObjectMeta: metav1.ObjectMeta{Name: "synthetic"},
+		Spec: v1alpha1.PlatformModuleDefinitionSpec{
+			Instance: v1alpha1.Instance{Type: v1alpha1.ModuleType{
 				Group:   "components.platform.opendatahub.io",
 				Version: "v1alpha1",
 				Kind:    "SyntheticModule",
-			}}},
-			Manifests: config.Manifests{
-				Format: config.FormatHelm,
-				Helm:   &config.HelmManifests{Path: "./manifests/chart"},
+			}},
+			Manifests: v1alpha1.Manifests{
+				Format: v1alpha1.FormatHelm,
+				Helm:   &v1alpha1.HelmManifests{Path: "./manifests/chart"},
 			},
-			Controller: config.Controller{
-				Deployment: config.Deployment{
+			Controller: v1alpha1.Controller{
+				Deployment: v1alpha1.ControllerDeployment{
 					Name: "synthetic-controller",
-					Container: &config.ContainerDefinition{
-						Name:  config.DefaultMainContainerName,
+					Container: &v1alpha1.ContainerDefinition{
+						Name:  v1alpha1.DefaultMainContainerName,
 						Image: "quay.io/example/controller:v1",
 					},
 				},
@@ -80,11 +79,11 @@ const definitionFile = "/modules/synthetic/definition.yaml"
 
 // kustomizeDefinition is a fully normalized Kustomize module
 // definition whose entry path is the argument.
-func kustomizeDefinition(path string) config.PlatformModuleDefinition {
+func kustomizeDefinition(path string) v1alpha1.PlatformModuleDefinition {
 	definition := helmDefinition()
-	definition.Spec.Manifests = config.Manifests{
-		Format:    config.FormatKustomize,
-		Kustomize: &config.KustomizeManifests{Path: path},
+	definition.Spec.Manifests = v1alpha1.Manifests{
+		Format:    v1alpha1.FormatKustomize,
+		Kustomize: &v1alpha1.KustomizeManifests{Path: path},
 	}
 
 	return definition
@@ -99,14 +98,14 @@ func TestNewRequestWithoutBackendBlock(t *testing.T) {
 	g := NewWithT(t)
 
 	helmless := helmDefinition()
-	helmless.Spec.Manifests = config.Manifests{Format: config.FormatHelm}
+	helmless.Spec.Manifests = v1alpha1.Manifests{Format: v1alpha1.FormatHelm}
 
 	request := NewRequest(helmless, definitionFile)
 	g.Expect(request.HelmCharts).To(BeEmpty())
 	g.Expect(request.Manifests).To(BeEmpty())
 
 	blockless := kustomizeDefinition("./manifests/controller")
-	blockless.Spec.Manifests = config.Manifests{Format: config.FormatKustomize}
+	blockless.Spec.Manifests = v1alpha1.Manifests{Format: v1alpha1.FormatKustomize}
 
 	request = NewRequest(blockless, definitionFile)
 	g.Expect(request.HelmCharts).To(BeEmpty())
@@ -148,9 +147,9 @@ func TestNewRequestHelm(t *testing.T) {
 	g.Expect(instance.GetNamespace()).To(BeEmpty())
 
 	// The source definition is not aliased or mutated.
-	g.Expect(definition.Spec.Controller.Deployment.Container.Name).To(Equal(config.DefaultMainContainerName))
+	g.Expect(definition.Spec.Controller.Deployment.Container.Name).To(Equal(v1alpha1.DefaultMainContainerName))
 	instance.SetName("mutated")
-	g.Expect(definition.Metadata.Name).To(Equal("synthetic"))
+	g.Expect(definition.Name).To(Equal("synthetic"))
 }
 
 func TestNewRequestIgnoresInstanceName(t *testing.T) {

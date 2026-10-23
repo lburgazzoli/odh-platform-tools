@@ -8,7 +8,7 @@ package checks
 import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 )
 
@@ -17,7 +17,7 @@ import (
 // error. Composing no validation yields no findings.
 func And(validations ...linter.Validation) linter.Validation {
 	return func(
-		definition config.PlatformModuleDefinition,
+		definition v1alpha1.PlatformModuleDefinition,
 		resources []unstructured.Unstructured,
 	) ([]linter.Diagnostic, error) {
 		var diagnostics []linter.Diagnostic

@@ -9,7 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	gvk "github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/util/jq"
 )
@@ -33,7 +33,7 @@ type Deployment struct{}
 // Deployment, and reports every container the definition selects that
 // does not exist in the Deployment's pod spec.
 func (d Deployment) Validate(
-	definition config.PlatformModuleDefinition,
+	definition v1alpha1.PlatformModuleDefinition,
 	resources []unstructured.Unstructured,
 ) ([]linter.Diagnostic, error) {
 	var deployments []*unstructured.Unstructured
@@ -52,7 +52,7 @@ func (d Deployment) Validate(
 		return []linter.Diagnostic{{
 			ID:       id,
 			Severity: linter.SeverityError,
-			GVK:      definition.Spec.Instance.Type.GroupVersionKind,
+			GVK:      definition.Spec.Instance.Type.GroupVersionKind(),
 			Message:  fmt.Sprintf("module must bundle exactly one Deployment, found %d", len(deployments)),
 		}}, nil
 	}
@@ -87,7 +87,7 @@ func (d Deployment) Validate(
 
 // Validate runs the check.
 func Validate(
-	definition config.PlatformModuleDefinition,
+	definition v1alpha1.PlatformModuleDefinition,
 	resources []unstructured.Unstructured,
 ) ([]linter.Diagnostic, error) {
 	v := Deployment{}

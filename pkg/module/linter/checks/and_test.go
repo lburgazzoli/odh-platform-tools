@@ -8,7 +8,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks"
 )
@@ -17,7 +17,7 @@ import (
 // given ID.
 func finding(id string) linter.Validation {
 	return func(
-		_ config.PlatformModuleDefinition,
+		_ v1alpha1.PlatformModuleDefinition,
 		_ []unstructured.Unstructured,
 	) ([]linter.Diagnostic, error) {
 		return []linter.Diagnostic{{ID: id, Severity: linter.SeverityError}}, nil
@@ -27,7 +27,7 @@ func finding(id string) linter.Validation {
 // failing returns a validation that fails to evaluate.
 func failing(err error) linter.Validation {
 	return func(
-		_ config.PlatformModuleDefinition,
+		_ v1alpha1.PlatformModuleDefinition,
 		_ []unstructured.Unstructured,
 	) ([]linter.Diagnostic, error) {
 		return nil, err
@@ -37,7 +37,7 @@ func failing(err error) linter.Validation {
 func TestAnd(t *testing.T) {
 	t.Parallel()
 
-	definition := config.PlatformModuleDefinition{}
+	definition := v1alpha1.PlatformModuleDefinition{}
 	var resources []unstructured.Unstructured
 
 	t.Run("runs every validation and concatenates the findings in order", func(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 )
 
@@ -73,7 +73,7 @@ func classify(err error) (string, int) {
 		return FailureCancelled, ExitFailure
 	case errors.Is(err, linter.ErrInvalidOptions):
 		return FailureInvalidOptions, ExitUsage
-	case errors.Is(err, config.ErrInvalidDefinition):
+	case errors.Is(err, moduleerrors.ErrInvalidDefinition):
 		return FailureDefinition, ExitUsage
 	default:
 		return FailureRender, ExitFailure

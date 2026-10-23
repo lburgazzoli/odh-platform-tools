@@ -10,7 +10,7 @@ import (
 
 	gvk "github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 )
 
@@ -28,7 +28,7 @@ type Types struct {
 // Validate reports every bundled object whose kind is not on the
 // allowlist.
 func (t Types) Validate(
-	_ config.PlatformModuleDefinition,
+	_ v1alpha1.PlatformModuleDefinition,
 	resources []unstructured.Unstructured,
 ) ([]linter.Diagnostic, error) {
 	var diagnostics []linter.Diagnostic
@@ -58,7 +58,7 @@ func (t Types) Validate(
 // Validate runs the check with the default allowlist, mirroring the
 // operator's allowedChartResourceKinds.
 func Validate(
-	definition config.PlatformModuleDefinition,
+	definition v1alpha1.PlatformModuleDefinition,
 	resources []unstructured.Unstructured,
 ) ([]linter.Diagnostic, error) {
 	v := Types{}

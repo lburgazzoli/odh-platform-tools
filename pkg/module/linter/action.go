@@ -7,17 +7,18 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
 // DefinitionLoad loads and normalizes one module definition file. The
 // strict loader is the concrete implementation.
-type DefinitionLoad func(ctx context.Context, path string) (config.PlatformModuleDefinition, error)
+type DefinitionLoad func(ctx context.Context, path string) (v1alpha1.PlatformModuleDefinition, error)
 
 // ManifestRender renders the manifest backend selected by a loaded
 // definition and returns the rendered objects. The Helm and Kustomize
 // backend wrappers are the concrete implementations.
-type ManifestRender func(ctx context.Context, definition config.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error)
+type ManifestRender func(ctx context.Context, definition v1alpha1.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error)
 
 // Action composes loading, backend rendering, and validation into one
 // lint invocation: it loads the definition, renders its manifest
@@ -115,15 +116,15 @@ func (a *Action) Run(ctx context.Context, options Options) (Result, error) {
 // manifest format. Structural validation is deferred, so an
 // unsupported value reaches this point as a definition failure rather
 // than being caught at load time.
-func (a *Action) backendFor(definition config.PlatformModuleDefinition) (ManifestRender, error) {
+func (a *Action) backendFor(definition v1alpha1.PlatformModuleDefinition) (ManifestRender, error) {
 	switch definition.Spec.Manifests.Format {
-	case config.FormatHelm:
+	case v1alpha1.FormatHelm:
 		return a.renderHelm, nil
-	case config.FormatKustomize:
+	case v1alpha1.FormatKustomize:
 		return a.renderKustomize, nil
 	default:
-		return nil, config.NewDefinitionErrorf("unsupported manifest format %q for module %s",
+		return nil, moduleerrors.NewDefinitionErrorf("unsupported manifest format %q for module %s",
 			definition.Spec.Manifests.Format,
-			definition.Metadata.Name)
+			definition.Name)
 	}
 }

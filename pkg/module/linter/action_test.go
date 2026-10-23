@@ -7,11 +7,12 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	. "github.com/onsi/gomega"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
 // actionCalls records the service invocations of one action run.
@@ -19,14 +20,14 @@ type actionCalls struct {
 	sequence    []string
 	contexts    []context.Context
 	paths       []string
-	definitions []config.PlatformModuleDefinition
+	definitions []v1alpha1.PlatformModuleDefinition
 	resources   [][]unstructured.Unstructured
 }
 
 // loader returns a fake definition loader returning definition and
 // err.
-func (r *actionCalls) loader(definition config.PlatformModuleDefinition, err error) DefinitionLoad {
-	return func(ctx context.Context, path string) (config.PlatformModuleDefinition, error) {
+func (r *actionCalls) loader(definition v1alpha1.PlatformModuleDefinition, err error) DefinitionLoad {
+	return func(ctx context.Context, path string) (v1alpha1.PlatformModuleDefinition, error) {
 		r.sequence = append(r.sequence, "load")
 		r.contexts = append(r.contexts, ctx)
 		r.paths = append(r.paths, path)
@@ -42,7 +43,7 @@ func (r *actionCalls) renderer(
 	resources []unstructured.Unstructured,
 	err error,
 ) ManifestRender {
-	return func(ctx context.Context, definition config.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error) {
+	return func(ctx context.Context, definition v1alpha1.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error) {
 		r.sequence = append(r.sequence, "render:"+backend)
 		r.contexts = append(r.contexts, ctx)
 		r.definitions = append(r.definitions, definition)
@@ -54,7 +55,7 @@ func (r *actionCalls) renderer(
 
 // validator returns a fake validation function returning diagnostics.
 func (r *actionCalls) validator(diagnostics ...Diagnostic) Validation {
-	return func(definition config.PlatformModuleDefinition, resources []unstructured.Unstructured) ([]Diagnostic, error) {
+	return func(definition v1alpha1.PlatformModuleDefinition, resources []unstructured.Unstructured) ([]Diagnostic, error) {
 		r.sequence = append(r.sequence, "validate")
 		r.definitions = append(r.definitions, definition)
 		r.resources = append(r.resources, resources)
@@ -65,40 +66,40 @@ func (r *actionCalls) validator(diagnostics ...Diagnostic) Validation {
 
 // failingValidator returns a fake validation function returning err.
 func failingValidator(err error) Validation {
-	return func(config.PlatformModuleDefinition, []unstructured.Unstructured) ([]Diagnostic, error) {
+	return func(v1alpha1.PlatformModuleDefinition, []unstructured.Unstructured) ([]Diagnostic, error) {
 		return nil, err
 	}
 }
 
 // testDefinition returns a minimal loaded definition for the action
 // tests.
-func testDefinition() config.PlatformModuleDefinition {
-	return config.PlatformModuleDefinition{
-		Metadata: config.Metadata{Name: "synthetic"},
-		Spec: config.Spec{
-			Instance: config.Instance{Type: config.Type{GroupVersionKind: schema.GroupVersionKind{
+func testDefinition() v1alpha1.PlatformModuleDefinition {
+	return v1alpha1.PlatformModuleDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "synthetic"},
+		Spec: v1alpha1.PlatformModuleDefinitionSpec{
+			Instance: v1alpha1.Instance{Type: v1alpha1.ModuleType{
 				Group:   "components.platform.opendatahub.io",
 				Version: "v1alpha1",
 				Kind:    "SyntheticModule",
-			}}},
+			}},
 		},
 	}
 }
 
 // helmDefinition returns a loaded definition selecting the Helm
 // backend.
-func helmDefinition() config.PlatformModuleDefinition {
+func helmDefinition() v1alpha1.PlatformModuleDefinition {
 	definition := testDefinition()
-	definition.Spec.Manifests.Format = config.FormatHelm
+	definition.Spec.Manifests.Format = v1alpha1.FormatHelm
 
 	return definition
 }
 
 // kustomizeDefinition returns a loaded definition selecting the
 // Kustomize backend.
-func kustomizeDefinition() config.PlatformModuleDefinition {
+func kustomizeDefinition() v1alpha1.PlatformModuleDefinition {
 	definition := testDefinition()
-	definition.Spec.Manifests.Format = config.FormatKustomize
+	definition.Spec.Manifests.Format = v1alpha1.FormatKustomize
 
 	return definition
 }
@@ -149,7 +150,7 @@ func TestActionRunStopsOnLoadError(t *testing.T) {
 	loadFailure := errors.New("load failure")
 
 	calls := &actionCalls{}
-	action := NewAction(calls.loader(config.PlatformModuleDefinition{}, loadFailure),
+	action := NewAction(calls.loader(v1alpha1.PlatformModuleDefinition{}, loadFailure),
 		calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil), calls.validator())
 
 	result, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
@@ -212,7 +213,7 @@ func TestActionRunSelectsBackendFromFormat(t *testing.T) {
 		g := NewWithT(t)
 
 		definition := testDefinition()
-		definition.Spec.Manifests.Format = config.Format("bogus")
+		definition.Spec.Manifests.Format = v1alpha1.Format("bogus")
 
 		calls := &actionCalls{}
 		action := NewAction(calls.loader(definition, nil),
@@ -326,23 +327,23 @@ func TestActionRunForwardsErrorCategories(t *testing.T) {
 	t.Run("definition error identity", func(t *testing.T) {
 		g := NewWithT(t)
 
-		definitionFailure := config.NewDefinitionError(errors.New("bad spec"))
+		definitionFailure := moduleerrors.NewDefinitionError(errors.New("bad spec"))
 
 		calls := &actionCalls{}
-		action := NewAction(calls.loader(config.PlatformModuleDefinition{}, definitionFailure),
+		action := NewAction(calls.loader(v1alpha1.PlatformModuleDefinition{}, definitionFailure),
 			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil),
 			calls.validator())
 
 		_, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
 
-		g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
+		g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
 	})
 
 	t.Run("loader cancellation identity", func(t *testing.T) {
 		g := NewWithT(t)
 
 		calls := &actionCalls{}
-		action := NewAction(calls.loader(config.PlatformModuleDefinition{}, context.Canceled),
+		action := NewAction(calls.loader(v1alpha1.PlatformModuleDefinition{}, context.Canceled),
 			calls.renderer("helm", nil, nil), calls.renderer("kustomize", nil, nil),
 			calls.validator())
 

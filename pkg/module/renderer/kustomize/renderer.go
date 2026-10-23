@@ -12,7 +12,7 @@ import (
 	fwkustomize "github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/render/kustomize"
 	mk "github.com/opendatahub-io/odh-platform-utilities/framework/render/kustomize"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
 
@@ -36,7 +36,7 @@ import (
 // The returned list contains every object the framework action
 // rendered; callers filtering it must not assume they hold the raw
 // kustomization output.
-func Render(ctx context.Context, definition config.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error) {
+func Render(ctx context.Context, definition v1alpha1.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -58,7 +58,7 @@ func Render(ctx context.Context, definition config.PlatformModuleDefinition, def
 	)
 
 	if err := action(ctx, request); err != nil {
-		return nil, fmt.Errorf("kustomize render for module %s: %w", definition.Metadata.Name, err)
+		return nil, fmt.Errorf("kustomize render for module %s: %w", definition.Name, err)
 	}
 
 	return request.Resources, nil

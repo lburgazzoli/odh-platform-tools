@@ -3,13 +3,12 @@ package deployments
 import (
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-
-	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	. "github.com/onsi/gomega"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 )
 
@@ -24,24 +23,24 @@ func object(apiVersion string, kind string, name string) unstructured.Unstructur
 
 // testDefinition returns a minimal module definition: its type is the
 // SyntheticModule custom resource.
-func testDefinition() config.PlatformModuleDefinition {
-	return config.PlatformModuleDefinition{
-		Metadata: config.Metadata{Name: "synthetic"},
-		Spec: config.Spec{
-			Instance: config.Instance{Type: config.Type{GroupVersionKind: schema.GroupVersionKind{
+func testDefinition() v1alpha1.PlatformModuleDefinition {
+	return v1alpha1.PlatformModuleDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "synthetic"},
+		Spec: v1alpha1.PlatformModuleDefinitionSpec{
+			Instance: v1alpha1.Instance{Type: v1alpha1.ModuleType{
 				Group:   "components.platform.opendatahub.io",
 				Version: "v1alpha1",
 				Kind:    "SyntheticModule",
-			}}},
+			}},
 		},
 	}
 }
 
 // managerDefinition returns a definition selecting the default main
 // container name.
-func managerDefinition() config.PlatformModuleDefinition {
+func managerDefinition() v1alpha1.PlatformModuleDefinition {
 	definition := testDefinition()
-	definition.Spec.Controller.Deployment.Container = &config.ContainerDefinition{
+	definition.Spec.Controller.Deployment.Container = &v1alpha1.ContainerDefinition{
 		Name:  "manager",
 		Image: "quay.io/example/controller:v1",
 	}
@@ -51,9 +50,9 @@ func managerDefinition() config.PlatformModuleDefinition {
 
 // initContainerDefinition returns a definition selecting the named
 // init container.
-func initContainerDefinition(name string) config.PlatformModuleDefinition {
+func initContainerDefinition(name string) v1alpha1.PlatformModuleDefinition {
 	definition := testDefinition()
-	definition.Spec.Controller.Deployment.InitContainer = &config.ContainerTarget{
+	definition.Spec.Controller.Deployment.InitContainer = &v1alpha1.ContainerTarget{
 		Name: name,
 	}
 

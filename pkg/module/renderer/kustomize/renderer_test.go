@@ -11,14 +11,14 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 )
 
 // Module and kustomization inputs exercised through the real framework
 // action.
 const (
-	definitionYAML = `apiVersion: config.opendatahub.io/v1
+	definitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -39,7 +39,7 @@ spec:
         image: quay.io/example/controller:v1
 `
 
-	definitionWithEnvYAML = `apiVersion: config.opendatahub.io/v1
+	definitionWithEnvYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -65,7 +65,7 @@ spec:
 
 	// definitionWithInstanceNameYAML sets an explicit instance name
 	// different from the module name.
-	definitionWithInstanceNameYAML = `apiVersion: config.opendatahub.io/v1
+	definitionWithInstanceNameYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -150,7 +150,7 @@ func writeModuleFile(t *testing.T, root string, rel string, content string) {
 }
 
 // loadDefinition loads the module definition through the real loader.
-func loadDefinition(t *testing.T, root string) config.PlatformModuleDefinition {
+func loadDefinition(t *testing.T, root string) v1alpha1.PlatformModuleDefinition {
 	t.Helper()
 
 	g := NewWithT(t)

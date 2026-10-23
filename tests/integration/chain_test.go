@@ -14,7 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/crd"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/deployments"
@@ -108,7 +108,7 @@ func TestLintChainInvalidDefinition(t *testing.T) {
 			result, err := runLint(t, root)
 
 			g.Expect(err).To(HaveOccurred())
-			g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
+			g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
 			g.Expect(err.Error()).To(ContainSubstring(test.contains))
 			g.Expect(result.Diagnostics).To(BeEmpty())
 		})
@@ -147,7 +147,7 @@ func TestLintChainRejectsEscapingSource(t *testing.T) {
 	result, err := runLint(t, root)
 
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeFalse())
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeFalse())
 	g.Expect(errors.Is(err, linter.ErrInvalidOptions)).To(BeFalse())
 	g.Expect(result.Diagnostics).To(BeEmpty())
 }

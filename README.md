@@ -34,7 +34,7 @@ implies a runnable controller or a cluster.
 ## The module definition
 
 A module is described by one file, `definition.yaml`, typed as plain
-data (`config.opendatahub.io/v1`, kind `PlatformModuleDefinition`). It
+data (`config.opendatahub.io/v1alpha1`, kind `PlatformModuleDefinition`). It
 is a file-only document: no Kubernetes Scheme, no generated deepcopy, no
 cluster API submission. Loading is strict at the decoding level —
 unknown members, name-case mismatches, and type mismatches are rejected
@@ -42,7 +42,7 @@ with file and line positions. Structural validation beyond that is
 deferred and will be added later as JSON Schema validation.
 
 ```yaml
-apiVersion: config.opendatahub.io/v1
+apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: example                      # module identity; also the Helm release name

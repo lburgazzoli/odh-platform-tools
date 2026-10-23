@@ -21,6 +21,11 @@ help: ## Display this help
 .PHONY: generate
 generate: ## Generate deepcopy code with controller-gen
 	$(CONTROLLER_GEN) object:headerFile=./hack/boilerplate.go.txt paths=./pkg/module/renderer
+	$(CONTROLLER_GEN) object:headerFile=./hack/boilerplate.go.txt paths=./pkg/module/api/...
+
+.PHONY: manifests
+manifests: ## Generate the module definition CRD with controller-gen
+	$(CONTROLLER_GEN) crd paths=./pkg/module/api/... output:crd:artifacts:config=config/crd/bases
 
 .PHONY: deps
 deps: ## Tidy go.mod and go.sum

@@ -1,4 +1,4 @@
-apiVersion: config.opendatahub.io/v1
+apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: example

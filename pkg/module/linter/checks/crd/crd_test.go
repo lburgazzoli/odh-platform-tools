@@ -3,13 +3,12 @@ package crd
 import (
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-
-	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	. "github.com/onsi/gomega"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 )
 
@@ -36,15 +35,15 @@ func moduleCRD(name string, group string, kind string) unstructured.Unstructured
 
 // testDefinition returns a minimal module definition: its type is the
 // SyntheticModule custom resource.
-func testDefinition() config.PlatformModuleDefinition {
-	return config.PlatformModuleDefinition{
-		Metadata: config.Metadata{Name: "synthetic"},
-		Spec: config.Spec{
-			Instance: config.Instance{Type: config.Type{GroupVersionKind: schema.GroupVersionKind{
+func testDefinition() v1alpha1.PlatformModuleDefinition {
+	return v1alpha1.PlatformModuleDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "synthetic"},
+		Spec: v1alpha1.PlatformModuleDefinitionSpec{
+			Instance: v1alpha1.Instance{Type: v1alpha1.ModuleType{
 				Group:   "components.platform.opendatahub.io",
 				Version: "v1alpha1",
 				Kind:    "SyntheticModule",
-			}}},
+			}},
 		},
 	}
 }

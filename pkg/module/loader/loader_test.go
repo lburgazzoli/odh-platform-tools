@@ -10,11 +10,12 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
 // helmDefinitionYAML is the valid Helm module definition.
-const helmDefinitionYAML = `apiVersion: config.opendatahub.io/v1
+const helmDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -41,7 +42,7 @@ spec:
 `
 
 // kustomizeDefinitionYAML is the valid Kustomize module definition.
-const kustomizeDefinitionYAML = `apiVersion: config.opendatahub.io/v1
+const kustomizeDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -69,7 +70,7 @@ spec:
 
 // definitionJSON is the Helm definition in JSON syntax.
 const definitionJSON = `{
-  "apiVersion": "config.opendatahub.io/v1",
+  "apiVersion": "config.opendatahub.io/v1alpha1",
   "kind": "PlatformModuleDefinition",
   "metadata": {"name": "synthetic"},
   "spec": {
@@ -92,7 +93,7 @@ const definitionJSON = `{
 
 // Documents rejected while decoding, before structural validation.
 const (
-	unknownMemberYAML = `apiVersion: config.opendatahub.io/v1
+	unknownMemberYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -109,7 +110,7 @@ runtime:
 
 	// legacySpecTypeYAML places the module type at the superseded
 	// top-level spec.type location.
-	legacySpecTypeYAML = `apiVersion: config.opendatahub.io/v1
+	legacySpecTypeYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -131,7 +132,7 @@ spec:
 
 	// instanceNameDefinitionYAML is the Helm definition with an
 	// explicit instance name different from the module name.
-	instanceNameDefinitionYAML = `apiVersion: config.opendatahub.io/v1
+	instanceNameDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -153,7 +154,7 @@ spec:
         image: quay.io/example/controller:v1
 `
 
-	metadataNamespaceYAML = `apiVersion: config.opendatahub.io/v1
+	metadataNamespaceYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -163,7 +164,7 @@ metadata:
 	// duplicateKeyYAML relies on the Kubernetes YAML semantics of the
 	// single-pass decode: duplicate keys resolve last-wins instead of
 	// being rejected.
-	duplicateKeyYAML = `apiVersion: config.opendatahub.io/v1
+	duplicateKeyYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -185,18 +186,18 @@ spec:
         image: quay.io/example/controller:v1
 `
 
-	integerNameYAML = `apiVersion: config.opendatahub.io/v1
+	integerNameYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: 123
 `
 
-	multipleDocumentsYAML = `apiVersion: config.opendatahub.io/v1
+	multipleDocumentsYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
 ---
-apiVersion: config.opendatahub.io/v1
+apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: other
@@ -228,25 +229,25 @@ merged:
   name: [unclosed
 `
 
-	booleanNameYAML = `apiVersion: config.opendatahub.io/v1
+	booleanNameYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: true
 `
 
-	floatNameYAML = `apiVersion: config.opendatahub.io/v1
+	floatNameYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: 3.14
 `
 
-	hexNameYAML = `apiVersion: config.opendatahub.io/v1
+	hexNameYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: 0x1F
 `
 
-	infiniteNameYAML = `apiVersion: config.opendatahub.io/v1
+	infiniteNameYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: .inf
@@ -255,7 +256,7 @@ metadata:
 
 // initImageYAML is a definition whose init container carries the
 // removed image member.
-const initImageYAML = `apiVersion: config.opendatahub.io/v1
+const initImageYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -281,7 +282,7 @@ spec:
 
 // initEnvYAML is a definition whose init container carries the removed
 // env member.
-const initEnvYAML = `apiVersion: config.opendatahub.io/v1
+const initEnvYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -384,7 +385,7 @@ func TestLoadHelmDefinition(t *testing.T) {
 	g.Expect(definition.Spec.RelatedImages).To(Equal([]string{"RELATED_IMAGE_SYNTHETIC_OPERAND"}))
 
 	// Placement defaults are applied.
-	g.Expect(definition.Spec.Controller.Deployment.Container.Name).To(Equal(config.DefaultMainContainerName))
+	g.Expect(definition.Spec.Controller.Deployment.Container.Name).To(Equal(v1alpha1.DefaultMainContainerName))
 
 	// The omitted instance name defaults to the module name.
 	g.Expect(definition.Spec.Instance.Name).To(Equal("synthetic"))
@@ -404,7 +405,131 @@ func TestLoadKeepsExplicitInstanceName(t *testing.T) {
 	definition, err := Load(t.Context(), os.DirFS(root), "definition.yaml")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(definition.Spec.Instance.Name).To(Equal("synthetic-trainer"))
-	g.Expect(definition.Metadata.Name).To(Equal("synthetic"))
+	g.Expect(definition.Name).To(Equal("synthetic"))
+}
+
+// containerNameDefinitionYAML is the Helm definition with an explicit
+// main container name and no instance name.
+const containerNameDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: helm
+    helm:
+      path: ./manifests/chart
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        name: custom-manager
+        image: quay.io/example/controller:v1
+`
+
+// authoredNamesDefinitionYAML is the Helm definition with both the
+// instance name and the main container name authored.
+const authoredNamesDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  instance:
+    name: trainer
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: helm
+    helm:
+      path: ./manifests/chart
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        name: custom-manager
+        image: quay.io/example/controller:v1
+`
+
+// TestLoadDefaultsNamesIndependently proves the instance and main
+// container name defaults are independent: neither may skip the
+// other, and authored names are never overwritten.
+func TestLoadDefaultsNamesIndependently(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		content       string
+		wantInstance  string
+		wantContainer string
+	}{
+		{
+			name:          "both names omitted",
+			content:       helmDefinitionYAML,
+			wantInstance:  "synthetic",
+			wantContainer: v1alpha1.DefaultMainContainerName,
+		},
+		{
+			name:          "instance name omitted",
+			content:       containerNameDefinitionYAML,
+			wantInstance:  "synthetic",
+			wantContainer: "custom-manager",
+		},
+		{
+			name:          "container name omitted",
+			content:       instanceNameDefinitionYAML,
+			wantInstance:  "synthetic-trainer",
+			wantContainer: v1alpha1.DefaultMainContainerName,
+		},
+		{
+			name:          "both names authored",
+			content:       authoredNamesDefinitionYAML,
+			wantInstance:  "trainer",
+			wantContainer: "custom-manager",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := NewWithT(t)
+
+			root := t.TempDir()
+			writeModuleFile(t, root, "definition.yaml", test.content)
+			writeModuleFile(t, root, "manifests/chart/Chart.yaml", chartYAML)
+
+			definition, err := Load(t.Context(), os.DirFS(root), "definition.yaml")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(definition.Spec.Instance.Name).To(Equal(test.wantInstance))
+			g.Expect(definition.Spec.Controller.Deployment.Container.Name).To(Equal(test.wantContainer))
+		})
+	}
+}
+
+// TestLoadDecodesStandardMetadata proves the definition metadata is
+// standard Kubernetes object metadata: members the old custom wire
+// type rejected, such as namespace, now decode permissively. Loading
+// adds no metadata validation.
+func TestLoadDecodesStandardMetadata(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeModuleFile(t, root, "definition.yaml", metadataNamespaceYAML)
+	writeModuleFile(t, root, "manifests/chart/Chart.yaml", chartYAML)
+
+	definition, err := Load(t.Context(), os.DirFS(root), "definition.yaml")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(definition.Name).To(Equal("synthetic"))
+	g.Expect(definition.Namespace).To(Equal("opendatahub"))
 }
 
 func TestLoadKustomizeDefinitionWithSiblingBase(t *testing.T) {
@@ -447,7 +572,7 @@ func TestLoadJSONDefinition(t *testing.T) {
 
 	definition, err := Load(t.Context(), os.DirFS(root), "definition.json")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(definition.Spec.Manifests.Format).To(Equal(config.FormatHelm))
+	g.Expect(definition.Spec.Manifests.Format).To(Equal(v1alpha1.FormatHelm))
 }
 
 func TestLoadToleratesTrailingEmptyDocument(t *testing.T) {
@@ -475,7 +600,7 @@ func TestLoadResolvesDuplicateKeysLastWins(t *testing.T) {
 
 	definition, err := Load(t.Context(), os.DirFS(root), "definition.yaml")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(definition.Metadata.Name).To(Equal("duplicate"))
+	g.Expect(definition.Name).To(Equal("duplicate"))
 }
 
 func TestLoadRejectsInvalidDocuments(t *testing.T) {
@@ -500,11 +625,6 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 			name:        "legacy spec.type",
 			content:     legacySpecTypeYAML,
 			errContains: `unknown object member name "type"`,
-		},
-		{
-			name:        "unsupported metadata",
-			content:     metadataNamespaceYAML,
-			errContains: `unknown object member name "namespace"`,
 		},
 		{
 			// The decoder reports type mismatches; the exact json
@@ -591,7 +711,7 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 
 			_, err := Load(t.Context(), os.DirFS(root), path)
 			g.Expect(err).To(HaveOccurred())
-			g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
+			g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
 			g.Expect(err.Error()).To(ContainSubstring(test.errContains))
 
 			// Failures name the source file.
@@ -602,7 +722,7 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 
 // timestampValueYAML is a valid Kustomize definition whose env value is
 // an unquoted date: the literal text survives as a string.
-const timestampValueYAML = `apiVersion: config.opendatahub.io/v1
+const timestampValueYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -668,7 +788,7 @@ func TestLoadRejectsNonStringScalars(t *testing.T) {
 
 			_, err := Load(t.Context(), os.DirFS(root), path)
 			g.Expect(err).To(HaveOccurred())
-			g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
+			g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
 			g.Expect(err.Error()).To(ContainSubstring(test.errContains))
 		})
 	}
@@ -697,7 +817,7 @@ func TestLoadRejectsMissingAndNonRegularFiles(t *testing.T) {
 
 	_, err := Load(t.Context(), os.DirFS(t.TempDir()), "missing.yaml")
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
 
 	// A directory is not a definition file; ReadFile rejects it.
 	root := t.TempDir()
@@ -706,11 +826,11 @@ func TestLoadRejectsMissingAndNonRegularFiles(t *testing.T) {
 	}
 	_, err = Load(t.Context(), os.DirFS(root), "subdir")
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
 
 	_, err = Load(t.Context(), os.DirFS(root), "")
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeTrue())
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
 }
 
 func TestLoadIgnoresEnvironment(t *testing.T) {
@@ -740,7 +860,7 @@ func TestLoadPropagatesCancellation(t *testing.T) {
 	_, err := Load(ctx, os.DirFS(root), "definition.yaml")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
-	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeFalse())
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeFalse())
 }
 
 func TestLoadPropagatesDeadline(t *testing.T) {
@@ -756,5 +876,5 @@ func TestLoadPropagatesDeadline(t *testing.T) {
 	_, err := Load(ctx, os.DirFS(root), "definition.yaml")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
-	g.Expect(errors.Is(err, config.ErrInvalidDefinition)).To(BeFalse())
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeFalse())
 }

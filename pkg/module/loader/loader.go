@@ -17,7 +17,8 @@ import (
 
 	yamlv2 "go.yaml.in/yaml/v2"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/config"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
 // Loader loads module definitions from a filesystem.
@@ -35,24 +36,24 @@ func New(fsys fs.FS) *Loader {
 // New(fsys).Load.
 //
 // Every failure except cancellation is a configuration error matching
-// errors.Is(err, config.ErrInvalidDefinition). Cancellation and
+// errors.Is(err, moduleerrors.ErrInvalidDefinition). Cancellation and
 // deadline errors are returned unwrapped so they keep their identity
 // and precedence over configuration classification.
-func Load(ctx context.Context, fsys fs.FS, path string) (config.PlatformModuleDefinition, error) {
+func Load(ctx context.Context, fsys fs.FS, path string) (v1alpha1.PlatformModuleDefinition, error) {
 	return New(fsys).Load(ctx, path)
 }
 
 // LoadFromPath is Load over the operating-system filesystem: the path
 // may be relative to the working directory or absolute.
-func LoadFromPath(ctx context.Context, path string) (config.PlatformModuleDefinition, error) {
+func LoadFromPath(ctx context.Context, path string) (v1alpha1.PlatformModuleDefinition, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return config.PlatformModuleDefinition{}, config.NewDefinitionErrorf("resolve definition file %s: %w", path, err)
+		return v1alpha1.PlatformModuleDefinition{}, moduleerrors.NewDefinitionErrorf("resolve definition file %s: %w", path, err)
 	}
 
 	relative, err := filepath.Rel("/", absolute)
 	if err != nil {
-		return config.PlatformModuleDefinition{}, config.NewDefinitionErrorf("resolve definition file %s: %w", path, err)
+		return v1alpha1.PlatformModuleDefinition{}, moduleerrors.NewDefinitionErrorf("resolve definition file %s: %w", path, err)
 	}
 
 	return Load(ctx, os.DirFS("/"), relative)
@@ -62,39 +63,58 @@ func LoadFromPath(ctx context.Context, path string) (config.PlatformModuleDefini
 // the loader's filesystem and returns it normalized.
 //
 // Every failure except cancellation is a configuration error matching
-// errors.Is(err, config.ErrInvalidDefinition). Cancellation and
+// errors.Is(err, moduleerrors.ErrInvalidDefinition). Cancellation and
 // deadline errors are returned unwrapped so they keep their identity
 // and precedence over configuration classification.
-func (l *Loader) Load(ctx context.Context, path string) (config.PlatformModuleDefinition, error) {
+func (l *Loader) Load(ctx context.Context, path string) (v1alpha1.PlatformModuleDefinition, error) {
 	if err := ctx.Err(); err != nil {
-		return config.PlatformModuleDefinition{}, err
+		return v1alpha1.PlatformModuleDefinition{}, err
 	}
 
 	data, err := l.readDefinitionFile(path)
 	if err != nil {
-		return config.PlatformModuleDefinition{}, err
+		return v1alpha1.PlatformModuleDefinition{}, err
 	}
 
-	definition, err := l.decodeDefinition(data)
+	decoded, err := l.decodeDefinition(data)
 	if err != nil {
-		return config.PlatformModuleDefinition{}, config.NewDefinitionErrorf("%s: %w", path, err)
+		return v1alpha1.PlatformModuleDefinition{}, moduleerrors.NewDefinitionErrorf("%s: %w", path, err)
 	}
 
-	normalized := definition.Normalize()
+	l.applyDefaults(&decoded)
 
-	return normalized, nil
+	return decoded, nil
+}
+
+// applyDefaults applies the placement defaults to a freshly decoded
+// definition in place: an omitted instance name becomes metadata.name,
+// and an omitted main container name becomes
+// v1alpha1.DefaultMainContainerName. The two defaults are independent:
+// neither may skip the other. The definition belongs to the loader, so
+// in-place mutation is safe.
+func (l *Loader) applyDefaults(definition *v1alpha1.PlatformModuleDefinition) {
+	if definition.Spec.Instance.Name == "" {
+		definition.Spec.Instance.Name = definition.Name
+	}
+
+	container := definition.Spec.Controller.Deployment.Container
+	if container == nil || container.Name != "" {
+		return
+	}
+
+	container.Name = v1alpha1.DefaultMainContainerName
 }
 
 // readDefinitionFile reads the definition file at path in the loader's
 // filesystem. Errors name the path exactly as passed to Load.
 func (l *Loader) readDefinitionFile(path string) ([]byte, error) {
 	if path == "" {
-		return nil, config.NewDefinitionError(errors.New("definition file path is required"))
+		return nil, moduleerrors.NewDefinitionError(errors.New("definition file path is required"))
 	}
 
 	data, err := fs.ReadFile(l.fsys, path)
 	if err != nil {
-		return nil, config.NewDefinitionErrorf("read definition file %s: %w", path, err)
+		return nil, moduleerrors.NewDefinitionErrorf("read definition file %s: %w", path, err)
 	}
 
 	return data, nil
@@ -107,16 +127,16 @@ func (l *Loader) readDefinitionFile(path string) ([]byte, error) {
 // The document value is round-tripped through JSON for the strict
 // typed decode, which rejects unknown members and name-case
 // mismatches.
-func (l *Loader) decodeDefinition(data []byte) (config.PlatformModuleDefinition, error) {
+func (l *Loader) decodeDefinition(data []byte) (v1alpha1.PlatformModuleDefinition, error) {
 	decoder := yamlv2.NewDecoder(bytes.NewReader(data))
 
 	var document any
 	for document == nil {
 		if err := decoder.Decode(&document); err != nil {
 			if errors.Is(err, io.EOF) {
-				return config.PlatformModuleDefinition{}, errors.New("definition must contain one object document")
+				return v1alpha1.PlatformModuleDefinition{}, errors.New("definition must contain one object document")
 			}
-			return config.PlatformModuleDefinition{}, err
+			return v1alpha1.PlatformModuleDefinition{}, err
 		}
 	}
 
@@ -127,21 +147,21 @@ func (l *Loader) decodeDefinition(data []byte) (config.PlatformModuleDefinition,
 			break
 		}
 		if err != nil {
-			return config.PlatformModuleDefinition{}, err
+			return v1alpha1.PlatformModuleDefinition{}, err
 		}
 		if extra != nil {
-			return config.PlatformModuleDefinition{}, errors.New("definition must contain exactly one document")
+			return v1alpha1.PlatformModuleDefinition{}, errors.New("definition must contain exactly one document")
 		}
 	}
 
 	encoded, err := jsonv2.Marshal(document)
 	if err != nil {
-		return config.PlatformModuleDefinition{}, err
+		return v1alpha1.PlatformModuleDefinition{}, err
 	}
 
-	var definition config.PlatformModuleDefinition
+	var definition v1alpha1.PlatformModuleDefinition
 	if err := jsonv2.Unmarshal(encoded, &definition, jsonv2.RejectUnknownMembers(true)); err != nil {
-		return config.PlatformModuleDefinition{}, err
+		return v1alpha1.PlatformModuleDefinition{}, err
 	}
 
 	return definition, nil

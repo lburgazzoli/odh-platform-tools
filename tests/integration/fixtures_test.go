@@ -28,7 +28,7 @@ import (
 // ServiceAccount and RBAC, and a cluster-scoped Module CRD with
 // static status and singleton evidence.
 const (
-	helmDefinitionYAML = `apiVersion: config.opendatahub.io/v1
+	helmDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -52,7 +52,7 @@ spec:
           value: debug
 `
 
-	kustomizeDefinitionYAML = `apiVersion: config.opendatahub.io/v1
+	kustomizeDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: synthetic
@@ -294,7 +294,7 @@ version: 1.0.0
 
 	// legacyTypeDefinitionYAML uses the superseded top-level spec.type
 	// location.
-	legacyTypeDefinitionYAML = `apiVersion: config.opendatahub.io/v1
+	legacyTypeDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
   name: broken
