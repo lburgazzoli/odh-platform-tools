@@ -23,24 +23,26 @@ limitations under the License.
 // live cluster.Connection, and composes three steps: reject an
 // unsupported or missing definition envelope before any write, create
 // or compatibly reuse the definition CRD and wait for it to serve,
-// then create, read, or conflict-retried-update the definition by
-// authored metadata.name.
+// then publish the definition by authored metadata.name through one
+// server-side apply behind an explicit field owner.
 //
 // The published spec is exactly what the loader produced: authored
 // Helm values and placeholders stay literal, and placement defaults
 // are already applied. File-supplied authority fields — UID,
 // resourceVersion, namespace, owner references, finalizers — are
-// never submitted; the published object carries the authored name,
-// labels, and annotations only. Updates preserve the live UID,
-// resourceVersion, status, and unrelated metadata, so re-runs reuse
-// identities — including previously unbound definitions — without any
-// namespace binding or lock.
+// never submitted, and no status is sent: the apply claims only the
+// authored name, labels, annotations, and spec. The server-side
+// merge preserves the live identity and status, so re-runs reuse
+// identities — including previously unbound definitions — without
+// any namespace binding or lock. Authored labels and annotations are
+// the whole desired state under server-side-apply atomic maps: keys
+// a re-run no longer authors are replaced.
 //
 // Publication is not transactional and failure retains state. The
 // returned owner is the best-known server-backed identity even when
 // an error accompanies it, and the typed error's outcome separates a
 // refused publication (rejected) from an unreported one (unknown): a
-// nil owner never proves that no write occurred. Ambiguous creates
+// nil owner never proves that no write occurred. Ambiguous applies
 // are never retried as new identities, and no UID is fabricated.
 package owner
 
@@ -48,12 +50,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
-	"reflect"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
+
+	jsonv2 "encoding/json/v2"
 
 	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 
@@ -61,10 +64,12 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 )
 
-// maxPublishAttempts bounds create/update conflict retries: a
-// competing writer wins the publication only by outlasting this many
-// attempts.
-const maxPublishAttempts = 3
+// fieldOwner is the server-side-apply field manager the owner
+// publication writes under. One manager owns the authored spec and
+// the whole authored labels and annotations maps, so a re-run
+// replaces keys it no longer authors; live status and fields owned
+// by other field managers are never claimed.
+const fieldOwner = "platform.opendatahub.io/module-run"
 
 // Definition publication refusal causes. They stay reachable through
 // the typed error's Unwrap chain for callers that classify rejections
@@ -74,7 +79,6 @@ var (
 	errDefinitionDeletion  = errors.New("definition owner is being deleted")
 	errDefinitionForeign   = errors.New("definition owner carries foreign owner references")
 	errDefinitionNoUID     = errors.New("definition owner has no UID")
-	errConflictExhausted   = errors.New("definition owner update conflicts exhausted")
 )
 
 // Ensure bootstraps the definition CRD and publishes the normalized
@@ -115,11 +119,13 @@ func Ensure(
 	return publish(ctx, connection, definition)
 }
 
-// publish creates, reads, or updates the definition owner by authored
-// metadata.name. It classifies every failure: definitive server
-// refusals are rejected, unreported request outcomes are unknown, and
-// only a successful write or an already-matching read confirms the
-// desired spec.
+// publish applies the definition owner through one server-side apply
+// patch. A pre-write read confirms the live identity — when the owner
+// already exists — and rejects one this run must not overwrite; a
+// missing owner is the create case the apply itself covers. Every
+// failure keeps its classification: definitive server refusals are
+// rejected, unreported request outcomes are unknown, and only a
+// successful apply confirms the desired spec.
 func publish(
 	ctx context.Context,
 	connection *cluster.Connection,
@@ -128,70 +134,52 @@ func publish(
 	client := connection.Client()
 	desired := publicationPayload(definition)
 
-	for attempt := 1; attempt <= maxPublishAttempts; attempt++ {
-		created := desired.DeepCopy()
-		if err := client.Create(ctx, created); err != nil {
-			if !apierrors.IsAlreadyExists(err) {
-				return nil, publicationError(nil, "creating the definition owner", err)
-			}
-		} else {
-			return confirmed(connection, created)
-		}
-
-		live := &v1alpha1.PlatformModuleDefinition{}
-		if err := client.Get(ctx, crclient.ObjectKey{Name: desired.Name}, live); err != nil {
-			if apierrors.IsNotFound(err) && attempt < maxPublishAttempts {
-				// The owner existed at creation time and vanished
-				// before the read: race a fresh creation.
-				continue
-			}
-
-			return nil, publicationError(nil, "reading the definition owner", err)
-		}
-
+	live := &v1alpha1.PlatformModuleDefinition{}
+	err := client.Get(ctx, crclient.ObjectKey{Name: desired.Name}, live)
+	switch {
+	case apierrors.IsNotFound(err):
+		// The owner is absent: the apply itself is the create.
+		live = nil
+	case err != nil:
+		return nil, publicationError(nil, "reading the definition owner", err)
+	default:
 		if err := checkLive(live); err != nil {
 			return live, newError(OutcomeRejected, normalize(connection, live), "checking the definition owner", "", err)
 		}
-
-		if alreadyMatching(desired, live) {
-			return confirmed(connection, live)
-		}
-
-		updated := mergedUpdate(live, desired)
-		if err := client.Update(ctx, updated); err != nil {
-			if apierrors.IsConflict(err) && attempt < maxPublishAttempts {
-				continue
-			}
-
-			owner := normalize(connection, live)
-			if apierrors.IsConflict(err) {
-				err = fmt.Errorf("%w: %w", errConflictExhausted, err)
-			}
-
-			return owner, publicationError(owner, "updating the definition owner", err)
-		}
-
-		if err := ensureGVK(connection, updated); err != nil {
-			return updated, newError(OutcomeConfirmed, updated, "normalizing the owner group, version, and kind", "", err)
-		}
-
-		return updated, nil
 	}
 
-	return nil, newError(
-		OutcomeRejected,
-		nil,
-		"updating the definition owner",
-		"",
-		fmt.Errorf("%w after %d attempts", errConflictExhausted, maxPublishAttempts),
-	)
+	payload, err := applyPayload(desired)
+	if err != nil {
+		return nil, newError(OutcomeNotAttempted, nil, "building the definition owner apply request", "", err)
+	}
+
+	if err := client.Apply(
+		ctx,
+		crclient.ApplyConfigurationFromUnstructured(payload),
+		crclient.FieldOwner(fieldOwner),
+		crclient.ForceOwnership,
+	); err != nil {
+		owner := live
+		if owner != nil {
+			owner = normalize(connection, owner)
+		}
+
+		return owner, publicationError(owner, "applying the definition owner", err)
+	}
+
+	applied, err := decodeApplied(payload)
+	if err != nil {
+		return nil, newError(OutcomeUnknown, nil, "decoding the applied definition owner", "", err)
+	}
+
+	return confirmed(connection, applied)
 }
 
-// publicationPayload rebuilds the creatable definition from the
+// publicationPayload rebuilds the publishable definition from the
 // authored one: the normalized spec plus exactly the authored name,
 // labels, and annotations. Forged authority fields — UID,
 // resourceVersion, namespace, owner references, finalizers — never
-// reach a create or update request.
+// reach an apply request.
 func publicationPayload(definition v1alpha1.PlatformModuleDefinition) *v1alpha1.PlatformModuleDefinition {
 	desired := definition.DeepCopy()
 	desired.ObjectMeta = metav1.ObjectMeta{
@@ -201,6 +189,66 @@ func publicationPayload(definition v1alpha1.PlatformModuleDefinition) *v1alpha1.
 	}
 
 	return desired
+}
+
+// applyPayload builds the server-side-apply request body: exactly the
+// definition envelope, the authored name, labels, and annotations,
+// and the normalized unexpanded spec. No UID, resourceVersion,
+// finalizers, namespace, or status is sent, so the apply claims only
+// the authored fields. The spec crosses into the unstructured body
+// through a JSON round trip, preserving literal Helm values and null
+// spellings exactly as authored.
+func applyPayload(desired *v1alpha1.PlatformModuleDefinition) (*unstructured.Unstructured, error) {
+	encoded, err := jsonv2.Marshal(desired.Spec)
+	if err != nil {
+		return nil, fmt.Errorf("encoding the definition spec: %w", err)
+	}
+
+	spec := map[string]any{}
+	if err := jsonv2.Unmarshal(encoded, &spec); err != nil {
+		return nil, fmt.Errorf("decoding the definition spec: %w", err)
+	}
+
+	metadata := map[string]any{"name": desired.Name}
+	if len(desired.Labels) > 0 {
+		labels := make(map[string]any, len(desired.Labels))
+		for key, value := range desired.Labels {
+			labels[key] = value
+		}
+		metadata["labels"] = labels
+	}
+	if len(desired.Annotations) > 0 {
+		annotations := make(map[string]any, len(desired.Annotations))
+		for key, value := range desired.Annotations {
+			annotations[key] = value
+		}
+		metadata["annotations"] = annotations
+	}
+
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": v1alpha1.APIVersion,
+		"kind":       v1alpha1.Kind,
+		"metadata":   metadata,
+		"spec":       spec,
+	}}, nil
+}
+
+// decodeApplied decodes the server's apply response — the full live
+// object, decoded into the unstructured payload — into the typed
+// owner. The JSON round trip preserves literal Helm values and null
+// spellings a struct converter cannot express.
+func decodeApplied(payload *unstructured.Unstructured) (*v1alpha1.PlatformModuleDefinition, error) {
+	encoded, err := jsonv2.Marshal(payload.Object)
+	if err != nil {
+		return nil, fmt.Errorf("encoding the applied definition owner: %w", err)
+	}
+
+	applied := &v1alpha1.PlatformModuleDefinition{}
+	if err := jsonv2.Unmarshal(encoded, applied); err != nil {
+		return nil, fmt.Errorf("decoding the applied definition owner: %w", err)
+	}
+
+	return applied, nil
 }
 
 // checkLive rejects a live definition this run must not adopt or
@@ -222,90 +270,9 @@ func checkLive(live *v1alpha1.PlatformModuleDefinition) error {
 	return nil
 }
 
-// alreadyMatching reports whether the live definition already
-// publishes the desired spec: an equal spec plus every authored label
-// and annotation present with the authored value. Unrelated live
-// metadata does not block reuse.
-func alreadyMatching(desired, live *v1alpha1.PlatformModuleDefinition) bool {
-	if !specsEqual(desired.Spec, live.Spec) {
-		return false
-	}
-
-	return metadataMatching(desired.Labels, live.Labels) &&
-		metadataMatching(desired.Annotations, live.Annotations)
-}
-
-// specsEqual compares two specs semantically. The one normalization
-// is the null representation: an authored literal null Helm value
-// carries raw null bytes, while the same value read back from the
-// server has empty raw bytes — the apiextensions JSON type decodes
-// null as unset. Both spellings mean null and compare equal.
-func specsEqual(desired, live v1alpha1.PlatformModuleDefinitionSpec) bool {
-	desiredCopy := desired.DeepCopy()
-	liveCopy := live.DeepCopy()
-
-	normalizeNullValues(desiredCopy)
-	normalizeNullValues(liveCopy)
-
-	return reflect.DeepEqual(*desiredCopy, *liveCopy)
-}
-
-// normalizeNullValues rewrites empty raw Helm value bytes to the null
-// spelling in place.
-func normalizeNullValues(spec *v1alpha1.PlatformModuleDefinitionSpec) {
-	if spec.Manifests.Helm == nil {
-		return
-	}
-
-	for key, value := range spec.Manifests.Helm.Values {
-		if len(value.Raw) == 0 {
-			value.Raw = []byte("null")
-			spec.Manifests.Helm.Values[key] = value
-		}
-	}
-}
-
-// metadataMatching reports whether every desired entry is present
-// with the same value; the live map may carry unrelated entries.
-func metadataMatching(desired, live map[string]string) bool {
-	for key, value := range desired {
-		if live[key] != value {
-			return false
-		}
-	}
-
-	return true
-}
-
-// mergedUpdate builds the update payload from the live definition:
-// the live identity, status, and unrelated metadata with the desired
-// spec overlaid and the authored labels and annotations applied over
-// the live ones.
-func mergedUpdate(live, desired *v1alpha1.PlatformModuleDefinition) *v1alpha1.PlatformModuleDefinition {
-	updated := live.DeepCopy()
-	updated.Spec = desired.Spec
-	updated.TypeMeta = metav1.TypeMeta{}
-
-	if len(desired.Labels) > 0 {
-		if updated.Labels == nil {
-			updated.Labels = map[string]string{}
-		}
-		maps.Copy(updated.Labels, desired.Labels)
-	}
-
-	if len(desired.Annotations) > 0 {
-		if updated.Annotations == nil {
-			updated.Annotations = map[string]string{}
-		}
-		maps.Copy(updated.Annotations, desired.Annotations)
-	}
-
-	return updated
-}
-
-// confirmed normalizes the runtime GVK of an already-matching live
-// definition owner and returns it. The publication is confirmed by
-// the matching read, so a normalization failure — unreachable for a
+// confirmed normalizes the runtime GVK of an applied definition
+// owner and returns it. The publication is confirmed by the apply
+// response, so a normalization failure — unreachable for a
 // scheme-registered type — still returns the owner with a
 // confirmed-outcome typed error rather than discarding it.
 func confirmed(

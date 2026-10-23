@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -102,19 +103,18 @@ const ownerCRDEstablishedStatusJSON = `{"conditions":[{"type":"Established","sta
 
 // fakeOwnerServer is a minimal API server double for the owner: core,
 // apiextensions, and module definition discovery; CRD and definition
-// storage with UID/resourceVersion assignment, conflict injection,
-// raced-deletion simulation, and lost create/update responses that
-// abort the connection after the write is stored. It records every
-// submitted definition write body.
+// storage with UID/resourceVersion assignment, apply-conflict
+// injection, raced-deletion simulation, and lost apply responses
+// that abort the connection after the write is stored. It records
+// every submitted definition apply body, query, and content type.
 type fakeOwnerServer struct {
 	*httptest.Server
 
-	loseCreate  bool
-	loseUpdate  bool
+	loseApply   bool
 	vanishOnGet bool
 
-	forbidDefinitionCreate bool
-	conflicts              int
+	forbidDefinitionApply bool
+	applyConflicts        int
 
 	// raceCRDCreation simulates another writer creating the CRD
 	// between the missing read and our creation attempt: reads report
@@ -126,9 +126,10 @@ type fakeOwnerServer struct {
 	crdWrites         int
 	definitions       map[string]string
 	definitionWrites  map[string]int
-	updateAttempts    map[string]int
-	createBodies      map[string][]string
-	updateBodies      map[string][]string
+	applyAttempts     map[string]int
+	applyBodies       map[string][]string
+	applyQueries      []string
+	applyContentTypes []string
 	requests          int
 	discoveryRequests int
 }
@@ -142,9 +143,8 @@ func newFakeOwnerServer(t *testing.T) *fakeOwnerServer {
 		crds:             map[string]string{},
 		definitions:      map[string]string{},
 		definitionWrites: map[string]int{},
-		updateAttempts:   map[string]int{},
-		createBodies:     map[string][]string{},
-		updateBodies:     map[string][]string{},
+		applyAttempts:    map[string]int{},
+		applyBodies:      map[string][]string{},
 	}
 	fake.Server = httptest.NewServer(fake)
 
@@ -184,11 +184,11 @@ func (s *fakeOwnerServer) seedDefinition(t *testing.T, body string) {
 }
 
 // storedDefinition returns the stored definition body for one name.
-func (s *fakeOwnerServer) storedDefinition(t *testing.T, name string) map[string]any {
+func (s *fakeOwnerServer) storedDefinition(t *testing.T) map[string]any {
 	t.Helper()
 
 	s.mu.Lock()
-	body := s.definitions[name]
+	body := s.definitions[syntheticName]
 	s.mu.Unlock()
 
 	var object map[string]any
@@ -199,8 +199,8 @@ func (s *fakeOwnerServer) storedDefinition(t *testing.T, name string) map[string
 	return object
 }
 
-// definitionWriteCount returns how many writes (creates plus updates)
-// the server applied across all definitions.
+// definitionWriteCount returns how many applies the server accepted
+// across all definitions.
 func (s *fakeOwnerServer) definitionWriteCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -213,31 +213,40 @@ func (s *fakeOwnerServer) definitionWriteCount() int {
 	return writes
 }
 
-// definitionCreateBodies returns the submitted create bodies for one
-// definition name.
-func (s *fakeOwnerServer) definitionCreateBodies(name string) []string {
+// definitionApplyBodies returns the submitted apply bodies for the
+// synthetic definition.
+func (s *fakeOwnerServer) definitionApplyBodies() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return append([]string(nil), s.createBodies[name]...)
+	return append([]string(nil), s.applyBodies[syntheticName]...)
 }
 
-// definitionUpdateBodies returns the submitted update bodies for one
-// definition name.
-func (s *fakeOwnerServer) definitionUpdateBodies(name string) []string {
+// definitionApplyAttemptCount returns how many apply requests —
+// accepted or conflict-refused — the synthetic definition received.
+func (s *fakeOwnerServer) definitionApplyAttemptCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return append([]string(nil), s.updateBodies[name]...)
+	return s.applyAttempts[syntheticName]
 }
 
-// definitionUpdateAttemptCount returns how many update requests —
-// applied or conflict-refused — one definition name received.
-func (s *fakeOwnerServer) definitionUpdateAttemptCount(name string) int {
+// definitionApplyQueries returns the query strings of the submitted
+// definition applies.
+func (s *fakeOwnerServer) definitionApplyQueries() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.updateAttempts[name]
+	return append([]string(nil), s.applyQueries...)
+}
+
+// definitionApplyContentTypes returns the content types of the
+// submitted definition applies.
+func (s *fakeOwnerServer) definitionApplyContentTypes() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return append([]string(nil), s.applyContentTypes...)
 }
 
 // crdWriteCount returns how many CRD writes the server received.
@@ -278,16 +287,17 @@ func (s *fakeOwnerServer) countDiscovery() {
 	s.discoveryRequests++
 }
 
-// resetCounters drops the recorded write bodies and counters, keeping
+// resetCounters drops the recorded apply bodies and counters, keeping
 // the stored objects.
 func (s *fakeOwnerServer) resetCounters() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.createBodies = map[string][]string{}
-	s.updateBodies = map[string][]string{}
+	s.applyBodies = map[string][]string{}
+	s.applyQueries = nil
+	s.applyContentTypes = nil
 	s.definitionWrites = map[string]int{}
-	s.updateAttempts = map[string]int{}
+	s.applyAttempts = map[string]int{}
 }
 
 // ServeHTTP implements http.Handler.
@@ -430,37 +440,89 @@ func (s *fakeOwnerServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		writeJSON(http.StatusOK, body)
 
-	case r.Method == http.MethodPost && r.URL.Path == "/apis/config.opendatahub.io/v1alpha1/platformmoduledefinitions":
+	case r.Method == http.MethodPatch &&
+		strings.HasPrefix(r.URL.Path, "/apis/config.opendatahub.io/v1alpha1/platformmoduledefinitions/"):
+		name := strings.TrimPrefix(r.URL.Path, "/apis/config.opendatahub.io/v1alpha1/platformmoduledefinitions/")
 		body, object := readObject()
-		name := metadata(object)["name"].(string)
+		status := http.StatusOK
 
-		s.mu.Lock()
-		_, exists := s.definitions[name]
-		s.mu.Unlock()
-
-		if exists {
-			writeStatus(http.StatusConflict, "AlreadyExists")
-
-			return
-		}
-
-		if s.forbidDefinitionCreate {
+		if s.forbidDefinitionApply {
 			writeStatus(http.StatusForbidden, "Forbidden")
 
 			return
 		}
 
-		assignIdentity(object, definitionUID, "1")
-		encoded, err := json.Marshal(object)
+		s.mu.Lock()
+		stored := s.definitions[name]
+		s.applyAttempts[name]++
+		s.mu.Unlock()
+
+		if s.applyConflicts > 0 {
+			s.mu.Lock()
+			s.applyConflicts--
+			s.mu.Unlock()
+
+			writeStatus(http.StatusConflict, "Conflict")
+
+			return
+		}
+
+		var storedObject map[string]any
+		if stored != "" {
+			if err := json.Unmarshal([]byte(stored), &storedObject); err != nil {
+				panic(http.ErrAbortHandler)
+			}
+		}
+
+		// Server-side apply merge: the applied metadata and spec
+		// replace the stored ones — labels and annotations are whole
+		// maps — while the server keeps the identity, the status, and
+		// fields other field managers own.
+		mergedMetadata := map[string]any{}
+		if storedObject != nil {
+			for key, value := range metadata(storedObject) {
+				mergedMetadata[key] = value
+			}
+		}
+		for key, value := range metadata(object) {
+			mergedMetadata[key] = value
+		}
+
+		uid := definitionUID
+		version := 1
+		if storedObject != nil {
+			uid = metadata(storedObject)["uid"].(string)
+			if current, ok := mergedMetadata["resourceVersion"].(string); ok {
+				if parsed, err := strconv.Atoi(current); err == nil {
+					version = parsed + 1
+				}
+			}
+		} else {
+			status = http.StatusCreated
+		}
+		mergedMetadata["uid"] = uid
+		mergedMetadata["resourceVersion"] = fmt.Sprintf("%d", version)
+
+		merged := object
+		merged["metadata"] = mergedMetadata
+		if storedObject != nil {
+			if liveStatus, ok := storedObject["status"]; ok {
+				merged["status"] = liveStatus
+			}
+		}
+
+		encoded, err := json.Marshal(merged)
 		if err != nil {
 			panic(http.ErrAbortHandler)
 		}
 
 		s.mu.Lock()
 		s.definitions[name] = string(encoded)
-		s.createBodies[name] = append(s.createBodies[name], body)
+		s.applyBodies[name] = append(s.applyBodies[name], body)
+		s.applyQueries = append(s.applyQueries, r.URL.RawQuery)
+		s.applyContentTypes = append(s.applyContentTypes, r.Header.Get("Content-Type"))
 		s.definitionWrites[name]++
-		lose := s.loseCreate
+		lose := s.loseApply
 		s.mu.Unlock()
 
 		if lose {
@@ -468,7 +530,7 @@ func (s *fakeOwnerServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			panic(http.ErrAbortHandler)
 		}
 
-		writeJSON(http.StatusCreated, string(encoded))
+		writeJSON(status, string(encoded))
 
 	case r.Method == http.MethodGet &&
 		strings.HasPrefix(r.URL.Path, "/apis/config.opendatahub.io/v1alpha1/platformmoduledefinitions/"):
@@ -491,79 +553,18 @@ func (s *fakeOwnerServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		writeJSON(http.StatusOK, body)
 
-	case r.Method == http.MethodPut &&
-		strings.HasPrefix(r.URL.Path, "/apis/config.opendatahub.io/v1alpha1/platformmoduledefinitions/"):
-		name := strings.TrimPrefix(r.URL.Path, "/apis/config.opendatahub.io/v1alpha1/platformmoduledefinitions/")
-		body, object := readObject()
-
-		s.mu.Lock()
-		stored := s.definitions[name]
-		conflicts := s.conflicts
-		s.updateAttempts[name]++
-		s.mu.Unlock()
-
-		if stored == "" {
-			writeStatus(http.StatusNotFound, "NotFound")
-
-			return
-		}
-
-		var storedObject map[string]any
-		if err := json.Unmarshal([]byte(stored), &storedObject); err != nil {
-			panic(http.ErrAbortHandler)
-		}
-
-		if conflicts > 0 {
-			s.mu.Lock()
-			s.conflicts--
-			s.mu.Unlock()
-
-			writeStatus(http.StatusConflict, "Conflict")
-
-			return
-		}
-
-		if metadata(object)["resourceVersion"] != metadata(storedObject)["resourceVersion"] {
-			writeStatus(http.StatusConflict, "Conflict")
-
-			return
-		}
-
-		version := 1
-		if current, ok := metadata(storedObject)["resourceVersion"].(string); ok {
-			if parsed, err := strconv.Atoi(current); err == nil {
-				version = parsed
-			}
-		}
-		assignIdentity(object, metadata(storedObject)["uid"].(string), fmt.Sprintf("%d", version+1))
-
-		encoded, err := json.Marshal(object)
-		if err != nil {
-			panic(http.ErrAbortHandler)
-		}
-
-		s.mu.Lock()
-		s.definitions[name] = string(encoded)
-		s.updateBodies[name] = append(s.updateBodies[name], body)
-		s.definitionWrites[name]++
-		lose := s.loseUpdate
-		s.mu.Unlock()
-
-		if lose {
-			// The write is stored but the response never arrives.
-			panic(http.ErrAbortHandler)
-		}
-
-		writeJSON(http.StatusOK, string(encoded))
-
 	default:
 		writeStatus(http.StatusNotFound, "NotFound")
 	}
 }
 
 // definitionUID is the server-assigned identity of the synthetic
-// definition.
-const definitionUID = "definition-uid"
+// definition; syntheticName is its metadata.name. The double stores
+// only this definition, so its readers address it directly.
+const (
+	definitionUID = "definition-uid"
+	syntheticName = "synthetic"
+)
 
 // connected returns a connection to the fake server through standard
 // ConfigFlags: a real kubeconfig on disk with the server address
@@ -743,11 +744,11 @@ func TestEnsureRejectsEnvelopeBeforeAnyWrite(t *testing.T) {
 }
 
 // TestEnsureFirstPublicationReturnsServerIdentity proves the first
-// run creates the definition behind a real server identity: the
+// run applies the definition behind a real server identity: the
 // returned owner carries the assigned UID and runtime GVK, and the
-// submitted create body publishes exactly the authored name, labels,
+// submitted apply body publishes exactly the authored name, labels,
 // annotations, and normalized unexpanded spec — never forged
-// authority fields.
+// authority fields, and no status — behind the run's field owner.
 func TestEnsureFirstPublicationReturnsServerIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -772,7 +773,16 @@ func TestEnsureFirstPublicationReturnsServerIdentity(t *testing.T) {
 	g.Expect(server.definitionWriteCount()).To(Equal(1))
 	g.Expect(server.crdWriteCount()).To(Equal(1))
 
-	bodies := server.definitionCreateBodies("synthetic")
+	g.Expect(server.definitionApplyContentTypes()).To(Equal([]string{"application/apply-patch+yaml"}))
+
+	queries := server.definitionApplyQueries()
+	g.Expect(queries).To(HaveLen(1))
+	parsed, err := url.ParseQuery(queries[0])
+	g.Expect(err).To(Succeed())
+	g.Expect(parsed.Get("fieldManager")).To(Equal(fieldOwner))
+	g.Expect(parsed.Get("force")).To(Equal("true"))
+
+	bodies := server.definitionApplyBodies()
 	g.Expect(bodies).To(HaveLen(1))
 	g.Expect(bodies[0]).To(SatisfyAll(
 		jq.Match(`.metadata.name == "synthetic"`),
@@ -783,6 +793,8 @@ func TestEnsureFirstPublicationReturnsServerIdentity(t *testing.T) {
 		jq.Match(`.metadata | has("namespace") | not`),
 		jq.Match(`.metadata | has("ownerReferences") | not`),
 		jq.Match(`.metadata | has("finalizers") | not`),
+		jq.Match(`.metadata | has("creationTimestamp") | not`),
+		jq.Match(`. | has("status") | not`),
 		jq.Match(`.spec.instance.name == "synthetic"`),
 		jq.Match(`.spec.manifests.format == "helm"`),
 		jq.Match(`.spec.manifests.helm.values.replicas == 2`),
@@ -795,11 +807,11 @@ func TestEnsureFirstPublicationReturnsServerIdentity(t *testing.T) {
 	))
 }
 
-// TestEnsureRepeatPublicationAlreadyMatching proves a re-run of an
-// unchanged definition reuses the published identity with no further
-// writes: the create is refused as already existing and the read
-// confirms the desired spec.
-func TestEnsureRepeatPublicationAlreadyMatching(t *testing.T) {
+// TestEnsureRepeatPublicationAppliesAgain proves a re-run of an
+// unchanged definition reuses the published identity through the
+// same single idempotent apply: one write, one field manager, no
+// read-only shortcut that could race a competing writer.
+func TestEnsureRepeatPublicationAppliesAgain(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -814,19 +826,20 @@ func TestEnsureRepeatPublicationAlreadyMatching(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(second.UID).To(Equal(first.UID))
-	g.Expect(second.ResourceVersion).To(Equal(first.ResourceVersion))
 	g.Expect(second.TypeMeta).To(Equal(metav1.TypeMeta{APIVersion: v1alpha1.APIVersion, Kind: v1alpha1.Kind}))
-	g.Expect(server.definitionWriteCount()).To(Equal(0))
-	g.Expect(server.definitionCreateBodies("synthetic")).To(BeEmpty())
-	g.Expect(server.definitionUpdateBodies("synthetic")).To(BeEmpty())
+	g.Expect(server.definitionWriteCount()).To(Equal(1))
+	g.Expect(server.definitionApplyAttemptCount()).To(Equal(1))
+	g.Expect(server.definitionApplyBodies()).To(HaveLen(1))
 }
 
-// TestEnsureUpdatesChangedSpecPreservingIdentity proves a changed
-// authored spec publishes through a merged update: the live identity,
-// status, and unrelated metadata are preserved, the previously
-// unbound definition is reused without any binding annotation, and
-// arbitrary Helm values and null env entries survive the update.
-func TestEnsureUpdatesChangedSpecPreservingIdentity(t *testing.T) {
+// TestEnsureAppliesChangedSpecPreservingIdentity proves a changed
+// authored spec publishes through the same single apply: the live
+// identity and controller-written status survive the server-side
+// merge, the previously unbound definition is reused without any
+// binding annotation, arbitrary Helm values and null env entries
+// survive, and authored labels and annotations are the whole desired
+// state — a live key the re-run no longer authors is replaced.
+func TestEnsureAppliesChangedSpecPreservingIdentity(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -850,17 +863,16 @@ func TestEnsureUpdatesChangedSpecPreservingIdentity(t *testing.T) {
 
 	g.Expect(server.definitionWriteCount()).To(Equal(1))
 
-	bodies := server.definitionUpdateBodies("synthetic")
+	bodies := server.definitionApplyBodies()
 	g.Expect(bodies).To(HaveLen(1))
 	g.Expect(bodies[0]).To(SatisfyAll(
-		jq.Match(`.metadata.uid == "definition-uid"`),
-		jq.Match(`.metadata.resourceVersion == "1"`),
+		jq.Match(`.metadata.name == "synthetic"`),
 		jq.Match(`.metadata.labels.module == "synthetic"`),
-		jq.Match(`.metadata.labels["unrelated.opendatahub.io/live"] == "preserved"`),
 		jq.Match(`.metadata.annotations.note == "authored"`),
-		jq.Match(`.metadata.annotations["unrelated.opendatahub.io/live"] == "preserved"`),
+		jq.Match(`.metadata | has("uid") | not`),
+		jq.Match(`.metadata | has("resourceVersion") | not`),
 		jq.Match(`.metadata | has("finalizers") | not`),
-		jq.Match(`.status.phase == "Ready"`),
+		jq.Match(`. | has("status") | not`),
 		jq.Match(`.spec.manifests.helm.values.replicas == 3`),
 		jq.Match(`.spec.manifests.helm.values.added.list == [1, null, "three"]`),
 		jq.Match(`.spec.manifests.helm.values.nested.items == ["one", null, 3]`),
@@ -872,6 +884,20 @@ func TestEnsureUpdatesChangedSpecPreservingIdentity(t *testing.T) {
 	for _, annotation := range []string{"binding", "bound", "locked"} {
 		g.Expect(bodies[0]).NotTo(ContainSubstring(annotation))
 	}
+
+	// The stored object keeps the server identity and status, while
+	// the authored labels and annotations replace the live maps.
+	stored := server.storedDefinition(t)
+	g.Expect(stored).To(SatisfyAll(
+		jq.Match(`.metadata.uid == "definition-uid"`),
+		jq.Match(`.metadata.resourceVersion == "2"`),
+		jq.Match(`.metadata.labels.module == "synthetic"`),
+		jq.Match(`.metadata.labels | has("unrelated.opendatahub.io/live") | not`),
+		jq.Match(`.metadata.annotations.note == "authored"`),
+		jq.Match(`.metadata.annotations | has("unrelated.opendatahub.io/live") | not`),
+		jq.Match(`.status.phase == "Ready"`),
+		jq.Match(`.spec.manifests.helm.values.replicas == 3`),
+	))
 }
 
 // TestEnsureRejectsUnusableLiveDefinitions proves definitions this run
@@ -924,7 +950,7 @@ func TestEnsureRejectsUnusableLiveDefinitions(t *testing.T) {
 			g.Expect(typed.Owner.UID).To(Equal(live.UID))
 
 			g.Expect(server.definitionWriteCount()).To(Equal(0))
-			g.Expect(server.storedDefinition(t, "synthetic")).To(SatisfyAll(
+			g.Expect(server.storedDefinition(t)).To(SatisfyAll(
 				jq.Match(`.spec.relatedImages == ["RELATED_IMAGE_OPERAND"]`),
 				jq.Match(`.metadata.resourceVersion == "1"`),
 			))
@@ -932,16 +958,16 @@ func TestEnsureRejectsUnusableLiveDefinitions(t *testing.T) {
 	}
 }
 
-// TestEnsureLostCreateResponseIsUnknown proves an accepted create
-// whose response never arrives is an unknown publication with no
-// confirmed identity — the write may have landed, no UID is invented,
-// and the ambiguous create is never retried.
-func TestEnsureLostCreateResponseIsUnknown(t *testing.T) {
+// TestEnsureLostApplyResponseIsUnknown proves an accepted apply over
+// an absent owner whose response never arrives is an unknown
+// publication with no confirmed identity — the write may have landed,
+// no UID is invented, and the ambiguous apply is never retried.
+func TestEnsureLostApplyResponseIsUnknown(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 	server := newFakeOwnerServer(t)
-	server.loseCreate = true
+	server.loseApply = true
 
 	owner, err := ensured(t.Context(), t, g, server, newAuthoredDefinition())
 
@@ -954,23 +980,24 @@ func TestEnsureLostCreateResponseIsUnknown(t *testing.T) {
 
 	// The server stored the write; only the response was lost.
 	g.Expect(server.definitionWriteCount()).To(Equal(1))
-	stored := server.storedDefinition(t, "synthetic")
+	stored := server.storedDefinition(t)
 	g.Expect(stored).To(SatisfyAll(
 		jq.Match(`.metadata.uid == "definition-uid"`),
 		jq.Match(`.spec.manifests.helm.values.replicas == 2`),
 	))
 }
 
-// TestEnsureLostUpdateResponseIsUnknown proves an accepted update
-// whose response never arrives leaves the desired spec unknown while
-// the prior read still confirms the owner identity.
-func TestEnsureLostUpdateResponseIsUnknown(t *testing.T) {
+// TestEnsureLostApplyResponseRetainsIdentity proves an accepted apply
+// over a live owner whose response never arrives leaves the desired
+// spec unknown while the prior read still confirms the owner
+// identity.
+func TestEnsureLostApplyResponseRetainsIdentity(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 	server := newFakeOwnerServer(t)
 	server.seedDefinition(t, marshalDefinition(t, g, newLiveDefinition()))
-	server.loseUpdate = true
+	server.loseApply = true
 
 	changed := newAuthoredDefinition()
 	changed.Spec.Manifests.Helm.Values["replicas"] = apiextensionsv1.JSON{Raw: []byte(`3`)}
@@ -987,38 +1014,50 @@ func TestEnsureLostUpdateResponseIsUnknown(t *testing.T) {
 
 	// The server stored the new spec; only the response was lost.
 	g.Expect(server.definitionWriteCount()).To(Equal(1))
-	g.Expect(server.storedDefinition(t, "synthetic")).To(
+	g.Expect(server.storedDefinition(t)).To(
 		jq.Match(`.spec.manifests.helm.values.replicas == 3`),
 	)
 }
 
-// TestEnsureRetriesUpdateConflicts proves a competing writer's
-// conflicts are retried and the publication still confirms the
-// desired spec.
-func TestEnsureRetriesUpdateConflicts(t *testing.T) {
+// TestEnsureApplyConflictIsRejected proves a competing field manager's
+// apply conflict is a definitive rejection — never retried, never
+// silently unknown — with the conflict identity preserved and the
+// stored state untouched.
+func TestEnsureApplyConflictIsRejected(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 	server := newFakeOwnerServer(t)
 	server.seedDefinition(t, marshalDefinition(t, g, newLiveDefinition()))
-	server.conflicts = 2
+	server.applyConflicts = 1
 
 	changed := newAuthoredDefinition()
 	changed.Spec.Manifests.Helm.Values["replicas"] = apiextensionsv1.JSON{Raw: []byte(`3`)}
 
 	owner, err := ensured(t.Context(), t, g, server, changed)
-	g.Expect(err).NotTo(HaveOccurred())
 
+	g.Expect(owner).NotTo(BeNil())
 	g.Expect(owner.UID).To(Equal(types.UID(definitionUID)))
-	g.Expect(owner.ResourceVersion).To(Equal("2"))
-	g.Expect(server.definitionUpdateAttemptCount("synthetic")).To(Equal(3))
-	g.Expect(server.definitionUpdateBodies("synthetic")).To(HaveLen(1))
+
+	typed := ownerError(g, err)
+	g.Expect(typed.Outcome).To(Equal(OutcomeRejected))
+	g.Expect(typed.Owner).NotTo(BeNil())
+	g.Expect(typed.Owner.UID).To(Equal(types.UID(definitionUID)))
+	g.Expect(apierrors.IsConflict(typed.Unwrap())).To(BeTrue())
+
+	// The apply was attempted exactly once and stored nothing.
+	g.Expect(server.definitionApplyAttemptCount()).To(Equal(1))
+	g.Expect(server.definitionWriteCount()).To(Equal(0))
+	g.Expect(server.storedDefinition(t)).To(SatisfyAll(
+		jq.Match(`.metadata.resourceVersion == "1"`),
+		jq.Match(`.spec.manifests.helm.values.replicas == 2`),
+	))
 }
 
-// TestEnsureRetriesRacedDeletion proves a definition that exists at
-// creation time but vanishes before the read is created afresh rather
-// than failing the publication.
-func TestEnsureRetriesRacedDeletion(t *testing.T) {
+// TestEnsureAppliesAfterRacedDeletion proves a definition that exists
+// at read time but vanishes before the apply is created afresh by the
+// same apply rather than failing the publication.
+func TestEnsureAppliesAfterRacedDeletion(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -1031,7 +1070,7 @@ func TestEnsureRetriesRacedDeletion(t *testing.T) {
 
 	g.Expect(owner.UID).To(Equal(types.UID(definitionUID)))
 	g.Expect(owner.ResourceVersion).To(Equal("1"))
-	g.Expect(server.definitionCreateBodies("synthetic")).To(HaveLen(1))
+	g.Expect(server.definitionApplyBodies()).To(HaveLen(1))
 }
 
 // TestEnsureCancelledInvocationIsNotAttempted proves a cancelled
@@ -1058,15 +1097,15 @@ func TestEnsureCancelledInvocationIsNotAttempted(t *testing.T) {
 	g.Expect(server.requestCount()).To(Equal(0))
 }
 
-// TestEnsureDefinitiveCreateFailureIsRejected proves a create the
+// TestEnsureDefinitiveApplyFailureIsRejected proves an apply the
 // server definitively refuses — a forbidden request — is a rejected
 // publication, not an unknown one.
-func TestEnsureDefinitiveCreateFailureIsRejected(t *testing.T) {
+func TestEnsureDefinitiveApplyFailureIsRejected(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 	server := newFakeOwnerServer(t)
-	server.forbidDefinitionCreate = true
+	server.forbidDefinitionApply = true
 
 	owner, err := ensured(t.Context(), t, g, server, newAuthoredDefinition())
 

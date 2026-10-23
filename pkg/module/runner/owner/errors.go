@@ -27,9 +27,8 @@ import (
 // is known to be the spec stored server-side.
 //
 // An outcome never describes writes in general. Only a successful
-// create, a successful update, or an already-matching read confirms
-// the desired spec, so a nil owner with OutcomeUnknown asserts an
-// ambiguous write, not the absence of one.
+// apply confirms the desired spec, so a nil owner with OutcomeUnknown
+// asserts an ambiguous write, not the absence of one.
 type Outcome string
 
 // The publication outcomes.
@@ -40,8 +39,8 @@ const (
 	OutcomeNotAttempted Outcome = "not_attempted"
 
 	// OutcomeConfirmed marks a publication whose desired spec is
-	// known to be stored server-side: a successful create, a
-	// successful update, or a live definition that already matches.
+	// known to be stored server-side: a successful server-side
+	// apply.
 	OutcomeConfirmed Outcome = "confirmed"
 
 	// OutcomeRejected marks a definitive server-side refusal of the
@@ -52,9 +51,9 @@ const (
 	OutcomeRejected Outcome = "rejected"
 
 	// OutcomeUnknown marks an ambiguous publication: a request whose
-	// outcome the server never reported — a lost create or update
-	// response, or a cancellation. The write may or may not have
-	// been applied.
+	// outcome the server never reported — a lost apply response,
+	// or a cancellation. The write may or may not have been
+	// applied.
 	OutcomeUnknown Outcome = "unknown"
 )
 
@@ -65,7 +64,7 @@ const (
 // reachable only through errors.Is and errors.As on Unwrap.
 //
 // Owner carries the best-known server-backed definition state: a
-// confirmed identity from a successful read, creation, or update. A
+// confirmed identity from a successful read or apply. A
 // nil Owner means the identity is unconfirmed, never that no write
 // occurred.
 type Error struct {
