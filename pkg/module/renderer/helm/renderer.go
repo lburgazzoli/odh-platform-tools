@@ -36,7 +36,10 @@ import (
 //
 // The returned list contains every object the engine rendered for the
 // chart; callers filtering it must not assume they hold the raw chart
-// documents.
+// documents. The shared payload guard runs on the output: instances
+// of the definition's own module type, any PlatformModuleDefinition,
+// and the persisted definition CRD fail the render, so no caller can
+// receive them.
 func Render(ctx context.Context, definition v1alpha1.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error) {
 	return RenderWithOptions(ctx, definition, definitionFile, renderer.Options{})
 }
@@ -81,6 +84,12 @@ func RenderWithOptions(
 
 	resources, err := shared.Render(ctx)
 	if err != nil {
+		return nil, fmt.Errorf("helm render for module %s: %w", definition.Name, err)
+	}
+
+	// The shared payload guard fails the render itself on reserved
+	// objects; they are never silently dropped.
+	if err := renderer.CheckReserved(definition, resources); err != nil {
 		return nil, fmt.Errorf("helm render for module %s: %w", definition.Name, err)
 	}
 

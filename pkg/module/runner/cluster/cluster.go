@@ -109,6 +109,18 @@ func Connect(ctx context.Context, getter genericclioptions.RESTClientGetter) (*C
 	return &Connection{client: client}, nil
 }
 
+// NewWithClient wraps an existing controller-runtime client as a
+// connection. Connect remains the production constructor; this seam
+// exists for callers that exercise connection consumers against a
+// client they construct themselves — the offline tests drive the
+// framework deploy action through the controller-runtime fake client
+// this way. The client is used exactly as given: no copy, timeout
+// adjustment, or scheme change is made, so the connection's behavior
+// is the wrapped client's behavior.
+func NewWithClient(client crclient.Client) *Connection {
+	return &Connection{client: client}
+}
+
 // ResolveNamespace resolves the effective namespace from the standard
 // kubeconfig loader: an explicit getter override, the selected
 // context's namespace, or the standard default. It is local

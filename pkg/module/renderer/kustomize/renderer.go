@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/kustomize/kyaml/resid"
 
 	kustomize "github.com/k8s-manifest-kit/renderer-kustomize/pkg"
+	"sigs.k8s.io/kustomize/kyaml/filesys"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
@@ -41,9 +42,12 @@ import (
 //
 // The returned list contains every object the engine rendered;
 // callers filtering it must not assume they hold the raw kustomize
-// build output.
+// build output. The shared payload guard runs on the output:
+// instances of the definition's own module type, any
+// PlatformModuleDefinition, and the persisted definition CRD fail
+// the render, so no caller can receive them.
 func Render(ctx context.Context, definition v1alpha1.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error) {
-	return RenderWithOptions(ctx, definition, definitionFile, renderer.Options{})
+	return render(ctx, definition, definitionFile, renderer.Options{}, nil)
 }
 
 // RenderWithOptions renders the module with runtime options: the
@@ -59,6 +63,23 @@ func RenderWithOptions(
 	definition v1alpha1.PlatformModuleDefinition,
 	definitionFile string,
 	options renderer.Options,
+) ([]unstructured.Unstructured, error) {
+	return render(ctx, definition, definitionFile, options, nil)
+}
+
+// render is the implementation the public render entrypoints share.
+// The filesystem seam is package-private: a nil fsys keeps the native
+// renderer's on-disk default — the only behavior production callers
+// get — while the guard tests supply an in-memory filesystem through
+// the same native WithFileSystem option, exercising the real backend,
+// engine, and guard with no disk writes. No global filesystem state or
+// public option is introduced.
+func render(
+	ctx context.Context,
+	definition v1alpha1.PlatformModuleDefinition,
+	definitionFile string,
+	options renderer.Options,
+	fsys filesys.FileSystem,
 ) ([]unstructured.Unstructured, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -88,6 +109,10 @@ func RenderWithOptions(
 		nativeOptions = append(nativeOptions, kustomize.WithPlugin(namespacePlugin(options.Namespace)))
 	}
 
+	if fsys != nil {
+		nativeOptions = append(nativeOptions, kustomize.WithFileSystem(fsys))
+	}
+
 	native, err := kustomize.New([]kustomize.Source{source}, nativeOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("kustomize render for module %s: %w", definition.Name, err)
@@ -100,6 +125,12 @@ func RenderWithOptions(
 
 	resources, err := shared.Render(ctx)
 	if err != nil {
+		return nil, fmt.Errorf("kustomize render for module %s: %w", definition.Name, err)
+	}
+
+	// The shared payload guard fails the render itself on reserved
+	// objects; they are never silently dropped.
+	if err := renderer.CheckReserved(definition, resources); err != nil {
 		return nil, fmt.Errorf("kustomize render for module %s: %w", definition.Name, err)
 	}
 
