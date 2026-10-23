@@ -248,8 +248,10 @@ func (r *Runner) Load(ctx context.Context) error {
 //
 // The renderer itself has already rejected reserved identities as
 // render errors, and the backend guarantees that a render finishing
-// after the context expired never becomes successful output, so no
-// failed render result is published here.
+// after the context expired never becomes successful output. The
+// stage holds every seam to the same contract, rejecting a late
+// successful return after the context expired, so no failed render
+// result is published here.
 func (r *Runner) Render(ctx context.Context) error {
 	if err := r.begin(stageRendered); err != nil {
 		return err
@@ -288,6 +290,15 @@ func (r *Runner) Render(ctx context.Context) error {
 		return err
 	}
 
+	// A render that returned after the context expired never becomes
+	// successful output, even through a seam that does not check it
+	// itself: the backend enforces this for the real renderers, and
+	// the stage holds every seam to the same contract.
+	if err := ctx.Err(); err != nil {
+		r.fail()
+		return err
+	}
+
 	r.resources = resources
 	r.stage = stageRendered
 
@@ -304,9 +315,12 @@ func (r *Runner) Render(ctx context.Context) error {
 // confirmed — a nil owner does not prove that no write occurred — and
 // stops before any payload write; an apply failure keeps the
 // published owner, and writes that preceded the framework's first
-// error report stand as partial state. No namespace is prechecked:
-// rendered Namespaces follow framework create/update behavior, and
-// other missing namespaces fail through the API.
+// error report stand as partial state. No API write happens after
+// the invocation expired: the context is checked after connecting
+// and after publication, ahead of the services' own entry checks. No
+// namespace is prechecked: rendered Namespaces follow framework
+// create/update behavior, and other missing namespaces fail through
+// the API.
 func (r *Runner) Deploy(ctx context.Context) error {
 	if err := r.begin(stageDeployed); err != nil {
 		return err
@@ -324,6 +338,14 @@ func (r *Runner) Deploy(ctx context.Context) error {
 	}
 	r.connection = connection
 
+	// No API write happens after the invocation expired: publication
+	// and the payload apply are both checked here, ahead of the
+	// services' own entry checks.
+	if err := ctx.Err(); err != nil {
+		r.fail()
+		return err
+	}
+
 	owner, err := r.ensure(ctx, connection, *r.definition)
 	if err != nil {
 		r.retainOwner(owner, err)
@@ -332,6 +354,11 @@ func (r *Runner) Deploy(ctx context.Context) error {
 	}
 	r.owner = owner
 	r.publication = moduleowner.OutcomeConfirmed
+
+	if err := ctx.Err(); err != nil {
+		r.fail()
+		return err
+	}
 
 	if err := r.apply(ctx, connection, r.owner, r.release, r.resources); err != nil {
 		r.fail()

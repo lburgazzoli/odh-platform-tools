@@ -233,6 +233,20 @@ type stubRunner struct {
 	appliedOwner     *v1alpha1.PlatformModuleDefinition
 	appliedRelease   api.Release
 	appliedResources []unstructured.Unstructured
+
+	// renderCtx, connectCtx, and ensureCtx capture the invocation
+	// contexts the stages passed to the seams.
+	renderCtx  context.Context
+	connectCtx context.Context
+	ensureCtx  context.Context
+
+	// renderHook, connectHook, and ensureHook, when set, run inside
+	// the matching stub with the invocation context before it
+	// returns; the run tests use them to cancel the invocation at
+	// controlled points.
+	renderHook  func(ctx context.Context)
+	connectHook func(ctx context.Context)
+	ensureHook  func(ctx context.Context)
 }
 
 // newStubRunner returns the stub harness with the test definition.
@@ -272,17 +286,24 @@ func (s *stubRunner) load(_ context.Context, _ string) (v1alpha1.PlatformModuleD
 }
 
 // render is the backend render stub; it captures the shared options
-// and returns one empty resource so Deploy has a payload.
+// and the invocation context, runs the optional hook, and returns
+// one empty resource so Deploy has a payload.
 func (s *stubRunner) render(
-	_ context.Context,
+	ctx context.Context,
 	_ v1alpha1.PlatformModuleDefinition,
 	_ string,
 	options renderer.Options,
 ) ([]unstructured.Unstructured, error) {
 	s.record("render")
 
+	s.renderCtx = ctx
+
 	captured := options
 	s.renderOptions = &captured
+
+	if s.renderHook != nil {
+		s.renderHook(ctx)
+	}
 
 	if s.renderError != nil {
 		return nil, s.renderError
@@ -296,8 +317,17 @@ func (s *stubRunner) render(
 }
 
 // connect is the connection stub.
-func (s *stubRunner) connect(_ context.Context, _ genericclioptions.RESTClientGetter) (*cluster.Connection, error) {
+func (s *stubRunner) connect(
+	ctx context.Context,
+	_ genericclioptions.RESTClientGetter,
+) (*cluster.Connection, error) {
 	s.record("connect")
+
+	s.connectCtx = ctx
+
+	if s.connectHook != nil {
+		s.connectHook(ctx)
+	}
 
 	return testConnection(), s.connectError
 }
@@ -306,11 +336,17 @@ func (s *stubRunner) connect(_ context.Context, _ genericclioptions.RESTClientGe
 // service's contract: an error is always accompanied by a nil owner,
 // with any still-confirmed identity carried inside the typed error.
 func (s *stubRunner) ensure(
-	_ context.Context,
+	ctx context.Context,
 	_ *cluster.Connection,
 	_ v1alpha1.PlatformModuleDefinition,
 ) (*v1alpha1.PlatformModuleDefinition, error) {
 	s.record("ensure")
+
+	s.ensureCtx = ctx
+
+	if s.ensureHook != nil {
+		s.ensureHook(ctx)
+	}
 
 	if s.ensureError != nil {
 		return nil, s.ensureError
