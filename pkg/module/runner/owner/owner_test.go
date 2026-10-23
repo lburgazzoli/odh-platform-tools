@@ -33,9 +33,9 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 )
 
-// requestDecoder decodes protobuf request bodies — the apiextensions
-// typed client prefers protobuf on the wire — through the real
-// apimachinery serializer, so the fake can store them as JSON.
+// requestDecoder decodes protobuf request bodies — should a client
+// send them on the wire — through the real apimachinery serializer,
+// so the fake can store them as JSON.
 var requestDecoder = newRequestDecoder()
 
 // newRequestDecoder builds the protobuf request decoder over a scheme
@@ -121,15 +121,16 @@ type fakeOwnerServer struct {
 	// it missing until the raced creation is refused.
 	raceCRDCreation string
 
-	mu               sync.Mutex
-	crds             map[string]string
-	crdWrites        int
-	definitions      map[string]string
-	definitionWrites map[string]int
-	updateAttempts   map[string]int
-	createBodies     map[string][]string
-	updateBodies     map[string][]string
-	requests         int
+	mu                sync.Mutex
+	crds              map[string]string
+	crdWrites         int
+	definitions       map[string]string
+	definitionWrites  map[string]int
+	updateAttempts    map[string]int
+	createBodies      map[string][]string
+	updateBodies      map[string][]string
+	requests          int
+	discoveryRequests int
 }
 
 // newFakeOwnerServer starts the double; the server closes with the
@@ -257,12 +258,24 @@ func (s *fakeOwnerServer) storedCRD(t *testing.T, name string) string {
 	return s.crds[name]
 }
 
-// requestCount returns how many requests the server received.
+// requestCount returns how many requests the server received beyond
+// the client's internal discovery reads: the controller-runtime
+// client's lazy mapper fetches /api, /apis, and per-group resource
+// documents on first use, which are not observable owner behavior.
 func (s *fakeOwnerServer) requestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.requests
+	return s.requests - s.discoveryRequests
+}
+
+// countDiscovery records a client-internal discovery read, which
+// requestCount excludes.
+func (s *fakeOwnerServer) countDiscovery() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.discoveryRequests++
 }
 
 // resetCounters drops the recorded write bodies and counters, keeping
@@ -347,14 +360,19 @@ func (s *fakeOwnerServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api":
+		s.countDiscovery()
 		writeJSON(http.StatusOK, ownerAPIVersionsJSON)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1":
+		s.countDiscovery()
 		writeJSON(http.StatusOK, ownerCoreV1ResourcesJSON)
 	case r.Method == http.MethodGet && r.URL.Path == "/apis":
+		s.countDiscovery()
 		writeJSON(http.StatusOK, ownerGroupsJSON)
 	case r.Method == http.MethodGet && r.URL.Path == "/apis/apiextensions.k8s.io/v1":
+		s.countDiscovery()
 		writeJSON(http.StatusOK, ownerAPIExtensionsResourcesJSON)
 	case r.Method == http.MethodGet && r.URL.Path == "/apis/config.opendatahub.io/v1alpha1":
+		s.countDiscovery()
 		writeJSON(http.StatusOK, ownerDefinitionsResourcesJSON)
 
 	case r.Method == http.MethodPost && r.URL.Path == "/apis/apiextensions.k8s.io/v1/customresourcedefinitions":

@@ -324,7 +324,7 @@ func confirmed(
 // without its group, version, and kind. If resolution fails, the
 // owner keeps the statically known envelope.
 func ensureGVK(connection *cluster.Connection, owner *v1alpha1.PlatformModuleDefinition) error {
-	if err := fwresources.EnsureGroupVersionKind(connection.Scheme(), owner); err != nil {
+	if err := fwresources.EnsureGroupVersionKind(connection.Client().Scheme(), owner); err != nil {
 		owner.TypeMeta = metav1.TypeMeta{APIVersion: v1alpha1.APIVersion, Kind: v1alpha1.Kind}
 
 		return err

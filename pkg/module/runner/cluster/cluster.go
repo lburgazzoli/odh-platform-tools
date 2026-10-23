@@ -2,14 +2,16 @@
 // through the standard cli-runtime configuration: the same
 // RESTClientGetter the root command's inherited ConfigFlags carry.
 //
-// The connection is invocation-scoped and lazy. Connect builds every
-// client from one copied standard ToRESTConfig result — preserving
-// credentials, TLS, impersonation, exec auth, request-timeout, and
-// loader behavior — without contacting the server: discovery and the
-// REST mapper resolve on first use. All HTTP issued through the
-// connection is bounded to the invocation context by a transport
-// bridge, including the legacy discovery calls that carry no request
-// context of their own.
+// The connection is invocation-scoped and lazy. Connect builds one
+// controller-runtime client from a copied standard ToRESTConfig
+// result — preserving credentials, TLS, impersonation, exec auth,
+// request-timeout, and loader behavior — without contacting the
+// server: discovery and the REST mapper resolve on first use. When
+// the standard configuration carries no request timeout, Connect
+// bounds every request to the invocation's remaining deadline, so
+// client-internal discovery requests issued with background contexts
+// of their own are still bounded; a user-provided request timeout is
+// never extended. Calls that carry a context keep it.
 //
 // Required caller RBAC for a full run: discovery access
 // (system:discovery or aggregated equivalent), get on namespaces, get
@@ -28,18 +30,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
-	"k8s.io/client-go/discovery"
-	"k8s.io/client-go/discovery/cached/memory"
-	"k8s.io/client-go/dynamic"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/restmapper"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
@@ -52,38 +48,26 @@ const crdPollInterval = 500 * time.Millisecond
 // errNilGetter marks a missing standard configuration getter.
 var errNilGetter = errors.New("kubernetes configuration getter is nil")
 
-// Connection bundles the invocation-scoped Kubernetes clients a run
-// uses: an uncached controller-runtime client, dynamic and discovery
-// clients, an apiextensions clientset, and a resettable deferred
-// REST mapper sharing one discovery cache. It is created by Connect
-// and holds the invocation context that bounds every request issued
-// through it; the runner keeps that context alive through the
-// optional post-apply wait.
-//
-// A Connection is not safe for concurrent use and is never reused
-// across invocations.
+// Connection holds the single invocation-scoped controller-runtime
+// client a run uses: uncached, built with default options, and
+// carrying its own lazy REST mapper that reloads missing groups on
+// demand — including groups served by CRDs established after the
+// first mapping. It is created by Connect and never reused across
+// invocations.
 type Connection struct {
-	// invocation is the context the transport bridge bounds requests
-	// to. It is the CLI invocation context, not any single stage
-	// context: earlier stage/request deadlines are preserved by the
-	// bridge rather than extended.
-	invocation context.Context
-
-	config        *rest.Config
-	scheme        *runtime.Scheme
-	client        crclient.Client
-	dynamic       dynamic.Interface
-	discovery     discovery.CachedDiscoveryInterfaceWithContext
-	apiExtensions apiextensionsclientset.Interface
-	mapper        *restmapper.DeferredDiscoveryRESTMapper
+	client crclient.Client
 }
 
 // Connect builds a connection from the standard cli-runtime getter.
 // It performs no bootstrap, payload, or cleanup writes and contacts
-// no server: clients and the mapper are lazy. The standard REST
+// no server: the client and its mapper are lazy. The standard REST
 // configuration is copied so the connection never mutates the
 // caller's getter state; credentials stay inside the standard client
-// objects.
+// objects. When the copied configuration carries no request timeout,
+// the invocation context's remaining deadline becomes the per-request
+// bound — client-internal discovery requests issued with background
+// contexts stay bounded, and a user --request-timeout is preserved
+// exactly.
 func Connect(ctx context.Context, getter genericclioptions.RESTClientGetter) (*Connection, error) {
 	if getter == nil {
 		return nil, fmt.Errorf("resolving Kubernetes configuration: %w", errNilGetter)
@@ -98,7 +82,13 @@ func Connect(ctx context.Context, getter genericclioptions.RESTClientGetter) (*C
 	}
 
 	config := rest.CopyConfig(restConfig)
-	bridgeTransport(ctx, config)
+	if config.Timeout == 0 {
+		if deadline, ok := ctx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining > 0 {
+				config.Timeout = remaining
+			}
+		}
+	}
 
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -111,43 +101,12 @@ func Connect(ctx context.Context, getter genericclioptions.RESTClientGetter) (*C
 		return nil, fmt.Errorf("registering module definition scheme types: %w", err)
 	}
 
-	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("creating discovery client: %w", err)
-	}
-
-	dynamicClient, err := dynamic.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("creating dynamic client: %w", err)
-	}
-
-	apiExtensionsClient, err := apiextensionsclientset.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("creating apiextensions client: %w", err)
-	}
-
-	cachedDiscovery := memory.NewMemCacheClient(discoveryClient)
-	contextualDiscovery := discovery.ToCachedDiscoveryInterfaceWithContext(cachedDiscovery)
-	mapper := restmapper.NewDeferredDiscoveryRESTMapperWithContext(contextualDiscovery)
-
-	client, err := crclient.New(config, crclient.Options{
-		Scheme: scheme,
-		Mapper: mapper,
-	})
+	client, err := crclient.New(config, crclient.Options{Scheme: scheme})
 	if err != nil {
 		return nil, fmt.Errorf("creating controller-runtime client: %w", err)
 	}
 
-	return &Connection{
-		invocation:    ctx,
-		config:        config,
-		scheme:        scheme,
-		client:        client,
-		dynamic:       dynamicClient,
-		discovery:     contextualDiscovery,
-		apiExtensions: apiExtensionsClient,
-		mapper:        mapper,
-	}, nil
+	return &Connection{client: client}, nil
 }
 
 // ResolveNamespace resolves the effective namespace from the standard
@@ -168,74 +127,29 @@ func ResolveNamespace(getter genericclioptions.RESTClientGetter) (string, error)
 	return namespace, nil
 }
 
-// Client returns the uncached controller-runtime client sharing the
-// connection's scheme and REST mapper.
+// Client returns the uncached controller-runtime client.
 func (c *Connection) Client() crclient.Client {
 	return c.client
 }
 
-// Dynamic returns the dynamic client.
-func (c *Connection) Dynamic() dynamic.Interface {
-	return c.dynamic
-}
-
-// APIExtensions returns the apiextensions clientset used for CRD
-// establishment checks.
-func (c *Connection) APIExtensions() apiextensionsclientset.Interface {
-	return c.apiExtensions
-}
-
-// Discovery returns the shared cached discovery interface; its cache
-// is invalidated by RefreshDiscovery.
-func (c *Connection) Discovery() discovery.CachedDiscoveryInterfaceWithContext {
-	return c.discovery
-}
-
-// Mapper returns the resettable deferred REST mapper. Its discovery
-// cache is shared with the connection; use RefreshDiscovery rather
-// than resetting the mapper alone.
-func (c *Connection) Mapper() *restmapper.DeferredDiscoveryRESTMapper {
-	return c.mapper
-}
-
-// Scheme returns the connection scheme: the standard client-go and
-// apiextensions types plus the module definition API.
-func (c *Connection) Scheme() *runtime.Scheme {
-	return c.scheme
-}
-
-// RefreshDiscovery drops the cached discovery data and resets the
-// REST mapper so the next mapping request re-discovers, picking up
-// CRDs established since the last refresh. The invalidation itself
-// is bounded by ctx.
-func (c *Connection) RefreshDiscovery(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	c.discovery.InvalidateWithContext(ctx)
-	c.mapper.ResetWithContext(ctx)
-
-	return nil
-}
-
-// WaitCRDs polls the named custom resource definitions until every
-// one reports both Established and NamesAccepted, then refreshes
-// discovery so newly served groups are mappable. Errors are returned
-// with their identity preserved — an apiextensions NotFound, a
-// discovery NoMatch, a context cancellation, or any request error
-// reaches the caller unwrapped in kind, and a failure means no
-// successful establishment is claimed.
+// WaitCRDs polls the named custom resource definitions through the
+// controller-runtime client until every one reports both Established
+// and NamesAccepted. No discovery refresh follows: the client's lazy
+// mapper reloads missing groups itself, so groups served by CRDs
+// established here become mappable on the next lookup. Errors are
+// returned with their identity preserved — an apiextensions NotFound,
+// a context cancellation, or any request error reaches the caller
+// unwrapped in kind, and a failure means no successful establishment
+// is claimed.
 func (c *Connection) WaitCRDs(ctx context.Context, names ...string) error {
 	if len(names) == 0 {
 		return ctx.Err()
 	}
-	crds := c.apiExtensions.ApiextensionsV1().CustomResourceDefinitions()
 
-	err := wait.PollUntilContextCancel(ctx, crdPollInterval, true, func(ctx context.Context) (bool, error) {
+	return wait.PollUntilContextCancel(ctx, crdPollInterval, true, func(ctx context.Context) (bool, error) {
 		for _, name := range names {
-			crd, err := crds.Get(ctx, name, metav1.GetOptions{})
-			if err != nil {
+			var crd apiextensionsv1.CustomResourceDefinition
+			if err := c.client.Get(ctx, crclient.ObjectKey{Name: name}, &crd); err != nil {
 				return false, err
 			}
 
@@ -250,11 +164,6 @@ func (c *Connection) WaitCRDs(ctx context.Context, names ...string) error {
 
 		return true, nil
 	})
-	if err != nil {
-		return err
-	}
-
-	return c.RefreshDiscovery(ctx)
 }
 
 // NamespaceExists reports whether the namespace exists. It is a

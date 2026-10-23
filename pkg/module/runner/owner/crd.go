@@ -24,7 +24,7 @@ import (
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	configcrd "github.com/lburgazzoli/odh-platform-tools/config/crd"
@@ -53,23 +53,21 @@ func ensureCRD(ctx context.Context, connection *cluster.Connection) error {
 		return err
 	}
 
-	crds := connection.APIExtensions().ApiextensionsV1().CustomResourceDefinitions()
+	cli := connection.Client()
 
-	live, err := crds.Get(ctx, v1alpha1.CRDName, metav1.GetOptions{})
-	if err != nil {
+	live := &apiextensionsv1.CustomResourceDefinition{}
+	if err := cli.Get(ctx, crclient.ObjectKey{Name: v1alpha1.CRDName}, live); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return err
 		}
 
-		_, err := crds.Create(ctx, desired, metav1.CreateOptions{})
-		if err != nil {
+		if err := cli.Create(ctx, desired); err != nil {
 			if !apierrors.IsAlreadyExists(err) {
 				return err
 			}
 
 			// Another writer created it first: check theirs.
-			live, err = crds.Get(ctx, v1alpha1.CRDName, metav1.GetOptions{})
-			if err != nil {
+			if err := cli.Get(ctx, crclient.ObjectKey{Name: v1alpha1.CRDName}, live); err != nil {
 				return err
 			}
 		} else {
