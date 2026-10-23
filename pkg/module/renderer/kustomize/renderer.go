@@ -1,78 +1,181 @@
-// Package kustomize renders Kustomize-based module definitions through
-// the actual framework Kustomize action over the configured local
-// entry.
+// Package kustomize renders Kustomize-based module definitions
+// through the direct manifest-kit Kustomize renderer driven by the
+// shared engine.
 package kustomize
 
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	fwkustomize "github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/render/kustomize"
-	mk "github.com/opendatahub-io/odh-platform-utilities/framework/render/kustomize"
+	"sigs.k8s.io/kustomize/api/builtins" //nolint:staticcheck // The builtin namespace transformer is the configured one the framework uses.
+	"sigs.k8s.io/kustomize/api/filters/namespace"
+	"sigs.k8s.io/kustomize/api/resmap"
+	kustomizetypes "sigs.k8s.io/kustomize/api/types"
+	"sigs.k8s.io/kustomize/kyaml/resid"
+
+	kustomize "github.com/k8s-manifest-kit/renderer-kustomize/pkg"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
 
 // Render renders the module described by definition, whose file was
-// loaded from definitionFile, through the actual framework Kustomize
-// action with no runtime options, and returns the rendered objects.
+// loaded from definitionFile, through the direct Kustomize renderer
+// with no runtime options, and returns the rendered objects.
 //
-// The action renders the configured entry directory directly, with
-// caching disabled and no client attached. The declared path maps
-// directly to the manifest entry with no namespace transformation and
-// no fallback to a default/ overlay: the entry kustomization is always
-// the one rendered, and the engine's own loader selects the
-// kustomization file name. Generated metadata and output ordering come
-// from the framework action.
+// The renderer renders the configured entry directory directly with
+// no cache and no client attached. The declared path maps directly to
+// the source path with no namespace transformation and no fallback to
+// a default/ overlay: the entry kustomization is always the one
+// rendered, and the renderer's own loader selects the kustomization
+// file name — kustomization.yaml, kustomization.yml, or Kustomization,
+// never kustomization.json. Load restrictions stay at the renderer's
+// RootOnly default, and no renderer-added content hash, source
+// annotations, or managed-by label is applied, preserving the old
+// framework engine's effective metadata. The shared engine's
+// apply-order post-renderer supplies the deterministic pre-injection
+// normalization.
 //
-// Engine behavior is left at its defaults, so rendering behaves like a
-// plain kustomize build over the same tree, including the engine's
-// load-restriction policy: any input kustomize build rejects fails
-// here with the engine's own error.
-//
-// The returned list contains every object the framework action
-// rendered; callers filtering it must not assume they hold the raw
-// kustomization output.
+// The returned list contains every object the engine rendered;
+// callers filtering it must not assume they hold the raw kustomize
+// build output.
 func Render(ctx context.Context, definition v1alpha1.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error) {
 	return RenderWithOptions(ctx, definition, definitionFile, renderer.Options{})
 }
 
 // RenderWithOptions renders the module with runtime options: the
-// options' namespace is applied by the engine's real namespace
-// transformer — the same one the operator's Kustomize render action
-// uses — to namespaced objects, RoleBinding and ClusterRoleBinding
-// subjects, and cross-object references. Cluster-scoped objects keep
-// their scope, and an empty namespace transforms nothing.
-func RenderWithOptions(ctx context.Context, definition v1alpha1.PlatformModuleDefinition, definitionFile string, options renderer.Options) ([]unstructured.Unstructured, error) {
+// options' namespace is applied by the renderer's real builtin
+// namespace transformer plugin — configured exactly as the operator's
+// Kustomize render action configures it — to namespaced objects,
+// RoleBinding and ClusterRoleBinding subjects, and cross-object
+// references. Cluster-scoped objects keep their scope, and an empty
+// namespace registers no plugin at all, so the zero options render
+// exactly like the offline lint path.
+func RenderWithOptions(
+	ctx context.Context,
+	definition v1alpha1.PlatformModuleDefinition,
+	definitionFile string,
+	options renderer.Options,
+) ([]unstructured.Unstructured, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	request := renderer.NewRequestWithOptions(definition, definitionFile, options)
+	var path string
+	if manifests := definition.Spec.Manifests.Kustomize; manifests != nil {
+		path = manifests.Path
+	}
 
-	action := fwkustomize.NewAction(
-		fwkustomize.WithCache(false),
-		// An empty namespace is the engine's no-op, so the zero
-		// options render exactly like the offline lint path.
-		fwkustomize.WithNamespace(options.Namespace),
-		fwkustomize.WithManifestsOptions(
-			// The framework redirects an entry without
-			// kustomization.yaml to a default/ subdirectory; an
-			// empty overlay path neutralizes that redirect so the
-			// engine's loader resolves kustomization.yaml, .yml,
-			// and .json entries itself.
-			mk.WithEngineRenderOpts(
-				mk.WithKustomizationOverlayPath(""),
-			),
-		),
-	)
+	source := kustomize.Source{
+		Path: renderer.ResolveEntry(filepath.Dir(definitionFile), path),
+	}
 
-	if err := action(ctx, request); err != nil {
+	nativeOptions := []kustomize.RendererOption{
+		// The explicit flags preserve the old framework engine's
+		// effective metadata: no renderer-added content hash or
+		// source annotations, where the native renderer would
+		// default the content hash to true.
+		kustomize.WithContentHash(false),
+		kustomize.WithSourceAnnotations(false),
+	}
+
+	// An empty namespace is the no-op: no plugin is registered, so
+	// the zero options render exactly like the offline lint path.
+	if options.Namespace != "" {
+		nativeOptions = append(nativeOptions, kustomize.WithPlugin(namespacePlugin(options.Namespace)))
+	}
+
+	native, err := kustomize.New([]kustomize.Source{source}, nativeOptions...)
+	if err != nil {
 		return nil, fmt.Errorf("kustomize render for module %s: %w", definition.Name, err)
 	}
 
-	return request.Resources, nil
+	shared, err := renderer.NewEngine(native, options)
+	if err != nil {
+		return nil, fmt.Errorf("kustomize render for module %s: %w", definition.Name, err)
+	}
+
+	resources, err := shared.Render(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("kustomize render for module %s: %w", definition.Name, err)
+	}
+
+	// A render that finished after the context expired never becomes
+	// successful output.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	return resources, nil
+}
+
+// namespacePlugin returns the builtin Kustomize namespace transformer
+// configured exactly as the operator's framework render action
+// configures it (framework/render/kustomize/plugins.go:namespaceApplierPlugin):
+// metadata/namespace and both RBAC binding subject kinds are created
+// when absent, the webhook service references and the CRD conversion
+// webhook service reference are rewritten only when already present,
+// and every ServiceAccount subject receives the namespace. This ports
+// the unexported constructor's configuration, not a new transformer
+// implementation; cluster-scoped kinds without a namespace field spec
+// are excluded by the builtins themselves.
+func namespacePlugin(targetNamespace string) resmap.Transformer {
+	return &builtins.NamespaceTransformerPlugin{
+		ObjectMeta: kustomizetypes.ObjectMeta{
+			Name:      "odh-namespace-plugin",
+			Namespace: targetNamespace,
+		},
+		FieldSpecs: []kustomizetypes.FieldSpec{
+			{
+				Gvk:                resid.Gvk{},
+				Path:               "metadata/namespace",
+				CreateIfNotPresent: true,
+			},
+			{
+				Gvk: resid.Gvk{
+					Group: "rbac.authorization.k8s.io",
+					Kind:  "ClusterRoleBinding",
+				},
+				Path:               "subjects/namespace",
+				CreateIfNotPresent: true,
+			},
+			{
+				Gvk: resid.Gvk{
+					Group: "rbac.authorization.k8s.io",
+					Kind:  "RoleBinding",
+				},
+				Path:               "subjects/namespace",
+				CreateIfNotPresent: true,
+			},
+			{
+				Gvk: resid.Gvk{
+					Group: "admissionregistration.k8s.io",
+					Kind:  "ValidatingWebhookConfiguration",
+				},
+				Path:               "webhooks/clientConfig/service/namespace",
+				CreateIfNotPresent: false,
+			},
+			{
+				Gvk: resid.Gvk{
+					Group: "admissionregistration.k8s.io",
+					Kind:  "MutatingWebhookConfiguration",
+				},
+				Path:               "webhooks/clientConfig/service/namespace",
+				CreateIfNotPresent: false,
+			},
+			{
+				Gvk: resid.Gvk{
+					Group: "apiextensions.k8s.io",
+					Kind:  "CustomResourceDefinition",
+				},
+				Path:               "spec/conversion/webhook/clientConfig/service/namespace",
+				CreateIfNotPresent: false,
+			},
+		},
+		UnsetOnly:              false,
+		SetRoleBindingSubjects: namespace.AllServiceAccountSubjects,
+	}
 }

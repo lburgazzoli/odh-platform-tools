@@ -16,6 +16,8 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
+
 	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
@@ -197,6 +199,86 @@ metadata:
 const vendoredChartYAML = `apiVersion: v2
 name: vendored
 version: 1.2.3
+`
+
+// crdFileYAML is a bundled chart CRD from the chart's crds/
+// directory.
+const crdFileYAML = `apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: syntheticmodules.components.platform.opendatahub.io
+`
+
+// sharedAlphaConfigMapYAML and sharedBetaConfigMapYAML are same-named
+// ConfigMaps in different namespaces.
+const sharedAlphaConfigMapYAML = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shared
+  namespace: alpha
+`
+
+const sharedBetaConfigMapYAML = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shared
+  namespace: beta
+`
+
+// valuesKindsTemplateYAML renders the authored value kinds into
+// ConfigMap data.
+const valuesKindsTemplateYAML = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: values-cm
+data:
+  scalar: {{ .Values.scalar | toJson | quote }}
+  nested: {{ .Values.nested | toJson | quote }}
+  list: {{ .Values.list | toJson | quote }}
+  flag: {{ .Values.flag | toJson | quote }}
+  placeholder: {{ .Values.placeholder | toJson | quote }}
+`
+
+// valuesKindsDefinitionYAML authors literal chart values of every
+// JSON kind, including a null entry.
+const valuesKindsDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: helm
+    helm:
+      values:
+        scalar: 2
+        nested:
+          tag: v1.0.0
+        list:
+        - a
+        - b
+        flag: true
+        nullValue: null
+        placeholder: "{{RELATED_IMAGE_EXAMPLE_CONTROLLER}}"
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        image: quay.io/example/controller:v1
+`
+
+// strictMissingKeyTemplateYAML references a value the chart does not
+// define.
+const strictMissingKeyTemplateYAML = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: strict-cm
+data:
+  value: {{ .Values.missing }}
 `
 
 // writeModuleFile writes content at a module-root-relative path.
@@ -541,4 +623,222 @@ func TestRenderHelmZeroOptionsReproduceOfflineRender(t *testing.T) {
 	// Render is the zero-option adapter over the same implementation:
 	// the offline lint output is reproduced exactly.
 	g.Expect(zeroOptions).To(Equal(offline))
+}
+
+// assertNoRendererMetadata fails when any rendered object carries a
+// renderer-added annotation from the manifest kit.
+func assertNoRendererMetadata(t *testing.T, resources []unstructured.Unstructured) {
+	t.Helper()
+
+	for i := range resources {
+		for key := range resources[i].GetAnnotations() {
+			if strings.HasPrefix(key, "manifests.k8s-manifests-kit/") {
+				t.Fatalf("renderer-added annotation %q on %s %s", key, resources[i].GetKind(), resources[i].GetName())
+			}
+		}
+	}
+}
+
+// TestRenderHelmAddsNoRendererMetadata proves the explicit
+// ContentHash=false and SourceAnnotations=false options preserve the
+// old framework action's effective output: neither chart templates
+// nor bundled chart CRDs gain a content hash or source annotation.
+func TestRenderHelmAddsNoRendererMetadata(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeModuleFile(t, root, "definition.yaml", definitionYAML)
+	writeModuleFile(t, root, "manifests/chart/Chart.yaml", chartYAML)
+	writeModuleFile(t, root, "manifests/chart/values.yaml", valuesYAML)
+	writeModuleFile(t, root, "manifests/chart/templates/deployment.yaml", templateYAML)
+	writeModuleFile(t, root, "manifests/chart/crds/syntheticmodules.yaml", crdFileYAML)
+
+	resources, err := Render(t.Context(), loadDefinition(t, root), filepath.Join(root, "definition.yaml"))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The bundled CRD is part of the rendered output.
+	g.Expect(findResource(t, resources, "CustomResourceDefinition", "syntheticmodules.components.platform.opendatahub.io")).NotTo(BeZero())
+	g.Expect(findResource(t, resources, "Deployment", "synthetic-controller")).NotTo(BeZero())
+
+	assertNoRendererMetadata(t, resources)
+}
+
+// TestRenderHelmDefinitionValueKinds proves authored values of every
+// JSON kind survive loading and lazy decoding into the render —
+// including a null entry, whose apiextensions JSON representation has
+// empty Raw and must decode as JSON null rather than fail with EOF.
+func TestRenderHelmDefinitionValueKinds(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeModuleFile(t, root, "Chart.yaml", chartYAML)
+	writeModuleFile(t, root, "templates/configmap.yaml", valuesKindsTemplateYAML)
+	writeModuleFile(t, root, "module.yaml", valuesKindsDefinitionYAML)
+
+	resources, err := Render(t.Context(), loadDefinitionFile(t, root, "module.yaml"), filepath.Join(root, "module.yaml"))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	configMap := findResource(t, resources, "ConfigMap", "values-cm")
+	data, found, err := unstructured.NestedStringMap(configMap.Object, "data")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(data).To(SatisfyAll(
+		HaveKeyWithValue("scalar", "2"),
+		HaveKeyWithValue("nested", `{"tag":"v1.0.0"}`),
+		HaveKeyWithValue("list", `["a","b"]`),
+		HaveKeyWithValue("flag", "true"),
+		// Placeholder-looking text stays literal.
+		HaveKeyWithValue("placeholder", `"{{RELATED_IMAGE_EXAMPLE_CONTROLLER}}"`),
+	))
+}
+
+// TestRenderHelmStrictMissingKey proves the renderer keeps the old
+// framework action's strict template mode: a template referencing an
+// undefined value fails the render.
+func TestRenderHelmStrictMissingKey(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeModuleFile(t, root, "definition.yaml", definitionYAML)
+	writeModuleFile(t, root, "manifests/chart/Chart.yaml", chartYAML)
+	writeModuleFile(t, root, "manifests/chart/values.yaml", valuesYAML)
+	writeModuleFile(t, root, "manifests/chart/templates/configmap.yaml", strictMissingKeyTemplateYAML)
+
+	resources, err := Render(t.Context(), loadDefinition(t, root), filepath.Join(root, "definition.yaml"))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(resources).To(BeNil())
+	g.Expect(err.Error()).To(ContainSubstring("helm render for module synthetic"))
+}
+
+// TestRenderHelmAppliesOrderBeforeCallerPostRenderers proves the
+// shared engine registers the library apply-order post-renderer
+// before caller-supplied post-renderers, exactly once: separate Helm
+// templates containing same-named ConfigMaps across namespaces arrive
+// at the sentinel callback in the same order the old framework
+// produced — apply-order sorted — and the sentinel sees the whole
+// batch once.
+func TestRenderHelmAppliesOrderBeforeCallerPostRenderers(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeModuleFile(t, root, "definition.yaml", definitionYAML)
+	writeModuleFile(t, root, "manifests/chart/Chart.yaml", chartYAML)
+	writeModuleFile(t, root, "manifests/chart/values.yaml", valuesYAML)
+	writeModuleFile(t, root, "manifests/chart/templates/cm-beta.yaml", sharedBetaConfigMapYAML)
+	writeModuleFile(t, root, "manifests/chart/templates/cm-alpha.yaml", sharedAlphaConfigMapYAML)
+	writeModuleFile(t, root, "manifests/chart/templates/deployment.yaml", templateYAML)
+
+	calls := 0
+	var order []string
+
+	sentinel := func(_ context.Context, objects []unstructured.Unstructured) ([]unstructured.Unstructured, error) {
+		calls++
+
+		for i := range objects {
+			order = append(order, objects[i].GetNamespace()+"/"+objects[i].GetName())
+		}
+
+		return objects, nil
+	}
+
+	resources, err := RenderWithOptions(t.Context(), loadDefinition(t, root), filepath.Join(root, "definition.yaml"), renderer.Options{
+		PostRenderers: []enginetypes.PostRenderer{sentinel},
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The sentinel ran exactly once, after the apply-order
+	// post-renderer: the ConfigMaps arrive namespace-sorted ahead of
+	// the Deployment, the order the old framework returned.
+	g.Expect(calls).To(Equal(1))
+	g.Expect(order).To(Equal([]string{"alpha/shared", "beta/shared", "/synthetic-controller"}))
+	g.Expect(resources).To(HaveLen(3))
+}
+
+// TestRenderHelmCancellationBetweenProcessors proves an expired
+// context stops the engine chain between processors: a caller
+// post-renderer that cancels the context prevents every later
+// processor from running, and the render never returns successful
+// output. The synchronous chart build itself is not interrupted —
+// only the chain around it is cooperative.
+func TestRenderHelmCancellationBetweenProcessors(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeChartFixture(t, root)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	secondRan := false
+
+	cancelNow := func(_ context.Context, objects []unstructured.Unstructured) ([]unstructured.Unstructured, error) {
+		cancel()
+
+		return objects, nil
+	}
+
+	never := func(_ context.Context, objects []unstructured.Unstructured) ([]unstructured.Unstructured, error) {
+		secondRan = true
+
+		return objects, nil
+	}
+
+	resources, err := RenderWithOptions(ctx, loadDefinition(t, root), filepath.Join(root, "definition.yaml"), renderer.Options{
+		PostRenderers: []enginetypes.PostRenderer{cancelNow, never},
+	})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
+	g.Expect(secondRan).To(BeFalse())
+	g.Expect(resources).To(BeNil())
+}
+
+// TestRenderHelmCoLocatedExample renders the repository's own
+// co-located Helm example through the direct renderer and the shared
+// engine, proving the documented layout keeps working after the
+// engine migration.
+func TestRenderHelmCoLocatedExample(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	definitionFile := filepath.Join("..", "..", "..", "..", "examples", "helm", "chart", "module.yaml")
+
+	definition, err := loader.LoadFromPath(t.Context(), definitionFile)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	resources, err := Render(t.Context(), definition, definitionFile)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The example renders its full controller package in apply order:
+	// CRD, ServiceAccount, Role, RoleBinding, then the Deployment.
+	g.Expect(resourceKinds(resources)).To(Equal([]string{
+		"CustomResourceDefinition",
+		"ServiceAccount",
+		"Role",
+		"RoleBinding",
+		"Deployment",
+	}))
+
+	assertNoRendererMetadata(t, resources)
+}
+
+// resourceKinds returns the rendered objects' kinds in order.
+func resourceKinds(resources []unstructured.Unstructured) []string {
+	kinds := make([]string, 0, len(resources))
+
+	for i := range resources {
+		kinds = append(kinds, resources[i].GetKind())
+	}
+
+	return kinds
 }

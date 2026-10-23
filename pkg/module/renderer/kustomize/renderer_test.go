@@ -11,6 +11,9 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
+	mkkustomize "github.com/k8s-manifest-kit/renderer-kustomize/pkg"
+
 	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
@@ -197,6 +200,96 @@ const coLocatedKustomizationYAML = `apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
 - deployment.yaml
+`
+
+// jsonKustomizationContent is JSON content in a recognized
+// kustomization file name.
+const jsonKustomizationContent = `{"apiVersion":"kustomize.config.k8s.io/v1beta1","kind":"Kustomization","resources":["deployment.yaml"]}
+`
+
+// clusterRoleBindingResourceYAML is a cluster-scoped ClusterRoleBinding
+// whose ServiceAccount subject carries no authored namespace.
+const clusterRoleBindingResourceYAML = `apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: module-clusterrolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: module-role
+subjects:
+- kind: ServiceAccount
+  name: module-controller
+`
+
+// validatingWebhookResourceYAML is a ValidatingWebhookConfiguration
+// whose webhook targets a service in another namespace.
+const validatingWebhookResourceYAML = `apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: module-validating
+webhooks:
+- name: validate.module.io
+  clientConfig:
+    service:
+      namespace: webhook-system
+      name: module-webhook
+`
+
+// mutatingWebhookResourceYAML is a MutatingWebhookConfiguration whose
+// webhook targets a service in another namespace.
+const mutatingWebhookResourceYAML = `apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: module-mutating
+webhooks:
+- name: mutate.module.io
+  clientConfig:
+    service:
+      namespace: webhook-system
+      name: module-webhook
+`
+
+// urlWebhookResourceYAML is a ValidatingWebhookConfiguration whose
+// webhook targets a URL: the service reference path is absent, and
+// the transformer must not create one.
+const urlWebhookResourceYAML = `apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: module-url
+webhooks:
+- name: remote.module.io
+  clientConfig:
+    url: https://example.com/validate
+`
+
+// crdWithConversionResourceYAML is a CRD whose conversion webhook
+// targets a service in another namespace.
+const crdWithConversionResourceYAML = `apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: convertedmodules.components.platform.opendatahub.io
+spec:
+  conversion:
+    strategy: Webhook
+    webhook:
+      clientConfig:
+        service:
+          namespace: webhook-system
+          name: module-webhook
+`
+
+// referencesKustomizationYAML is an entry with the cross-reference
+// resources the namespace plugin rewrites.
+const referencesKustomizationYAML = `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- deployment.yaml
+- clusterrolebinding.yaml
+- validatingwebhook.yaml
+- mutatingwebhook.yaml
+- urlwebhook.yaml
+- crd.yaml
 `
 
 // writeModuleFile writes content at a module-root-relative path.
@@ -542,4 +635,292 @@ func TestRenderKustomizeZeroOptionsReproduceOfflineRender(t *testing.T) {
 			jq.Match(`.metadata | has("namespace") | not`),
 		))
 	}
+}
+
+// writeReferencesFixture writes a Kustomize module tree exercising
+// the namespace plugin's cross-reference rewriting.
+func writeReferencesFixture(t *testing.T, root string, kustomizationContent string, kustomizationName string) {
+	t.Helper()
+
+	writeModuleFile(t, root, "definition.yaml", definitionYAML)
+	writeModuleFile(t, root, "manifests/overlays/development/"+kustomizationName, kustomizationContent)
+	writeModuleFile(t, root, "manifests/overlays/development/deployment.yaml", deploymentResourceYAML)
+	writeModuleFile(t, root, "manifests/overlays/development/clusterrolebinding.yaml", clusterRoleBindingResourceYAML)
+	writeModuleFile(t, root, "manifests/overlays/development/validatingwebhook.yaml", validatingWebhookResourceYAML)
+	writeModuleFile(t, root, "manifests/overlays/development/mutatingwebhook.yaml", mutatingWebhookResourceYAML)
+	writeModuleFile(t, root, "manifests/overlays/development/urlwebhook.yaml", urlWebhookResourceYAML)
+	writeModuleFile(t, root, "manifests/overlays/development/crd.yaml", crdWithConversionResourceYAML)
+}
+
+// assertNoRendererMetadata fails when any rendered object carries a
+// renderer-added annotation from the manifest kit.
+func assertNoRendererMetadata(t *testing.T, resources []unstructured.Unstructured) {
+	t.Helper()
+
+	for i := range resources {
+		for key := range resources[i].GetAnnotations() {
+			if strings.HasPrefix(key, "manifests.k8s-manifests-kit/") {
+				t.Fatalf("renderer-added annotation %q on %s %s", key, resources[i].GetKind(), resources[i].GetName())
+			}
+		}
+	}
+}
+
+// TestRenderKustomizationFilename proves Kustomization — like
+// kustomization.yaml and kustomization.yml — is a recognized entry
+// file name.
+func TestRenderKustomizationFilename(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeKustomizeFixture(t, root)
+
+	if err := os.Rename(
+		filepath.Join(root, "manifests/overlays/development/kustomization.yaml"),
+		filepath.Join(root, "manifests/overlays/development/Kustomization"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	resources, err := Render(t.Context(), loadDefinition(t, root), filepath.Join(root, "definition.yaml"))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(findResource(t, resources, "Service", "module-service")).NotTo(BeZero())
+}
+
+// TestRenderKustomizeJSONContentInRecognizedFilename proves JSON
+// content under a recognized kustomization file name renders: the
+// entry file name selects the kustomization, and its content parses
+// as the JSON it is.
+func TestRenderKustomizeJSONContentInRecognizedFilename(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeKustomizeFixture(t, root)
+
+	if err := os.WriteFile(
+		filepath.Join(root, "manifests/overlays/development/kustomization.yaml"),
+		[]byte(jsonKustomizationContent), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	resources, err := Render(t.Context(), loadDefinition(t, root), filepath.Join(root, "definition.yaml"))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(findResource(t, resources, "Deployment", "module-controller")).NotTo(BeZero())
+}
+
+// TestRenderKustomizeRejectsKustomizationJSON proves
+// kustomization.json is not a recognized entry file name: a directory
+// carrying only that file fails with the renderer's own
+// no-kustomization-file error instead of silently building.
+func TestRenderKustomizeRejectsKustomizationJSON(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeModuleFile(t, root, "definition.yaml", definitionYAML)
+	writeModuleFile(t, root, "manifests/overlays/development/kustomization.json", jsonKustomizationContent)
+	writeModuleFile(t, root, "manifests/overlays/development/deployment.yaml", deploymentResourceYAML)
+
+	resources, err := Render(t.Context(), loadDefinition(t, root), filepath.Join(root, "definition.yaml"))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(resources).To(BeNil())
+	g.Expect(errors.Is(err, mkkustomize.ErrNoKustomizationFile)).To(BeTrue())
+	g.Expect(err.Error()).To(ContainSubstring("kustomize render for module synthetic"))
+}
+
+// TestRenderKustomizeAddsNoRendererMetadata proves the explicit
+// ContentHash=false and SourceAnnotations=false options preserve the
+// old framework engine's effective output: no rendered object gains a
+// content hash or source annotation.
+func TestRenderKustomizeAddsNoRendererMetadata(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeKustomizeFixture(t, root)
+
+	resources, err := Render(t.Context(), loadDefinition(t, root), filepath.Join(root, "definition.yaml"))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(resources).NotTo(BeEmpty())
+
+	assertNoRendererMetadata(t, resources)
+}
+
+// TestRenderKustomizeNamespacePluginReferences proves the builtin
+// namespace transformer is configured exactly as the operator's
+// Kustomize render action configures it: ClusterRoleBinding
+// ServiceAccount subjects and both webhook kinds' service references
+// receive the namespace, the absent optional service path of a
+// URL-based webhook is not created, and cluster-scoped objects keep
+// their scope.
+func TestRenderKustomizeNamespacePluginReferences(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeReferencesFixture(t, root, referencesKustomizationYAML, "kustomization.yaml")
+
+	resources, err := RenderWithOptions(t.Context(), loadDefinition(t, root), filepath.Join(root, "definition.yaml"), renderer.Options{
+		Namespace: "opendatahub",
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	clusterRoleBinding := findResource(t, resources, "ClusterRoleBinding", "module-clusterrolebinding")
+	g.Expect(clusterRoleBinding.Object).To(SatisfyAll(
+		jq.Match(`.subjects[0].namespace == "opendatahub"`),
+		jq.Match(`.metadata | has("namespace") | not`),
+	))
+
+	validating := findResource(t, resources, "ValidatingWebhookConfiguration", "module-validating")
+	g.Expect(validating.Object).To(SatisfyAll(
+		jq.Match(`.webhooks[0].clientConfig.service.namespace == "opendatahub"`),
+	))
+
+	mutating := findResource(t, resources, "MutatingWebhookConfiguration", "module-mutating")
+	g.Expect(mutating.Object).To(SatisfyAll(
+		jq.Match(`.webhooks[0].clientConfig.service.namespace == "opendatahub"`),
+	))
+
+	// The URL-based webhook has no service reference: none is created.
+	urlWebhook := findResource(t, resources, "ValidatingWebhookConfiguration", "module-url")
+	g.Expect(urlWebhook.Object).To(SatisfyAll(
+		jq.Match(`.webhooks[0].clientConfig.url == "https://example.com/validate"`),
+		jq.Match(`.webhooks[0].clientConfig | has("service") | not`),
+	))
+
+	crd := findResource(t, resources, "CustomResourceDefinition", "convertedmodules.components.platform.opendatahub.io")
+	g.Expect(crd.Object).To(SatisfyAll(
+		jq.Match(`.spec.conversion.webhook.clientConfig.service.namespace == "opendatahub"`),
+		jq.Match(`.metadata | has("namespace") | not`),
+	))
+}
+
+// TestRenderKustomizeAppliesOrderBeforeCallerPostRenderers proves the
+// shared engine registers the library apply-order post-renderer
+// before caller-supplied post-renderers, exactly once, for the
+// Kustomize backend too: the sentinel sees the whole batch once, in
+// apply-order sequence.
+func TestRenderKustomizeAppliesOrderBeforeCallerPostRenderers(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeKustomizeFixture(t, root)
+
+	calls := 0
+	var kinds []string
+
+	sentinel := func(_ context.Context, objects []unstructured.Unstructured) ([]unstructured.Unstructured, error) {
+		calls++
+
+		for i := range objects {
+			kinds = append(kinds, objects[i].GetKind())
+		}
+
+		return objects, nil
+	}
+
+	resources, err := RenderWithOptions(t.Context(), loadDefinition(t, root), filepath.Join(root, "definition.yaml"), renderer.Options{
+		PostRenderers: []enginetypes.PostRenderer{sentinel},
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(calls).To(Equal(1))
+
+	// Apply-order sequence: CRD first, ConfigMap ahead of the
+	// Deployment it follows in the entry, whatever the kustomization
+	// order was.
+	g.Expect(kinds[0]).To(Equal("CustomResourceDefinition"))
+	g.Expect(kinds).To(ContainElements("Deployment", "Service", "ConfigMap"))
+	g.Expect(resources).NotTo(BeEmpty())
+}
+
+// TestRenderKustomizeCancellationBetweenProcessors proves an expired
+// context stops the engine chain between processors: a caller
+// post-renderer that cancels the context prevents every later
+// processor from running, and the render never returns successful
+// output. The synchronous kustomize build itself is not interrupted —
+// only the chain around it is cooperative.
+func TestRenderKustomizeCancellationBetweenProcessors(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeKustomizeFixture(t, root)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	secondRan := false
+
+	cancelNow := func(_ context.Context, objects []unstructured.Unstructured) ([]unstructured.Unstructured, error) {
+		cancel()
+
+		return objects, nil
+	}
+
+	never := func(_ context.Context, objects []unstructured.Unstructured) ([]unstructured.Unstructured, error) {
+		secondRan = true
+
+		return objects, nil
+	}
+
+	resources, err := RenderWithOptions(ctx, loadDefinition(t, root), filepath.Join(root, "definition.yaml"), renderer.Options{
+		PostRenderers: []enginetypes.PostRenderer{cancelNow, never},
+	})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
+	g.Expect(secondRan).To(BeFalse())
+	g.Expect(resources).To(BeNil())
+}
+
+// TestRenderKustomizeCoLocatedExample renders the repository's own
+// co-located Kustomize example through the direct renderer and the
+// shared engine, proving the documented layout keeps working after
+// the engine migration.
+func TestRenderKustomizeCoLocatedExample(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	definitionFile := filepath.Join("..", "..", "..", "..", "examples", "kustomize", "module.yaml")
+
+	definition, err := loader.LoadFromPath(t.Context(), definitionFile)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	resources, err := Render(t.Context(), definition, definitionFile)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The example renders its full controller package in apply order:
+	// CRD, ServiceAccount, Role, RoleBinding, then the Deployment.
+	g.Expect(resourceKinds(resources)).To(Equal([]string{
+		"CustomResourceDefinition",
+		"ServiceAccount",
+		"Role",
+		"RoleBinding",
+		"Deployment",
+	}))
+
+	assertNoRendererMetadata(t, resources)
+}
+
+// resourceKinds returns the rendered objects' kinds in order.
+func resourceKinds(resources []unstructured.Unstructured) []string {
+	kinds := make([]string, 0, len(resources))
+
+	for i := range resources {
+		kinds = append(kinds, resources[i].GetKind())
+	}
+
+	return kinds
 }

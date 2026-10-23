@@ -20,7 +20,6 @@ help: ## Display this help
 
 .PHONY: generate
 generate: ## Generate deepcopy code with controller-gen
-	$(CONTROLLER_GEN) object:headerFile=./hack/boilerplate.go.txt paths=./pkg/module/renderer
 	$(CONTROLLER_GEN) object:headerFile=./hack/boilerplate.go.txt paths=./pkg/module/api/...
 
 .PHONY: manifests
