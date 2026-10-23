@@ -62,7 +62,7 @@ spec:
   controller:
     deployment:
       name: example-controller
-      container:                     # the main container; initContainer uses the same type
+      container:                     # the main container
         image: quay.io/example/example-controller:v1.0.0
         env:
         - name: LOG_LEVEL
@@ -80,8 +80,8 @@ spec:
 | `spec.manifests.kustomize.path` | Directory containing `kustomization.yaml` (or `.yml`), relative to the definition file. Sibling bases and resource files are allowed; there is no `default/` fallback. |
 | `spec.controller.deployment.name` | The controller Deployment the rendered manifests must contain exactly once. |
 | `spec.controller.deployment.container` | The main container. `name` defaults to `manager` when omitted; `image` may be a literal or a whole-value `{{VARIABLE}}` reference. |
-| `spec.controller.deployment.initContainer` | Optional init container; same type as `container`. There is no inheritance between the two placements. |
-| `spec.controller.deployment.*.env` | Explicit environment variables. An explicit empty string is a valid value. |
+| `spec.controller.deployment.initContainer` | Optional init container, selected by `name` only. A resolved main image overrides the named init container too; init-specific image or env settings do not exist. |
+| `spec.controller.deployment.container.env` | Explicit environment variables for the main container. An explicit empty string is a valid value. |
 | `spec.relatedImages` | Optional list of portable environment-variable-style names. A future runner will inject them into both selected containers; lint neither resolves nor injects them. |
 
 The instance identity is descriptive data: nothing in this delivery

@@ -115,35 +115,49 @@ type Controller struct {
 }
 
 // Deployment names the controller Deployment and its selected
-// containers. Container and InitContainer share ContainerDefinition;
-// only the name defaulting differs by placement.
+// containers. The main container carries image and env settings; the
+// init container is selected by name only.
 type Deployment struct {
 	Name          string               `json:"name"`
 	Container     *ContainerDefinition `json:"container,omitzero"`
-	InitContainer *ContainerDefinition `json:"initContainer,omitzero"`
+	InitContainer *ContainerTarget     `json:"initContainer,omitzero"`
 }
 
-// ContainerDefinition describes one controller container: the main
-// manager container or an init container. There is no inheritance
-// between the two placements.
+// ContainerDefinition describes the controller's main container. The
+// image may be a literal pipeline-built value or a whole-value
+// {{VARIABLE}} reference; when it resolves, the same image also
+// overrides the init container selected by InitContainer.
 type ContainerDefinition struct {
-	// Name is the container name. It is empty when the definition
+	// Name is the main container name. It is empty when the definition
 	// omits it or authors an explicit empty string; both are
 	// equivalent here, and the main container then defaults to
-	// DefaultMainContainerName during Normalize, while an init
-	// container requires an explicit name. An empty name is invalid
-	// and will be rejected by JSON Schema validation once it is
-	// added.
+	// DefaultMainContainerName during Normalize. An empty name is
+	// invalid and will be rejected by JSON Schema validation once it
+	// is added.
 	Name string `json:"name,omitzero"`
 
-	// Image is the required container image. It may be a literal or a
+	// Image is the main container image. It may be a literal or a
 	// whole-value {{VARIABLE}} reference; its contents stay opaque
 	// here and are resolved by a future runner, never by lint.
 	Image string `json:"image"`
 
-	// Env declares explicit environment variables. Value is a
-	// required, non-null string; an explicit empty string is valid.
+	// Env declares explicit environment variables for the main
+	// container only. Value is a required, non-null string; an
+	// explicit empty string is valid.
 	Env []EnvVar `json:"env,omitzero"`
+}
+
+// ContainerTarget selects one controller container by name. The init
+// placement is name-only: a resolved main image overrides the named
+// init container too, and env injection affects only the main
+// container, so no init-specific image or env settings exist.
+type ContainerTarget struct {
+	// Name is the init container name. It is empty when the definition
+	// omits it or authors an explicit empty string; both are
+	// equivalent here, and an init container requires an explicit
+	// name. An empty name is invalid and will be rejected by JSON
+	// Schema validation once it is added.
+	Name string `json:"name,omitzero"`
 }
 
 // EnvVar is one explicit container environment variable. Value is a

@@ -53,9 +53,8 @@ func managerDefinition() config.PlatformModuleDefinition {
 // init container.
 func initContainerDefinition(name string) config.PlatformModuleDefinition {
 	definition := testDefinition()
-	definition.Spec.Controller.Deployment.InitContainer = &config.ContainerDefinition{
-		Name:  name,
-		Image: "quay.io/example/controller:v1",
+	definition.Spec.Controller.Deployment.InitContainer = &config.ContainerTarget{
+		Name: name,
 	}
 
 	return definition

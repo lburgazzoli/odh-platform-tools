@@ -38,12 +38,8 @@ func validDefinition(format Format) PlatformModuleDefinition {
 							{Name: "ENABLE_FEATURE", Value: new("true")},
 						},
 					},
-					InitContainer: &ContainerDefinition{
-						Name:  "copy-manifests",
-						Image: "{{RELATED_IMAGE_SYNTHETIC_CONTROLLER}}",
-						Env: []EnvVar{
-							{Name: "INIT_MODE", Value: new("copy")},
-						},
+					InitContainer: &ContainerTarget{
+						Name: "copy-manifests",
 					},
 				},
 			},
@@ -250,6 +246,72 @@ func TestContainerDefinitionJSONDecoding(t *testing.T) {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(container.Name).To(Equal(test.want))
 			g.Expect(container.Image).To(Equal("quay.io/example/controller:v1"))
+		})
+	}
+}
+
+// containerTargetJSONOmittedName is an init-container wire document
+// whose name is omitted.
+const containerTargetJSONOmittedName = `{}`
+
+// containerTargetJSONNullName is an init-container wire document whose
+// name is an explicit null.
+const containerTargetJSONNullName = `{"name":null}`
+
+// containerTargetJSONEmptyName is an init-container wire document whose
+// name is an explicit empty string.
+const containerTargetJSONEmptyName = `{"name":""}`
+
+// containerTargetJSONValidName is an init-container wire document with
+// a valid name.
+const containerTargetJSONValidName = `{"name":"copy-manifests"}`
+
+// containerTargetJSONNonStringName is an init-container wire document
+// whose name is not a string.
+const containerTargetJSONNonStringName = `{"name":42}`
+
+// containerTargetJSONImageMember is an init-container wire document
+// carrying the removed image member.
+const containerTargetJSONImageMember = `{"name":"copy-manifests","image":"quay.io/example/controller:v1"}`
+
+// containerTargetJSONEnvMember is an init-container wire document
+// carrying the removed env member.
+const containerTargetJSONEnvMember = `{"name":"copy-manifests","env":[{"name":"INIT_MODE","value":"copy"}]}`
+
+func TestContainerTargetJSONDecoding(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		json    string
+		want    string
+		wantErr bool
+	}{
+		{name: "omitted name", json: containerTargetJSONOmittedName},
+		{name: "null name", json: containerTargetJSONNullName},
+		{name: "empty name", json: containerTargetJSONEmptyName},
+		{name: "valid name", json: containerTargetJSONValidName, want: "copy-manifests"},
+		{name: "non-string name", json: containerTargetJSONNonStringName, wantErr: true},
+		{name: "removed image member", json: containerTargetJSONImageMember, wantErr: true},
+		{name: "removed env member", json: containerTargetJSONEnvMember, wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := NewWithT(t)
+
+			var target ContainerTarget
+			err := jsonv2.Unmarshal([]byte(test.json), &target, jsonv2.RejectUnknownMembers(true))
+
+			if test.wantErr {
+				g.Expect(err).To(HaveOccurred())
+				return
+			}
+
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(target.Name).To(Equal(test.want))
 		})
 	}
 }

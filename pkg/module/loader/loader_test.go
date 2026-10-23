@@ -65,7 +65,6 @@ spec:
             value: ""
       initContainer:
         name: copy-manifests
-        image: quay.io/example/controller:v1
 `
 
 // definitionJSON is the Helm definition in JSON syntax.
@@ -253,6 +252,60 @@ metadata:
   name: .inf
 `
 )
+
+// initImageYAML is a definition whose init container carries the
+// removed image member.
+const initImageYAML = `apiVersion: config.opendatahub.io/v1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: kustomize
+    kustomize:
+      path: ./manifests/overlays/development
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        image: quay.io/example/controller:v1
+      initContainer:
+        name: copy-manifests
+        image: quay.io/example/controller:v1
+`
+
+// initEnvYAML is a definition whose init container carries the removed
+// env member.
+const initEnvYAML = `apiVersion: config.opendatahub.io/v1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: kustomize
+    kustomize:
+      path: ./manifests/overlays/development
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        image: quay.io/example/controller:v1
+      initContainer:
+        name: copy-manifests
+        env:
+          - name: INIT_MODE
+            value: copy
+`
 
 // Renderer entry files.
 const (
@@ -513,6 +566,16 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 			name:        "malformed yaml",
 			content:     malformedYAML,
 			errContains: "did not find expected",
+		},
+		{
+			name:        "removed init container image member",
+			content:     initImageYAML,
+			errContains: `unknown object member name "image"`,
+		},
+		{
+			name:        "removed init container env member",
+			content:     initEnvYAML,
+			errContains: `unknown object member name "env"`,
 		},
 	}
 
