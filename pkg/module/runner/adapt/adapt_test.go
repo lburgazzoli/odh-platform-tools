@@ -1,7 +1,6 @@
 package adapt
 
 import (
-	"encoding/json"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -9,10 +8,9 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 
-	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
+	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
 
-	fwactions "github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions"
-	fwtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
+	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
@@ -56,6 +54,13 @@ func newDefinition() v1alpha1.PlatformModuleDefinition {
 	}
 }
 
+// newDefinitionPointer returns a pointer to a fresh standard
+// definition, as the runner hands one to the injectors.
+func newDefinitionPointer() *v1alpha1.PlatformModuleDefinition {
+	definition := newDefinition()
+	return &definition
+}
+
 // newResolvedImages returns the fully resolved image snapshot.
 func newResolvedImages() map[string]string {
 	return map[string]string{
@@ -64,21 +69,15 @@ func newResolvedImages() map[string]string {
 	}
 }
 
-// newRequest returns a framework reconciliation request carrying only
-// the rendered resources, as the render action leaves it.
-func newRequest(resources ...unstructured.Unstructured) *fwtypes.ReconciliationRequest {
-	return &fwtypes.ReconciliationRequest{
-		Resources: resources,
-	}
-}
-
-// setRelease sets the request's release version through JSON, so no
-// semver package import is needed to populate the framework type.
-func setRelease(t *testing.T, request *fwtypes.ReconciliationRequest, version string) {
-	t.Helper()
-
-	if err := json.Unmarshal([]byte(`{"version":"`+version+`"}`), &request.Release); err != nil {
-		t.Fatal(err)
+// newEnvInjector returns the env injector for the given definition
+// and fully populated runtime inputs.
+func newEnvInjector(definition *v1alpha1.PlatformModuleDefinition) *EnvInjector {
+	return &EnvInjector{
+		Definition:            definition,
+		Images:                newResolvedImages(),
+		ApplicationsNamespace: "opendatahub",
+		MonitoringNamespace:   "opendatahub-monitoring",
+		PlatformType:          "self-managed",
 	}
 }
 
@@ -114,50 +113,121 @@ func findResource(
 	return unstructured.Unstructured{}
 }
 
-// newEnvAction returns the env action for the standard definition and
-// fully populated runtime inputs.
-func newEnvAction() fwactions.Fn {
-	return InjectModuleEnv(
-		newDefinition(),
-		newResolvedImages(),
-		"opendatahub",
-		"opendatahub-monitoring",
-		"self-managed",
-	)
-}
-
-// TestActionsComposeOverOneRequest pins that the two actions compose
-// over a single framework request, as the operator's controller
-// composes its chain.
+// TestInjectorsComposeOverOneBatch pins that the two post-renderers
+// compose over a single private resource batch, as the operator's
+// controller composes its chain — sharing one definition pointer.
 //
 // Operator source: internal/controller/modules/modules_controller.go
 // (commonActions chain), commit 5a1d17f57b32.
-func TestActionsComposeOverOneRequest(t *testing.T) {
+func TestInjectorsComposeOverOneBatch(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	request := newRequest(
+	definition := newDefinitionPointer()
+
+	resources := []unstructured.Unstructured{
 		resource(t, controllerDeploymentYAML),
 		resource(t, serviceYAML),
-	)
+	}
 
-	env := newEnvAction()
-	platform := InjectPlatformConfig(newDefinition(), "opendatahub")
+	var envRender enginetypes.PostRenderer = newEnvInjector(definition).Run
+	var platformRender enginetypes.PostRenderer = (&PlatformConfigInjector{
+		Definition:            definition,
+		ApplicationsNamespace: "opendatahub",
+		PlatformVersion:       "2.19.0",
+	}).Run
 
-	g.Expect(env(t.Context(), request)).To(Succeed())
+	resources, err := envRender(t.Context(), resources)
+	g.Expect(err).To(Succeed())
+	resources, err = platformRender(t.Context(), resources)
+	g.Expect(err).To(Succeed())
 
-	setRelease(t, request, "2.19.0")
-	g.Expect(platform(t.Context(), request)).To(Succeed())
-
-	deployment := findResource(t, request.Resources, "Deployment", "synthetic-controller")
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(deployment.Object).To(jq.Match(
 		`.spec.template.spec.containers[] | select(.name == "manager") | .image == "quay.io/example/controller:v1"`,
 	))
 
-	configMap := findResource(t, request.Resources, "ConfigMap", "odh-synthetic-config")
+	configMap := findResource(t, resources, "ConfigMap", "odh-synthetic-config")
 	g.Expect(configMap.Object).To(SatisfyAll(
 		jq.Match(`.metadata.namespace == "opendatahub"`),
 		jq.Match(`.data.platformVersion == "2.19.0"`),
 	))
+}
+
+// TestInjectorsDoNotMutateDefinitionOrSnapshot pins that both
+// injectors only read the definition and the image snapshot the
+// runner owns: after a full env and platform pass over a rendered
+// batch, both are exactly as supplied.
+func TestInjectorsDoNotMutateDefinitionOrSnapshot(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	definition := newDefinitionPointer()
+	snapshot := newResolvedImages()
+
+	var envRender enginetypes.PostRenderer = (&EnvInjector{
+		Definition:            definition,
+		Images:                snapshot,
+		ApplicationsNamespace: "opendatahub",
+		MonitoringNamespace:   "opendatahub-monitoring",
+		PlatformType:          "self-managed",
+	}).Run
+	var platformRender enginetypes.PostRenderer = (&PlatformConfigInjector{
+		Definition:            definition,
+		ApplicationsNamespace: "opendatahub",
+		PlatformVersion:       "2.19.0",
+	}).Run
+
+	resources := []unstructured.Unstructured{
+		resource(t, controllerDeploymentYAML),
+		resource(t, serviceYAML),
+	}
+
+	resources, err := envRender(t.Context(), resources)
+	g.Expect(err).To(Succeed())
+	resources, err = platformRender(t.Context(), resources)
+	g.Expect(err).To(Succeed())
+	g.Expect(resources).To(HaveLen(3))
+
+	g.Expect(*definition).To(Equal(newDefinition()))
+	g.Expect(snapshot).To(Equal(newResolvedImages()))
+}
+
+// TestInjectorsPassGateConfigMapsThrough pins that a ConfigMap
+// carrying the operator's upgrade-gate label is an ordinary rendered
+// resource for both injectors: it is neither extracted, reported, nor
+// otherwise touched — no gates subsystem exists here.
+//
+// Operator gate label: pkg/controller/gates/gates.go
+// (UpgradeGateLabel), commit 5a1d17f57b32.
+func TestInjectorsPassGateConfigMapsThrough(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	definition := newDefinitionPointer()
+
+	var envRender enginetypes.PostRenderer = newEnvInjector(definition).Run
+	var platformRender enginetypes.PostRenderer = (&PlatformConfigInjector{
+		Definition:            definition,
+		ApplicationsNamespace: "opendatahub",
+		PlatformVersion:       "2.19.0",
+	}).Run
+
+	resources := []unstructured.Unstructured{resource(t, gateConfigMapYAML)}
+
+	resources, err := envRender(t.Context(), resources)
+	g.Expect(err).To(Succeed())
+	resources, err = platformRender(t.Context(), resources)
+	g.Expect(err).To(Succeed())
+
+	// The gate ConfigMap passes through untouched; the only addition
+	// is the ordinary platform config ConfigMap.
+	g.Expect(resources).To(HaveLen(2))
+	g.Expect(resources[0]).To(Equal(resource(t, gateConfigMapYAML)))
+
+	configMap := findResource(t, resources[1:], "ConfigMap", "odh-synthetic-config")
+	g.Expect(configMap.Object).To(jq.Match(`.data.platformVersion == "2.19.0"`))
 }

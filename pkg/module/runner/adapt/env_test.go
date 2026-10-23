@@ -4,6 +4,9 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
 
 	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
 
@@ -31,6 +34,19 @@ spec:
           value: chart-value
       - name: sidecar
         image: registry.example/chart-sidecar:v0
+`
+
+// gateConfigMapYAML is a ConfigMap carrying the operator's upgrade-gate
+// label; gates are out of scope, so it is an ordinary resource.
+const gateConfigMapYAML = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: odh-synthetic-upgrade-gate
+  namespace: opendatahub
+  labels:
+    platform.opendatahub.io/upgrade-gate: "true"
+data:
+  release: "2.19.0"
 `
 
 // deploymentWithoutInitYAML is the controller Deployment with no init
@@ -162,22 +178,24 @@ spec:
   - port: 8080
 `
 
-// TestInjectModuleEnv pins the happy path: the resolved controller
-// image overrides the main and init containers, and the env entries
-// append after the chart env in operator precedence order — related
-// images, sorted extra env, then the nonempty platform env.
+// TestEnvInjector pins the happy path: the resolved controller image
+// overrides the main and init containers, and the env entries append
+// after the chart env in operator precedence order — related images,
+// sorted extra env, then the nonempty platform env.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (injectModuleEnv, injectEnvVarsIntoDeployment), commit 5a1d17f57b32.
-func TestInjectModuleEnv(t *testing.T) {
+func TestEnvInjector(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	request := newRequest(resource(t, controllerDeploymentYAML))
-	g.Expect(newEnvAction()(t.Context(), request)).To(Succeed())
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
 
-	deployment := findResource(t, request.Resources, "Deployment", "synthetic-controller")
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+	g.Expect(err).To(Succeed())
+
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(deployment.Object).To(SatisfyAll(
 		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
 			| .image == "quay.io/example/controller:v1"`),
@@ -201,12 +219,12 @@ func TestInjectModuleEnv(t *testing.T) {
 	))
 }
 
-// TestInjectModuleEnvLiteralImage pins that a literal controller image
+// TestEnvInjectorLiteralImage pins that a literal controller image
 // overrides without any image-source lookup.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (injectEnvVarsIntoDeployment, mi.ControllerImage), commit 5a1d17f57b32.
-func TestInjectModuleEnvLiteralImage(t *testing.T) {
+func TestEnvInjectorLiteralImage(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -214,12 +232,12 @@ func TestInjectModuleEnvLiteralImage(t *testing.T) {
 	definition := newDefinition()
 	definition.Spec.Controller.Deployment.Container.Image = "quay.io/example/controller:v9"
 
-	request := newRequest(resource(t, controllerDeploymentYAML))
+	var render enginetypes.PostRenderer = (&EnvInjector{Definition: &definition}).Run
 
-	action := InjectModuleEnv(definition, nil, "", "", "")
-	g.Expect(action(t.Context(), request)).To(Succeed())
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, request.Resources, "Deployment", "synthetic-controller")
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(deployment.Object).To(SatisfyAll(
 		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
 			| .image == "quay.io/example/controller:v9"`),
@@ -228,23 +246,23 @@ func TestInjectModuleEnvLiteralImage(t *testing.T) {
 	))
 }
 
-// TestInjectModuleEnvUnresolvedImages pins that missing image sources
-// keep the rendered defaults for the main container, the init
-// container, and the related-image env entries.
+// TestEnvInjectorUnresolvedImages pins that missing image sources keep
+// the rendered defaults for the main container, the init container,
+// and the related-image env entries.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (injectEnvVarsIntoDeployment, os.Getenv empty branches), commit 5a1d17f57b32.
-func TestInjectModuleEnvUnresolvedImages(t *testing.T) {
+func TestEnvInjectorUnresolvedImages(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	request := newRequest(resource(t, controllerDeploymentYAML))
+	var render enginetypes.PostRenderer = (&EnvInjector{Definition: newDefinitionPointer()}).Run
 
-	action := InjectModuleEnv(newDefinition(), nil, "", "", "")
-	g.Expect(action(t.Context(), request)).To(Succeed())
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, request.Resources, "Deployment", "synthetic-controller")
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(deployment.Object).To(SatisfyAll(
 		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
 			| .image == "registry.example/chart-controller:v0"`),
@@ -255,21 +273,23 @@ func TestInjectModuleEnvUnresolvedImages(t *testing.T) {
 	))
 }
 
-// TestInjectModuleEnvOverridesExistingEnvAndRemovesValueFrom pins that
-// an existing chart env entry is overridden in place and its valueFrom
+// TestEnvInjectorOverridesExistingEnvAndRemovesValueFrom pins that an
+// existing chart env entry is overridden in place and its valueFrom
 // block removed.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (setOrOverrideEnv), commit 5a1d17f57b32.
-func TestInjectModuleEnvOverridesExistingEnvAndRemovesValueFrom(t *testing.T) {
+func TestEnvInjectorOverridesExistingEnvAndRemovesValueFrom(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	request := newRequest(resource(t, controllerDeploymentValueFromYAML))
-	g.Expect(newEnvAction()(t.Context(), request)).To(Succeed())
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
 
-	deployment := findResource(t, request.Resources, "Deployment", "synthetic-controller")
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentValueFromYAML)})
+	g.Expect(err).To(Succeed())
+
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(deployment.Object).To(SatisfyAll(
 		jq.Match(`[.spec.template.spec.containers[] | select(.name == "manager") | .env[].name]
 			== ["RELATED_IMAGE_OPERAND","LOG_LEVEL","APPLICATIONS_NAMESPACE","MONITORING_NAMESPACE","ODH_MODULE_OPERATOR_PLATFORM_TYPE"]`),
@@ -280,14 +300,14 @@ func TestInjectModuleEnvOverridesExistingEnvAndRemovesValueFrom(t *testing.T) {
 	))
 }
 
-// TestInjectModuleEnvPrecedence pins the operator's semantic
-// precedence when names collide: explicit extra env overrides a
-// related image value, and the platform env overrides an extra env
-// value of the same name.
+// TestEnvInjectorPrecedence pins the operator's semantic precedence
+// when names collide: explicit extra env overrides a related image
+// value, and the platform env overrides an extra env value of the
+// same name.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (injectEnvVarsIntoDeployment injection order), commit 5a1d17f57b32.
-func TestInjectModuleEnvPrecedence(t *testing.T) {
+func TestEnvInjectorPrecedence(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -298,12 +318,16 @@ func TestInjectModuleEnvPrecedence(t *testing.T) {
 		{Name: "APPLICATIONS_NAMESPACE", Value: new("extra-ns")},
 	}
 
-	request := newRequest(resource(t, deploymentWithoutInitYAML))
+	var render enginetypes.PostRenderer = (&EnvInjector{
+		Definition:            &definition,
+		Images:                newResolvedImages(),
+		ApplicationsNamespace: "opendatahub",
+	}).Run
 
-	action := InjectModuleEnv(definition, newResolvedImages(), "opendatahub", "", "")
-	g.Expect(action(t.Context(), request)).To(Succeed())
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
+	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, request.Resources, "Deployment", "synthetic-controller")
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(deployment.Object).To(SatisfyAll(
 		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
 			| .env[] | select(.name == "RELATED_IMAGE_OPERAND") | .value == "extra-wins"`),
@@ -312,13 +336,13 @@ func TestInjectModuleEnvPrecedence(t *testing.T) {
 	))
 }
 
-// TestInjectModuleEnvExtraEnvListMapSemantics pins the list-to-map
+// TestEnvInjectorExtraEnvListMapSemantics pins the list-to-map
 // projection of the descriptor env list: later duplicates win, and an
 // absent value projects to the empty string.
 //
 // Operator source: internal/controller/modules/modules_controller.go
 // (provisionModules ModuleImages.ExtraEnv build), commit 5a1d17f57b32.
-func TestInjectModuleEnvExtraEnvListMapSemantics(t *testing.T) {
+func TestEnvInjectorExtraEnvListMapSemantics(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -331,12 +355,12 @@ func TestInjectModuleEnvExtraEnvListMapSemantics(t *testing.T) {
 		{Name: "BRAVO"},
 	}
 
-	request := newRequest(resource(t, deploymentWithoutInitYAML))
+	var render enginetypes.PostRenderer = (&EnvInjector{Definition: &definition}).Run
 
-	action := InjectModuleEnv(definition, nil, "", "", "")
-	g.Expect(action(t.Context(), request)).To(Succeed())
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
+	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, request.Resources, "Deployment", "synthetic-controller")
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(deployment.Object).To(SatisfyAll(
 		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
 			| .env[] | select(.name == "ZETA") | .value == "one"`),
@@ -347,13 +371,13 @@ func TestInjectModuleEnvExtraEnvListMapSemantics(t *testing.T) {
 	))
 }
 
-// TestInjectModuleEnvPlaceholderValueStaysLiteral pins that an
-// extra-env value looking like a replacement token is injected as
-// authored, with no interpolation.
+// TestEnvInjectorPlaceholderValueStaysLiteral pins that an extra-env
+// value looking like a replacement token is injected as authored,
+// with no interpolation.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (injectEnvVarsIntoDeployment, mi.ExtraEnv), commit 5a1d17f57b32.
-func TestInjectModuleEnvPlaceholderValueStaysLiteral(t *testing.T) {
+func TestEnvInjectorPlaceholderValueStaysLiteral(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -363,23 +387,23 @@ func TestInjectModuleEnvPlaceholderValueStaysLiteral(t *testing.T) {
 		{Name: "LOG_LEVEL", Value: new("{{LOG_LEVEL}}")},
 	}
 
-	request := newRequest(resource(t, deploymentWithoutInitYAML))
+	var render enginetypes.PostRenderer = (&EnvInjector{Definition: &definition}).Run
 
-	action := InjectModuleEnv(definition, nil, "", "", "")
-	g.Expect(action(t.Context(), request)).To(Succeed())
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
+	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, request.Resources, "Deployment", "synthetic-controller")
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(deployment.Object).To(jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
 		| .env[] | select(.name == "LOG_LEVEL") | .value == "{{LOG_LEVEL}}"`))
 }
 
-// TestInjectModuleEnvSortedExtraEnv pins that map-derived extra env
+// TestEnvInjectorSortedExtraEnv pins that map-derived extra env
 // entries append in sorted key order, keeping the output
 // deterministic without changing the operator's semantic precedence.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (injectEnvVarsIntoDeployment, mi.ExtraEnv range), commit 5a1d17f57b32.
-func TestInjectModuleEnvSortedExtraEnv(t *testing.T) {
+func TestEnvInjectorSortedExtraEnv(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -390,22 +414,22 @@ func TestInjectModuleEnvSortedExtraEnv(t *testing.T) {
 		{Name: "ALPHA", Value: new("a")},
 	}
 
-	request := newRequest(resource(t, deploymentWithoutInitYAML))
+	var render enginetypes.PostRenderer = (&EnvInjector{Definition: &definition}).Run
 
-	action := InjectModuleEnv(definition, nil, "", "", "")
-	g.Expect(action(t.Context(), request)).To(Succeed())
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
+	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, request.Resources, "Deployment", "synthetic-controller")
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(deployment.Object).To(jq.Match(`[.spec.template.spec.containers[] | select(.name == "manager") | .env[].name]
 		== ["CHART_ENV","ALPHA","ZETA"]`))
 }
 
-// TestInjectModuleEnvContainerNameFallback pins that an empty
-// container name targets the operator manager default.
+// TestEnvInjectorContainerNameFallback pins that an empty container
+// name targets the operator manager default.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (injectEnvVarsIntoDeployment, defaultContainerName), commit 5a1d17f57b32.
-func TestInjectModuleEnvContainerNameFallback(t *testing.T) {
+func TestEnvInjectorContainerNameFallback(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -413,10 +437,12 @@ func TestInjectModuleEnvContainerNameFallback(t *testing.T) {
 	definition := newDefinition()
 	definition.Spec.Controller.Deployment.Container.Name = ""
 
-	request := newRequest(resource(t, deploymentWithoutInitYAML))
-	g.Expect(newEnvAction()(t.Context(), request)).To(Succeed())
+	var render enginetypes.PostRenderer = newEnvInjector(&definition).Run
 
-	deployment := findResource(t, request.Resources, "Deployment", "synthetic-controller")
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
+	g.Expect(err).To(Succeed())
+
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(deployment.Object).To(SatisfyAll(
 		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
 			| .image == "quay.io/example/controller:v1"`),
@@ -425,13 +451,13 @@ func TestInjectModuleEnvContainerNameFallback(t *testing.T) {
 	))
 }
 
-// TestInjectModuleEnvDeploymentNameFallback pins that an empty
-// deployment name falls back to the module name — the Helm release
-// name for this tool.
+// TestEnvInjectorDeploymentNameFallback pins that an empty deployment
+// name falls back to the module name — the Helm release name for this
+// tool.
 //
 // Operator source: internal/controller/modules/modules_controller.go
 // (ModuleImages.DeploymentName build), commit 5a1d17f57b32.
-func TestInjectModuleEnvDeploymentNameFallback(t *testing.T) {
+func TestEnvInjectorDeploymentNameFallback(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -439,106 +465,115 @@ func TestInjectModuleEnvDeploymentNameFallback(t *testing.T) {
 	definition := newDefinition()
 	definition.Spec.Controller.Deployment.Name = ""
 
-	request := newRequest(resource(t, moduleNamedDeploymentYAML))
+	var render enginetypes.PostRenderer = (&EnvInjector{
+		Definition: &definition,
+		Images:     newResolvedImages(),
+	}).Run
 
-	action := InjectModuleEnv(definition, newResolvedImages(), "", "", "")
-	g.Expect(action(t.Context(), request)).To(Succeed())
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, moduleNamedDeploymentYAML)})
+	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, request.Resources, "Deployment", "synthetic")
+	deployment := findResource(t, resources, "Deployment", "synthetic")
 	g.Expect(deployment.Object).To(jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
 		| .image == "quay.io/example/controller:v1"`))
 }
 
-// TestInjectModuleEnvSkipsOtherDeployments pins that a foreign
-// Deployment with valid containers is left untouched, while the
-// module's own Deployment is adapted.
+// TestEnvInjectorSkipsOtherDeployments pins that a foreign Deployment
+// with valid containers is left untouched, while the module's own
+// Deployment is adapted.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (injectEnvVarsIntoDeployment, mi.DeploymentName mismatch), commit 5a1d17f57b32.
-func TestInjectModuleEnvSkipsOtherDeployments(t *testing.T) {
+func TestEnvInjectorSkipsOtherDeployments(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	request := newRequest(
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+
+	resources, err := render(t.Context(), []unstructured.Unstructured{
 		resource(t, controllerDeploymentYAML),
 		resource(t, otherDeploymentYAML),
-	)
-	g.Expect(newEnvAction()(t.Context(), request)).To(Succeed())
+	})
+	g.Expect(err).To(Succeed())
 
-	other := findResource(t, request.Resources, "Deployment", "other-controller")
+	other := findResource(t, resources, "Deployment", "other-controller")
 	g.Expect(other.Object).To(SatisfyAll(
 		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
 			| .image == "registry.example/other:v0"`),
 		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager") | has("env") | not`),
 	))
 
-	own := findResource(t, request.Resources, "Deployment", "synthetic-controller")
+	own := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(own.Object).To(jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
 		| .image == "quay.io/example/controller:v1"`))
 }
 
-// TestInjectModuleEnvDeploymentWithoutContainersErrors pins that a
+// TestEnvInjectorDeploymentWithoutContainersErrors pins that a
 // Deployment without containers errors even when it is not the
 // module's own: upstream reads every Deployment's containers before
-// matching names.
+// matching names. A failed pass returns no successful output.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (injectEnvVarsIntoDeployment, no-containers error), commit 5a1d17f57b32.
-func TestInjectModuleEnvDeploymentWithoutContainersErrors(t *testing.T) {
+func TestEnvInjectorDeploymentWithoutContainersErrors(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	request := newRequest(resource(t, deploymentWithoutContainersYAML))
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
 
-	err := newEnvAction()(t.Context(), request)
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutContainersYAML)})
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("deployment other-controller has no containers"))
+	g.Expect(resources).To(BeNil())
 }
 
-// TestInjectModuleEnvMalformedContainersErrors pins that a non-list
-// containers field errors with the unstructured accessor's error.
+// TestEnvInjectorMalformedContainersErrors pins that a non-list
+// containers field errors with the unstructured accessor's error, and
+// no failed output is presented as success.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (injectEnvVarsIntoDeployment, NestedSlice error), commit 5a1d17f57b32.
-func TestInjectModuleEnvMalformedContainersErrors(t *testing.T) {
+func TestEnvInjectorMalformedContainersErrors(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	request := newRequest(resource(t, deploymentMalformedContainersYAML))
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
 
-	err := newEnvAction()(t.Context(), request)
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentMalformedContainersYAML)})
 	g.Expect(err).To(HaveOccurred())
+	g.Expect(resources).To(BeNil())
 }
 
-// TestInjectModuleEnvMalformedEnvReplaced pins that a malformed
-// existing env value is treated as empty and replaced by the injected
-// entries.
+// TestEnvInjectorMalformedEnvReplaced pins that a malformed existing
+// env value is treated as empty and replaced by the injected entries.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (injectEnvVarsIntoDeployment, existingEnv type assertion), commit 5a1d17f57b32.
-func TestInjectModuleEnvMalformedEnvReplaced(t *testing.T) {
+func TestEnvInjectorMalformedEnvReplaced(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	request := newRequest(resource(t, controllerDeploymentMalformedEnvYAML))
-	g.Expect(newEnvAction()(t.Context(), request)).To(Succeed())
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
 
-	deployment := findResource(t, request.Resources, "Deployment", "synthetic-controller")
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentMalformedEnvYAML)})
+	g.Expect(err).To(Succeed())
+
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(deployment.Object).To(jq.Match(`[.spec.template.spec.containers[] | select(.name == "manager") | .env[].name]
 		== ["RELATED_IMAGE_OPERAND","LOG_LEVEL","APPLICATIONS_NAMESPACE","MONITORING_NAMESPACE","ODH_MODULE_OPERATOR_PLATFORM_TYPE"]`))
 }
 
-// TestInjectModuleEnvNoContainerBlock pins that a definition without a
+// TestEnvInjectorNoContainerBlock pins that a definition without a
 // container block injects no image and no extra env, while the
 // platform env still lands on the default-named container.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (injectEnvVarsIntoDeployment, mi.ControllerImage empty), commit 5a1d17f57b32.
-func TestInjectModuleEnvNoContainerBlock(t *testing.T) {
+func TestEnvInjectorNoContainerBlock(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -546,12 +581,16 @@ func TestInjectModuleEnvNoContainerBlock(t *testing.T) {
 	definition := newDefinition()
 	definition.Spec.Controller.Deployment.Container = nil
 
-	request := newRequest(resource(t, deploymentWithoutInitYAML))
+	var render enginetypes.PostRenderer = (&EnvInjector{
+		Definition:            &definition,
+		Images:                newResolvedImages(),
+		ApplicationsNamespace: "opendatahub",
+	}).Run
 
-	action := InjectModuleEnv(definition, newResolvedImages(), "opendatahub", "", "")
-	g.Expect(action(t.Context(), request)).To(Succeed())
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
+	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, request.Resources, "Deployment", "synthetic-controller")
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(deployment.Object).To(SatisfyAll(
 		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
 			| .image == "registry.example/chart-controller:v0"`),
@@ -560,32 +599,34 @@ func TestInjectModuleEnvNoContainerBlock(t *testing.T) {
 	))
 }
 
-// TestInjectModuleEnvIgnoresNonDeploymentResources pins that only
-// exact Deployment group/version/kind resources are visited.
+// TestEnvInjectorIgnoresNonDeploymentResources pins that only exact
+// Deployment group/version/kind resources are visited.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (isDeployment), commit 5a1d17f57b32.
-func TestInjectModuleEnvIgnoresNonDeploymentResources(t *testing.T) {
+func TestEnvInjectorIgnoresNonDeploymentResources(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	request := newRequest(resource(t, serviceYAML))
-	g.Expect(newEnvAction()(t.Context(), request)).To(Succeed())
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
 
-	service := findResource(t, request.Resources, "Service", "synthetic-service")
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, serviceYAML)})
+	g.Expect(err).To(Succeed())
+
+	service := findResource(t, resources, "Service", "synthetic-service")
 	g.Expect(service.Object).To(jq.Match(`.spec.ports[0].port == 8080`))
 }
 
-// TestInjectModuleEnvInitContainerBranches pins the init container
-// image injection branches: an absent initContainers list skips, a
+// TestEnvInjectorInitContainerBranches pins the init container image
+// injection branches: an absent initContainers list skips, a
 // configured name missing from a nonempty list errors only when the
 // controller image resolved, and no init target leaves the slice
 // untouched.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (injectInitContainerImage), commit 5a1d17f57b32.
-func TestInjectModuleEnvInitContainerBranches(t *testing.T) {
+func TestEnvInjectorInitContainerBranches(t *testing.T) {
 	t.Parallel()
 
 	t.Run("absent init slice skips", func(t *testing.T) {
@@ -593,10 +634,12 @@ func TestInjectModuleEnvInitContainerBranches(t *testing.T) {
 
 		g := NewWithT(t)
 
-		request := newRequest(resource(t, deploymentWithoutInitYAML))
-		g.Expect(newEnvAction()(t.Context(), request)).To(Succeed())
+		var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
 
-		deployment := findResource(t, request.Resources, "Deployment", "synthetic-controller")
+		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
+		g.Expect(err).To(Succeed())
+
+		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 		g.Expect(deployment.Object).To(SatisfyAll(
 			jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
 				| .image == "quay.io/example/controller:v1"`),
@@ -609,11 +652,12 @@ func TestInjectModuleEnvInitContainerBranches(t *testing.T) {
 
 		g := NewWithT(t)
 
-		request := newRequest(resource(t, deploymentOtherInitYAML))
+		var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
 
-		err := newEnvAction()(t.Context(), request)
+		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentOtherInitYAML)})
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring(`init container "copy-manifests" not found in Deployment synthetic-controller`))
+		g.Expect(resources).To(BeNil())
 	})
 
 	t.Run("missing named init with unresolved image skips", func(t *testing.T) {
@@ -621,12 +665,12 @@ func TestInjectModuleEnvInitContainerBranches(t *testing.T) {
 
 		g := NewWithT(t)
 
-		request := newRequest(resource(t, deploymentOtherInitYAML))
+		var render enginetypes.PostRenderer = (&EnvInjector{Definition: newDefinitionPointer()}).Run
 
-		action := InjectModuleEnv(newDefinition(), nil, "", "", "")
-		g.Expect(action(t.Context(), request)).To(Succeed())
+		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentOtherInitYAML)})
+		g.Expect(err).To(Succeed())
 
-		deployment := findResource(t, request.Resources, "Deployment", "synthetic-controller")
+		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 		g.Expect(deployment.Object).To(jq.Match(`.spec.template.spec.initContainers[] | select(.name == "other-init")
 			| .image == "registry.example/other-init:v0"`))
 	})
@@ -639,12 +683,15 @@ func TestInjectModuleEnvInitContainerBranches(t *testing.T) {
 		definition := newDefinition()
 		definition.Spec.Controller.Deployment.InitContainer = nil
 
-		request := newRequest(resource(t, controllerDeploymentYAML))
+		var render enginetypes.PostRenderer = (&EnvInjector{
+			Definition: &definition,
+			Images:     newResolvedImages(),
+		}).Run
 
-		action := InjectModuleEnv(definition, newResolvedImages(), "", "", "")
-		g.Expect(action(t.Context(), request)).To(Succeed())
+		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+		g.Expect(err).To(Succeed())
 
-		deployment := findResource(t, request.Resources, "Deployment", "synthetic-controller")
+		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 		g.Expect(deployment.Object).To(jq.Match(`.spec.template.spec.initContainers[] | select(.name == "copy-manifests")
 			| .image == "registry.example/chart-init:v0"`))
 	})

@@ -10,8 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	fwactions "github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions"
-	fwtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
+	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
@@ -26,120 +25,70 @@ const (
 	platformTypeEnv          = "ODH_MODULE_OPERATOR_PLATFORM_TYPE"
 )
 
-// InjectModuleEnv returns the framework pipeline action porting the
-// operator's injectModuleEnv (internal/controller/modules/modules_controller_actions_inject_env.go):
-// it mutates Deployment resources in rr.Resources to inject the
-// resolved controller image and the RELATED_IMAGE_*,
-// APPLICATIONS_NAMESPACE, MONITORING_NAMESPACE, and platform identity
-// env vars into the target container of the module controller
-// Deployment.
+// EnvInjector is the engine post-renderer porting the operator's
+// injectModuleEnv (internal/controller/modules/modules_controller_actions_inject_env.go):
+// it mutates Deployment resources to inject the resolved controller
+// image and the RELATED_IMAGE_*, APPLICATIONS_NAMESPACE,
+// MONITORING_NAMESPACE, and platform identity env vars into the target
+// container of the module controller Deployment.
 //
 // The operator aggregates every enabled module into a request-carried
 // ModuleEnvInjection and reads image values from the process
 // environment at injection time. This port is single-module — the
-// module descriptor and the resolved image snapshot (the images
-// service output) are supplied at construction — and the configured
+// injector holds the loaded definition and the resolved image snapshot
+// (the images service output) by pointer and reads their contents at
+// injection time without mutating either — and the configured
 // controller image may be a literal pipeline-built image as well as a
 // whole {{NAME}} reference.
-func InjectModuleEnv(
-	definition v1alpha1.PlatformModuleDefinition,
-	resolvedImages map[string]string,
-	applicationsNamespace string,
-	monitoringNamespace string,
-	platformType string,
-) fwactions.Fn {
-	injection := newEnvInjection(definition, resolvedImages, applicationsNamespace, monitoringNamespace, platformType)
+type EnvInjector struct {
+	// Definition is the loaded module definition. Its Spec is read
+	// directly; the runner owns the definition's lifetime.
+	Definition *v1alpha1.PlatformModuleDefinition
 
-	return func(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
-		log := logf.FromContext(ctx)
+	// Images is the resolved image snapshot, the images service output.
+	Images map[string]string
 
-		for i := range rr.Resources {
-			if !isDeployment(&rr.Resources[i]) {
-				continue
-			}
+	// ApplicationsNamespace is the installation namespace; when
+	// nonempty it becomes the APPLICATIONS_NAMESPACE env var.
+	ApplicationsNamespace string
 
-			if err := injection.injectEnvVarsIntoDeployment(log, &rr.Resources[i]); err != nil {
-				log.Error(err, "failed to inject env vars into Deployment",
-					"deployment", rr.Resources[i].GetName(),
-					"deploymentNamespace", rr.Resources[i].GetNamespace(),
-				)
+	// MonitoringNamespace is the monitoring namespace; when nonempty
+	// it becomes the MONITORING_NAMESPACE env var.
+	MonitoringNamespace string
 
-				return err
-			}
+	// PlatformType is the platform identity; when nonempty it becomes
+	// the ODH_MODULE_OPERATOR_PLATFORM_TYPE env var.
+	PlatformType string
+}
+
+// The injector's Run method value is a real engine post-renderer.
+var _ enginetypes.PostRenderer = (*EnvInjector)(nil).Run
+
+// Run implements the engine post-renderer contract: Deployment
+// resources are mutated in place and the same slice is returned. On any
+// error no successful output is returned.
+func (inj *EnvInjector) Run(
+	ctx context.Context,
+	resources []unstructured.Unstructured,
+) ([]unstructured.Unstructured, error) {
+	log := logf.FromContext(ctx)
+
+	for i := range resources {
+		if !isDeployment(&resources[i]) {
+			continue
 		}
 
-		return nil
-	}
-}
+		if err := inj.injectEnvVarsIntoDeployment(log, &resources[i]); err != nil {
+			log.Error(err, "failed to inject env vars into Deployment",
+				"deployment", resources[i].GetName(),
+				"deploymentNamespace", resources[i].GetNamespace(),
+			)
 
-// envInjection is the construction-time projection of one module's
-// definition and runtime image snapshot onto the operator's
-// ModuleEnvInjection inputs: the deployment name falls back to the
-// module name, the container name to the operator manager default,
-// and the extra env list becomes a map where later duplicates win and
-// a nil value projects to the empty string. The controller image is
-// resolved once — literal or whole {{NAME}} token. It is unexported:
-// the package's visible surface is the action constructors alone.
-type envInjection struct {
-	deploymentName        string
-	containerName         string
-	initContainerName     string
-	image                 string
-	imageRef              string
-	relatedImages         []string
-	extraEnv              map[string]string
-	images                map[string]string
-	applicationsNamespace string
-	monitoringNamespace   string
-	platformType          string
-}
-
-// newEnvInjection projects the module descriptor and runtime inputs.
-func newEnvInjection(
-	definition v1alpha1.PlatformModuleDefinition,
-	resolvedImages map[string]string,
-	applicationsNamespace string,
-	monitoringNamespace string,
-	platformType string,
-) *envInjection {
-	injection := &envInjection{
-		images:                resolvedImages,
-		applicationsNamespace: applicationsNamespace,
-		monitoringNamespace:   monitoringNamespace,
-		platformType:          platformType,
-		relatedImages:         definition.Spec.RelatedImages,
-	}
-
-	deployment := definition.Spec.Controller.Deployment
-
-	injection.deploymentName = deployment.Name
-	if injection.deploymentName == "" {
-		// The operator falls back to the Helm release name, which for
-		// this tool is always the module's metadata.name.
-		injection.deploymentName = definition.Name
-	}
-
-	if container := deployment.Container; container != nil {
-		injection.containerName = container.Name
-		injection.imageRef = container.Image
-		injection.image = images.ResolveImage(container.Image, resolvedImages)
-
-		injection.extraEnv = make(map[string]string, len(container.Env))
-		for _, env := range container.Env {
-			value := ""
-			if env.Value != nil {
-				value = *env.Value
-			}
-
-			injection.extraEnv[env.Name] = value
+			return nil, err
 		}
 	}
 
-	if init := deployment.InitContainer; init != nil {
-		injection.initContainerName = init.Name
-	}
-
-	return injection
+	return resources, nil
 }
 
 // injectEnvVarsIntoDeployment ports the operator's
@@ -153,7 +102,13 @@ func newEnvInjection(
 // target container skips injection without error; and a malformed
 // existing env list is treated as empty and replaced by the injected
 // entries once anything is injected.
-func (inj *envInjection) injectEnvVarsIntoDeployment(log logr.Logger, obj *unstructured.Unstructured) error {
+//
+// The fallback deployment and container names, the resolved image, and
+// the last-wins extra-env map are transient calculations over the
+// definition made here, not a mirrored long-lived projection.
+func (inj *EnvInjector) injectEnvVarsIntoDeployment(log logr.Logger, obj *unstructured.Unstructured) error {
+	deployment := inj.Definition.Spec.Controller.Deployment
+
 	containers, found, err := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "containers")
 	if err != nil {
 		return err
@@ -167,13 +122,39 @@ func (inj *envInjection) injectEnvVarsIntoDeployment(log logr.Logger, obj *unstr
 
 	// Upstream reads the containers of every Deployment before module
 	// matching, exactly as preserved above.
-	if inj.deploymentName != deployName {
+	targetDeployment := deployment.Name
+	if targetDeployment == "" {
+		// The operator falls back to the Helm release name, which for
+		// this tool is always the module's metadata.name.
+		targetDeployment = inj.Definition.Name
+	}
+	if targetDeployment != deployName {
 		return nil
 	}
 
-	targetName := inj.containerName
-	if targetName == "" {
-		targetName = v1alpha1.DefaultMainContainerName
+	targetName := v1alpha1.DefaultMainContainerName
+	imageRef := ""
+	image := ""
+	var extraEnv map[string]string
+
+	if container := deployment.Container; container != nil {
+		if container.Name != "" {
+			targetName = container.Name
+		}
+		imageRef = container.Image
+		image = images.ResolveImage(container.Image, inj.Images)
+
+		// The extra env list becomes a map where later duplicates win
+		// and a nil value projects to the empty string.
+		extraEnv = make(map[string]string, len(container.Env))
+		for _, env := range container.Env {
+			value := ""
+			if env.Value != nil {
+				value = *env.Value
+			}
+
+			extraEnv[env.Name] = value
+		}
 	}
 
 	idx := findNamedContainer(containers, targetName)
@@ -188,20 +169,20 @@ func (inj *envInjection) injectEnvVarsIntoDeployment(log logr.Logger, obj *unstr
 		return nil
 	}
 
-	if inj.image != "" {
-		container["image"] = inj.image
+	if image != "" {
+		container["image"] = image
 		injected++
 		log.V(3).Info("overriding controller image",
-			"deployment", deployName, "container", targetName, "image", inj.imageRef)
+			"deployment", deployName, "container", targetName)
 
-		initInjected, err := inj.injectInitContainerImage(log, obj, inj.image, deployName)
+		initInjected, err := inj.injectInitContainerImage(log, obj, image, deployName)
 		if err != nil {
 			return err
 		}
 		injected += initInjected
-	} else if inj.imageRef != "" {
+	} else if imageRef != "" {
 		log.V(1).Info("controller image unresolved, keeping chart default",
-			"image", inj.imageRef, "deployment", deployName)
+			"deployment", deployName)
 	}
 
 	existingEnv, _ := container["env"].([]any)
@@ -211,8 +192,8 @@ func (inj *envInjection) injectEnvVarsIntoDeployment(log logr.Logger, obj *unstr
 	// append in the definition's list order for related images and in
 	// sorted key order for the extra-env map, keeping CLI output
 	// stable without changing the operator's semantic precedence.
-	for _, relImg := range inj.relatedImages {
-		val := inj.images[relImg]
+	for _, relImg := range inj.Definition.Spec.RelatedImages {
+		val := inj.Images[relImg]
 		if val == "" {
 			log.V(1).Info("RELATED_IMAGE env var not set, skipping",
 				"envVar", relImg, "deployment", deployName)
@@ -224,26 +205,26 @@ func (inj *envInjection) injectEnvVarsIntoDeployment(log logr.Logger, obj *unstr
 		}
 	}
 
-	for _, name := range slices.Sorted(maps.Keys(inj.extraEnv)) {
-		if setOrOverrideEnv(&existingEnv, name, inj.extraEnv[name]) {
+	for _, name := range slices.Sorted(maps.Keys(extraEnv)) {
+		if setOrOverrideEnv(&existingEnv, name, extraEnv[name]) {
 			injected++
 		}
 	}
 
-	if inj.applicationsNamespace != "" {
-		if setOrOverrideEnv(&existingEnv, applicationsNamespaceEnv, inj.applicationsNamespace) {
+	if inj.ApplicationsNamespace != "" {
+		if setOrOverrideEnv(&existingEnv, applicationsNamespaceEnv, inj.ApplicationsNamespace) {
 			injected++
 		}
 	}
 
-	if inj.monitoringNamespace != "" {
-		if setOrOverrideEnv(&existingEnv, monitoringNamespaceEnv, inj.monitoringNamespace) {
+	if inj.MonitoringNamespace != "" {
+		if setOrOverrideEnv(&existingEnv, monitoringNamespaceEnv, inj.MonitoringNamespace) {
 			injected++
 		}
 	}
 
-	if inj.platformType != "" {
-		if setOrOverrideEnv(&existingEnv, platformTypeEnv, inj.platformType) {
+	if inj.PlatformType != "" {
+		if setOrOverrideEnv(&existingEnv, platformTypeEnv, inj.PlatformType) {
 			injected++
 		}
 	}
@@ -273,15 +254,17 @@ func (inj *envInjection) injectEnvVarsIntoDeployment(log logr.Logger, obj *unstr
 // missing from a nonempty list is an error — reached only when the
 // controller image resolved, since the caller injects the same
 // nonempty image into main and init containers or neither.
-func (inj *envInjection) injectInitContainerImage(
+func (inj *EnvInjector) injectInitContainerImage(
 	log logr.Logger,
 	obj *unstructured.Unstructured,
 	img string,
 	deployName string,
 ) (int, error) {
-	if inj.initContainerName == "" {
+	init := inj.Definition.Spec.Controller.Deployment.InitContainer
+	if init == nil {
 		return 0, nil
 	}
+	initContainerName := init.Name
 
 	initContainers, found, err := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "initContainers")
 	if err != nil {
@@ -293,9 +276,9 @@ func (inj *envInjection) injectInitContainerImage(
 		return 0, nil
 	}
 
-	idx := findNamedContainer(initContainers, inj.initContainerName)
+	idx := findNamedContainer(initContainers, initContainerName)
 	if idx < 0 {
-		return 0, fmt.Errorf("init container %q not found in Deployment %s", inj.initContainerName, deployName)
+		return 0, fmt.Errorf("init container %q not found in Deployment %s", initContainerName, deployName)
 	}
 
 	ic, ok := initContainers[idx].(map[string]any)
@@ -311,7 +294,7 @@ func (inj *envInjection) injectInitContainerImage(
 	}
 
 	log.V(3).Info("overriding init container image",
-		"deployment", deployName, "initContainer", inj.initContainerName)
+		"deployment", deployName, "initContainer", initContainerName)
 
 	return 1, nil
 }

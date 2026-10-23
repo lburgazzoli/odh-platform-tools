@@ -9,8 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	fwactions "github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions"
-	fwtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
+	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
 	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
@@ -50,57 +49,75 @@ var platformManagedCertManagerKeys = []string{
 	certManagerIstioCACertPathKey,
 }
 
-// InjectPlatformConfig returns the framework pipeline action porting
-// the operator's injectPlatformConfig (internal/controller/modules/modules_controller_actions_platform_config.go)
+// PlatformConfigInjector is the engine post-renderer porting the
+// operator's injectPlatformConfig (internal/controller/modules/modules_controller_actions_platform_config.go)
 // for a single always-enabled module: the odh-<module>-config
 // ConfigMap is created in the applications namespace, or the
 // platform-managed keys are merged into an existing ConfigMap of the
 // same name rendered by the module. Existing module-owned data keys
-// are preserved. The platform version is read from rr.Release.Version,
-// exactly where upstream reads it.
+// are preserved.
+//
+// Upstream reads the platform version from the reconciliation
+// request's release; here the runner supplies the canonical parsed
+// version string directly, so no release plumbing is carried.
 //
 // Upstream additionally seeds cert-manager bootstrap keys on XKS
 // platforms; that bootstrap is a platform concern with no
 // one-shot-install analogue, so this port never sets them and only
 // removes stale ones.
-func InjectPlatformConfig(
-	definition v1alpha1.PlatformModuleDefinition,
-	applicationsNamespace string,
-) fwactions.Fn {
-	return func(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
-		log := logf.FromContext(ctx)
+type PlatformConfigInjector struct {
+	// Definition is the loaded module definition. Its name forms the
+	// ConfigMap name; the runner owns the definition's lifetime.
+	Definition *v1alpha1.PlatformModuleDefinition
 
-		platformVersion := rr.Release.Version.String()
+	// ApplicationsNamespace is where a missing platform config
+	// ConfigMap is created.
+	ApplicationsNamespace string
 
-		existingCMs := indexConfigMapsByName(rr.Resources)
+	// PlatformVersion is the canonical platform version string the
+	// runner parsed and supplies to both the injector and deploy.
+	PlatformVersion string
+}
 
-		name := definition.Name
-		cmName := platformConfigName(name)
+// The injector's Run method value is a real engine post-renderer.
+var _ enginetypes.PostRenderer = (*PlatformConfigInjector)(nil).Run
 
-		ns := applicationsNamespace
+// Run implements the engine post-renderer contract: an existing
+// matching ConfigMap is merged in place and the same slice returned;
+// otherwise the platform config ConfigMap is appended. On error no
+// successful output is returned.
+func (inj *PlatformConfigInjector) Run(
+	ctx context.Context,
+	resources []unstructured.Unstructured,
+) ([]unstructured.Unstructured, error) {
+	log := logf.FromContext(ctx)
 
-		if idx, ok := existingCMs[cmName]; ok {
-			log.V(1).Info("merging platform config into existing ConfigMap",
-				"module", name, "configmap", cmName)
-			mergePlatformKeys(&rr.Resources[idx], platformVersion)
+	existingCMs := indexConfigMapsByName(resources)
 
-			return nil
-		}
+	name := inj.Definition.Name
+	cmName := platformConfigName(name)
 
-		log.V(1).Info("creating platform config ConfigMap",
+	if idx, ok := existingCMs[cmName]; ok {
+		log.V(1).Info("merging platform config into existing ConfigMap",
 			"module", name, "configmap", cmName)
+		mergePlatformKeys(&resources[idx], inj.PlatformVersion)
 
-		cm := buildPlatformConfigMap(cmName, ns, platformVersion)
-
-		u, err := fwresources.ToUnstructured(cm)
-		if err != nil {
-			return fmt.Errorf("converting platform config ConfigMap for %s: %w", name, err)
-		}
-
-		rr.Resources = append(rr.Resources, *u)
-
-		return nil
+		return resources, nil
 	}
+
+	log.V(1).Info("creating platform config ConfigMap",
+		"module", name, "configmap", cmName)
+
+	cm := buildPlatformConfigMap(cmName, inj.ApplicationsNamespace, inj.PlatformVersion)
+
+	u, err := fwresources.ToUnstructured(cm)
+	if err != nil {
+		return nil, fmt.Errorf("converting platform config ConfigMap for %s: %w", name, err)
+	}
+
+	resources = append(resources, *u)
+
+	return resources, nil
 }
 
 // platformConfigName returns the well-known ConfigMap name for a

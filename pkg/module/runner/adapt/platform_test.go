@@ -4,6 +4,9 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
 
 	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
 )
@@ -55,82 +58,96 @@ data:
   MODULE_KEY: second-value
 `
 
-// TestInjectPlatformConfigCreates pins that the odh-<module>-config
+// TestPlatformConfigInjectorCreates pins that the odh-<module>-config
 // ConfigMap is appended in the applications namespace with the
-// platform version read from the request's release.
+// canonical runner-supplied platform version, and no rollout hash or
+// other annotation is added.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_platform_config.go
 // (injectPlatformConfig, buildPlatformConfigMap), commit 5a1d17f57b32.
-func TestInjectPlatformConfigCreates(t *testing.T) {
+func TestPlatformConfigInjectorCreates(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	request := newRequest(resource(t, serviceYAML))
-	setRelease(t, request, "2.19.0")
+	var render enginetypes.PostRenderer = (&PlatformConfigInjector{
+		Definition:            newDefinitionPointer(),
+		ApplicationsNamespace: "opendatahub",
+		PlatformVersion:       "2.19.0",
+	}).Run
 
-	action := InjectPlatformConfig(newDefinition(), "opendatahub")
-	g.Expect(action(t.Context(), request)).To(Succeed())
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, serviceYAML)})
+	g.Expect(err).To(Succeed())
 
-	g.Expect(request.Resources).To(HaveLen(2))
+	g.Expect(resources).To(HaveLen(2))
 
-	configMap := findResource(t, request.Resources, "ConfigMap", "odh-synthetic-config")
+	configMap := findResource(t, resources, "ConfigMap", "odh-synthetic-config")
 	g.Expect(configMap.Object).To(SatisfyAll(
 		jq.Match(`.apiVersion == "v1"`),
 		jq.Match(`.kind == "ConfigMap"`),
 		jq.Match(`.metadata.name == "odh-synthetic-config"`),
 		jq.Match(`.metadata.namespace == "opendatahub"`),
+		jq.Match(`.metadata | has("annotations") | not`),
 		jq.Match(`.data.platformVersion == "2.19.0"`),
 		jq.Match(`.data | length == 1`),
 	))
 }
 
-// TestInjectPlatformConfigMergesExisting pins that a module-rendered
+// TestPlatformConfigInjectorMergesExisting pins that a module-rendered
 // ConfigMap of the platform config name keeps its module-owned keys,
 // has its platform version enforced, and has stale platform-managed
-// cert-manager keys removed — without a new resource being appended.
+// cert-manager keys removed — without a new resource being appended or
+// a rollout hash added.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_platform_config.go
 // (mergePlatformKeys), commit 5a1d17f57b32.
-func TestInjectPlatformConfigMergesExisting(t *testing.T) {
+func TestPlatformConfigInjectorMergesExisting(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	request := newRequest(resource(t, moduleConfigMapYAML))
-	setRelease(t, request, "2.20.1")
+	var render enginetypes.PostRenderer = (&PlatformConfigInjector{
+		Definition:            newDefinitionPointer(),
+		ApplicationsNamespace: "opendatahub",
+		PlatformVersion:       "2.20.1",
+	}).Run
 
-	action := InjectPlatformConfig(newDefinition(), "opendatahub")
-	g.Expect(action(t.Context(), request)).To(Succeed())
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, moduleConfigMapYAML)})
+	g.Expect(err).To(Succeed())
 
-	g.Expect(request.Resources).To(HaveLen(1))
+	g.Expect(resources).To(HaveLen(1))
 
-	configMap := findResource(t, request.Resources, "ConfigMap", "odh-synthetic-config")
+	configMap := findResource(t, resources, "ConfigMap", "odh-synthetic-config")
 	g.Expect(configMap.Object).To(SatisfyAll(
 		jq.Match(`.data.MODULE_KEY == "module-value"`),
 		jq.Match(`.data.platformVersion == "2.20.1"`),
 		jq.Match(`.data | has("CERT_MANAGER_ISSUER_REF_NAME") | not`),
 		jq.Match(`.metadata.namespace == "rendered-namespace"`),
+		jq.Match(`.metadata | has("annotations") | not`),
 	))
 }
 
-// TestInjectPlatformConfigReplacesMalformedData pins that a malformed
-// (non-string) data block is replaced by the platform keys alone.
+// TestPlatformConfigInjectorReplacesMalformedData pins that a
+// malformed (non-string) data block is replaced by the platform keys
+// alone.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_platform_config.go
 // (mergePlatformKeys, ignored NestedStringMap error), commit 5a1d17f57b32.
-func TestInjectPlatformConfigReplacesMalformedData(t *testing.T) {
+func TestPlatformConfigInjectorReplacesMalformedData(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	request := newRequest(resource(t, malformedDataConfigMapYAML))
-	setRelease(t, request, "2.20.1")
+	var render enginetypes.PostRenderer = (&PlatformConfigInjector{
+		Definition:            newDefinitionPointer(),
+		ApplicationsNamespace: "opendatahub",
+		PlatformVersion:       "2.20.1",
+	}).Run
 
-	action := InjectPlatformConfig(newDefinition(), "opendatahub")
-	g.Expect(action(t.Context(), request)).To(Succeed())
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, malformedDataConfigMapYAML)})
+	g.Expect(err).To(Succeed())
 
-	configMap := findResource(t, request.Resources, "ConfigMap", "odh-synthetic-config")
+	configMap := findResource(t, resources, "ConfigMap", "odh-synthetic-config")
 	g.Expect(configMap.Object).To(SatisfyAll(
 		jq.Match(`.data | length == 1`),
 		jq.Match(`.data.platformVersion == "2.20.1"`),
@@ -138,35 +155,38 @@ func TestInjectPlatformConfigReplacesMalformedData(t *testing.T) {
 	))
 }
 
-// TestInjectPlatformConfigIndexKindNameOnly pins that ConfigMaps are
-// matched by kind and name only — namespace-insensitive — and that a
-// later resource with the same name wins the merge.
+// TestPlatformConfigInjectorIndexKindNameOnly pins that ConfigMaps
+// are matched by kind and name only — namespace-insensitive — and
+// that a later resource with the same name wins the merge.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_platform_config.go
 // (indexConfigMapsByName), commit 5a1d17f57b32.
-func TestInjectPlatformConfigIndexKindNameOnly(t *testing.T) {
+func TestPlatformConfigInjectorIndexKindNameOnly(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	request := newRequest(
+	var render enginetypes.PostRenderer = (&PlatformConfigInjector{
+		Definition:            newDefinitionPointer(),
+		ApplicationsNamespace: "opendatahub",
+		PlatformVersion:       "2.19.0",
+	}).Run
+
+	resources, err := render(t.Context(), []unstructured.Unstructured{
 		resource(t, firstConfigMapYAML),
 		resource(t, secondConfigMapYAML),
-	)
-	setRelease(t, request, "2.19.0")
+	})
+	g.Expect(err).To(Succeed())
 
-	action := InjectPlatformConfig(newDefinition(), "opendatahub")
-	g.Expect(action(t.Context(), request)).To(Succeed())
+	g.Expect(resources).To(HaveLen(2))
 
-	g.Expect(request.Resources).To(HaveLen(2))
-
-	first := findResource(t, request.Resources[:1], "ConfigMap", "odh-synthetic-config")
+	first := findResource(t, resources[:1], "ConfigMap", "odh-synthetic-config")
 	g.Expect(first.Object).To(SatisfyAll(
 		jq.Match(`.data.MODULE_KEY == "first-value"`),
 		jq.Match(`.data | has("platformVersion") | not`),
 	))
 
-	second := findResource(t, request.Resources[1:], "ConfigMap", "odh-synthetic-config")
+	second := findResource(t, resources[1:], "ConfigMap", "odh-synthetic-config")
 	g.Expect(second.Object).To(SatisfyAll(
 		jq.Match(`.data.MODULE_KEY == "second-value"`),
 		jq.Match(`.data.platformVersion == "2.19.0"`),
