@@ -38,6 +38,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
@@ -136,6 +137,11 @@ type Runner struct {
 	owner       *v1alpha1.PlatformModuleDefinition
 	publication moduleowner.Outcome
 	applied     bool
+
+	waited           bool
+	waitCompleted    bool
+	waitTargets      []Target
+	waitPollInterval time.Duration
 }
 
 // New wires the runner with its service boundaries: the standard
@@ -163,6 +169,8 @@ func New(
 		ensure:          ensure,
 		apply:           apply,
 		stage:           stageNew,
+
+		waitPollInterval: defaultWaitPollInterval,
 	}
 }
 

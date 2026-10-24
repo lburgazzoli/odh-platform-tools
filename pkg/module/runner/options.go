@@ -27,6 +27,10 @@ import (
 // fallback.
 const DefaultPlatformType = "OpenDataHub"
 
+// DefaultWaitTimeout is the shared rollout-wait budget applied when
+// the invocation requests the wait without an explicit budget.
+const DefaultWaitTimeout = 30 * time.Second
+
 // Options are the invocation settings of one module run. They carry
 // no credentials and no duplicate kubeconfig flags: the standard
 // getter bound at composition supplies namespace, context, and every
@@ -66,6 +70,19 @@ type Options struct {
 	// minutes, and the orchestration derives the invocation context
 	// deadline from it.
 	Timeout time.Duration
+
+	// Wait requests the opt-in controller rollout wait after a
+	// successful deploy. It is false by default: apply completion
+	// alone is command success, and the default run performs no
+	// workload or Deployment-count check and never claims readiness.
+	Wait bool
+
+	// WaitTimeout is the shared budget of the requested wait across
+	// every selected controller Deployment, started after the apply.
+	// Zero means DefaultWaitTimeout; negative is invalid. The budget
+	// is a child of the overall invocation deadline and can never
+	// extend the remaining overall timeout.
+	WaitTimeout time.Duration
 }
 
 // validate reports whether the options are usable. Every failure is
@@ -82,6 +99,10 @@ func (o Options) validate() error {
 
 	if o.Timeout <= 0 {
 		return fmt.Errorf("%w: Timeout must be positive", ErrInvalidOptions)
+	}
+
+	if o.Wait && o.WaitTimeout < 0 {
+		return fmt.Errorf("%w: WaitTimeout must not be negative", ErrInvalidOptions)
 	}
 
 	return nil

@@ -25,9 +25,12 @@ import (
 
 // Run is the default apply-only orchestration: Load, then Render,
 // then Deploy, over one invocation context derived from the caller's
-// context and the options' timeout. It is the whole command on its
-// own — a successful apply is command success, with no convergence
-// check, no workload monitoring, and no readiness claim.
+// context and the options' timeout. The default run is the whole
+// command on its own — a successful apply is command success, with
+// no convergence check, no workload monitoring, and no readiness
+// claim. When Options.Wait is set, the opt-in controller rollout
+// wait runs once after the successful apply, over the same
+// still-live invocation context; see Wait.
 //
 // The caller's cancellation and the invocation settings are checked
 // before the invocation timer is constructed, so an already-cancelled
@@ -45,10 +48,10 @@ import (
 // is already discarded by the deploy service, and this orchestration
 // adds no logging of its own.
 //
-// An explicitly requested controller wait is a separate extension
-// layered after Deploy; this method performs and reports apply only.
-// Run requires a fresh Runner: it rejects a Runner whose stages were
-// already driven, directly or by a previous Run.
+// An explicitly requested controller wait is layered after Deploy
+// through Options.Wait; the default run performs and reports apply
+// only. Run requires a fresh Runner: it rejects a Runner whose
+// stages were already driven, directly or by a previous Run.
 func (r *Runner) Run(ctx context.Context) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return rejectedResult(), err
@@ -77,6 +80,15 @@ func (r *Runner) Run(ctx context.Context) (Result, error) {
 		return r.report(StageDeploy, err)
 	}
 
+	// The opt-in wait runs once, after the successful apply, over the
+	// same still-live invocation context; a wait failure is a runtime
+	// error that retains everything the deploy confirmed.
+	if r.options.Wait {
+		if err := r.Wait(ctx); err != nil {
+			return r.report(StageDeploy, err)
+		}
+	}
+
 	return r.report(StageDeploy, nil)
 }
 
@@ -101,6 +113,9 @@ func (r *Runner) report(attempted Stage, err error) (Result, error) {
 		Owner:          r.owner,
 		Publication:    publication,
 		ApplyCompleted: r.applied,
+		WaitRequested:  r.options.Wait,
+		WaitCompleted:  r.waitCompleted,
+		WaitTargets:    r.waitTargets,
 	}, err
 }
 

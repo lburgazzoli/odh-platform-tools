@@ -50,6 +50,16 @@ func (s Stage) preceding() Stage {
 	}
 }
 
+// Target is the safe identity of one waited controller Deployment:
+// namespace and name only, never spec, status, or image values.
+type Target struct {
+	// Namespace is the actual rendered namespace of the Deployment.
+	Namespace string
+
+	// Name is the Deployment's metadata.name.
+	Name string
+}
+
 // Result is the honest, apply-only outcome of one Run invocation. It
 // reports what the invocation confirmed — never readiness, never
 // source values, never fabricated counts.
@@ -89,4 +99,22 @@ type Result struct {
 	// first error report stand as partial state; this flag never
 	// claims workload convergence.
 	ApplyCompleted bool
+
+	// WaitRequested reports the invocation requested the opt-in
+	// controller wait. It is false — with every other wait field
+	// zero — whenever the wait was not requested: an unrequested wait
+	// never claims readiness.
+	WaitRequested bool
+
+	// WaitCompleted reports the requested wait observed every
+	// selected controller Deployment rolled out. It is false on a
+	// failed, timed-out, or cancelled wait, and it is the only
+	// readiness-adjacent claim the run can make — apply completion
+	// alone never sets it.
+	WaitCompleted bool
+
+	// WaitTargets lists the safe identities of the controller
+	// Deployments the requested wait covered. It is empty when no
+	// wait ran or the payload matched no target.
+	WaitTargets []Target
 }

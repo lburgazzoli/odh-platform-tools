@@ -22,3 +22,9 @@ import "errors"
 // out-of-order, repeated, or issued after a failed stage. Stage
 // violations are rejected before any input or output happens.
 var ErrStageSequence = errors.New("invalid runner stage sequence")
+
+// ErrWaitTargetMissing identifies a requested wait whose rendered
+// payload contains no controller Deployment matching the configured
+// target: the wait fails after the apply, never during local
+// definition validation.
+var ErrWaitTargetMissing = errors.New("no rendered controller deployment matched the wait target")

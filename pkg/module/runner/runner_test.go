@@ -240,6 +240,15 @@ type stubRunner struct {
 	connectCtx context.Context
 	ensureCtx  context.Context
 
+	// renderResult, when set, replaces the render stub's default
+	// payload; the wait tests select targets out of it.
+	renderResult []unstructured.Unstructured
+
+	// connection, when set, replaces the connect stub's placeholder
+	// connection; the wait tests drive polling through a fake
+	// client.
+	connection *cluster.Connection
+
 	// renderHook, connectHook, and ensureHook, when set, run inside
 	// the matching stub with the invocation context before it
 	// returns; the run tests use them to cancel the invocation at
@@ -309,6 +318,10 @@ func (s *stubRunner) render(
 		return nil, s.renderError
 	}
 
+	if s.renderResult != nil {
+		return s.renderResult, nil
+	}
+
 	return []unstructured.Unstructured{{Object: map[string]any{
 		"apiVersion": "v1",
 		"kind":       "ConfigMap",
@@ -327,6 +340,10 @@ func (s *stubRunner) connect(
 
 	if s.connectHook != nil {
 		s.connectHook(ctx)
+	}
+
+	if s.connection != nil {
+		return s.connection, nil
 	}
 
 	return testConnection(), s.connectError
