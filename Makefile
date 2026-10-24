@@ -59,6 +59,20 @@ test-integration: ## Run the offline integration suite (build tag: integration)
 .PHONY: coverage
 coverage: ## Run unit tests with coverage
 	go test -race -count=1 -coverprofile=cover.out ./...
+
+##@ E2E Testing
+
+.PHONY: test-e2e-compile
+test-e2e-compile: ## Compile the live e2e suite without running it (no cluster, no credentials)
+	go test -c -tags e2e -o /dev/null ./tests/e2e
+
+.PHONY: test-e2e-kind
+test-e2e-kind: ## Run the live e2e suite against an isolated, engine-owned Kind cluster
+	go test -race -count=1 -tags e2e -timeout 40m ./tests/e2e
+
+.PHONY: test-e2e-external
+test-e2e-external: ## Run the live e2e suite against a confirmed external cluster (ODH_PLATFORM_TOOLS_E2E_EXTERNAL_KUBECONFIG and _CONTEXT required)
+	ODH_PLATFORM_TOOLS_E2E_ENGINE=external go test -race -count=1 -tags e2e -timeout 40m ./tests/e2e
 	go tool cover -func=cover.out
 
 ##@ Linting

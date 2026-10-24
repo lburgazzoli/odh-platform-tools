@@ -38,6 +38,7 @@ func TestMain(m *testing.M) {
 		"github.com/lburgazzoli/odh-platform-tools/cmd")
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "building the CLI binary: %v\n", err)
 		os.Exit(1)
 	}
 
