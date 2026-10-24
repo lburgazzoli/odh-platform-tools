@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -54,10 +55,28 @@ var (
 	engineErr  error
 )
 
-// TestMain stops the lazily created engine after the suite, bounded,
-// and reports — never hides — a retained cluster. A failed teardown
-// fails the suite even when the tests themselves passed.
+// TestMain builds the real CLI binary the suite executes, then stops
+// the lazily created engine after the suite, bounded, and reports —
+// never hides — a retained cluster. A failed teardown fails the suite
+// even when the tests themselves passed.
 func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "odh-platform-tools-e2e-cli")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: creating the CLI build directory: %v\n", err)
+		os.Exit(1)
+	}
+	defer os.RemoveAll(dir)
+
+	cliBinary = filepath.Join(dir, "odh-platform-tools")
+
+	build := exec.Command("go", "build", "-o", cliBinary,
+		"github.com/lburgazzoli/odh-platform-tools/cmd")
+	build.Stderr = os.Stderr
+	if err := build.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: building the CLI binary: %v\n", err)
+		os.Exit(1)
+	}
+
 	code := m.Run()
 
 	if liveEngine != nil {
