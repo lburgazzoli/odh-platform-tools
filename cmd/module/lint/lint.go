@@ -51,6 +51,11 @@ func (e *ExitError) Error() string {
 // Unwrap preserves the underlying execution error identity.
 func (e *ExitError) Unwrap() error { return e.Err }
 
+// ExitCode reports the classified process exit status, implementing
+// the root command's neutral exit contract for both lint and run
+// outcomes.
+func (e *ExitError) ExitCode() int { return e.Code }
+
 // Classified execution failure categories of one lint invocation.
 const (
 	FailureCancelled      = "cancelled"

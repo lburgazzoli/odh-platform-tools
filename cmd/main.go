@@ -11,8 +11,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"k8s.io/cli-runtime/pkg/genericclioptions"
+
 	climodule "github.com/lburgazzoli/odh-platform-tools/cmd/module"
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
+	runcli "github.com/lburgazzoli/odh-platform-tools/cmd/module/run"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module"
 )
 
@@ -20,21 +23,29 @@ func main() {
 	os.Exit(run())
 }
 
+// exitCoder is the command-neutral exit-code contract: any command
+// error exposing the process exit status of its classified outcome.
+// Both lint's and run's ExitError implement it, so the root never
+// inspects a command-specific type.
+type exitCoder interface {
+	ExitCode() int
+}
+
 // run executes the command and returns its process exit status.
 func run() int {
 	// Process signals become context cancellation so an interrupted
-	// lint is classified as cancellation, not a crash.
+	// lint or run is classified as cancellation, not a crash.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	command := NewRootCommand(module.NewLinter().Run)
+	command := NewRootCommand(module.NewLinter().Run, runcli.Action)
 
 	if err := command.ExecuteContext(ctx); err != nil {
-		// Classified lint outcomes already wrote their report; every
+		// Classified outcomes already wrote their report; every
 		// other command or flag failure is a usage failure on stderr.
-		var exitErr *lint.ExitError
-		if errors.As(err, &exitErr) {
-			return exitErr.Code
+		var coder exitCoder
+		if errors.As(err, &coder) {
+			return coder.ExitCode()
 		}
 
 		fmt.Fprintln(os.Stderr, "module:", err)
@@ -46,36 +57,46 @@ func run() int {
 }
 
 // NewRootCommand returns the binary root command with exactly one
-// registered command tree, `module lint`. Deferred commands such as
-// `module run` are not stubbed: Cobra rejects them as unknown
-// commands, and legacy descriptor override flags are rejected as
-// unknown flags.
-func NewRootCommand(run lint.Run) *cobra.Command {
+// registered command tree, `module lint` and `module run`. The
+// standard Kubernetes ConfigFlags are registered once here, on the
+// root's persistent flags, and the same getter is forwarded to the
+// run composition: subcommands never register their own
+// kubeconfig/context/namespace/auth flags. Legacy descriptor
+// override flags are rejected as unknown flags.
+func NewRootCommand(lintRun lint.Run, runRun runcli.Run) *cobra.Command {
+	flags := genericclioptions.NewConfigFlags(true)
+
 	root := &cobra.Command{
 		Use:   "odh-platform-tools",
 		Short: "Offline platform module tooling",
-		// Reports and failure lines are printed by the lint command
-		// itself; usage and flag errors are printed by main.
+		// Reports and failure lines are printed by the commands
+		// themselves; usage and flag errors are printed by main.
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 
-	root.AddCommand(climodule.NewModuleCommand(run))
+	// Standard kubectl-style flags, inherited by every subcommand:
+	// --kubeconfig, --context, --cluster, --server, --namespace,
+	// --user, --token, --tls-* and friends.
+	flags.AddFlags(root.PersistentFlags())
+
+	root.AddCommand(climodule.NewModuleCommand(lintRun, runRun, flags))
 
 	return root
 }
 
 // ExitCode maps one command execution error to its process exit
-// status: classified lint outcomes keep their own code, and every
-// other command or flag failure is a usage failure.
+// status: classified outcomes keep their own code through the
+// neutral exit contract, and every other command or flag failure is
+// a usage failure.
 func ExitCode(err error) int {
 	if err == nil {
 		return lint.ExitSuccess
 	}
 
-	var exitErr *lint.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.Code
+	var coder exitCoder
+	if errors.As(err, &coder) {
+		return coder.ExitCode()
 	}
 
 	return lint.ExitUsage

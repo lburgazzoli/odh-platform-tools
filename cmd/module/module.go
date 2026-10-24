@@ -1,26 +1,34 @@
 // Package module wires the `module` command group of the binary. It
-// owns the group command only: the `lint` subcommand lives in
-// cmd/module/lint, and every business execution goes through the
-// injected action boundary.
+// owns the group command only: the `lint` and `run` subcommands live
+// in their own packages, and every business execution goes through
+// the injected action boundaries.
 package module
 
 import (
 	"github.com/spf13/cobra"
 
+	"k8s.io/cli-runtime/pkg/genericclioptions"
+
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
+	"github.com/lburgazzoli/odh-platform-tools/cmd/module/run"
 )
 
-// NewModuleCommand returns the `module` command group with exactly
-// one registered subcommand, `lint`.
-func NewModuleCommand(run lint.Run) *cobra.Command {
+// NewModuleCommand returns the `module` command group with its two
+// registered subcommands, `lint` and `run`. The standard getter the
+// root registered is forwarded to the run composition; lint is
+// offline and never resolves it.
+func NewModuleCommand(
+	lintRun lint.Run,
+	runRun run.Run,
+	getter genericclioptions.RESTClientGetter,
+) *cobra.Command {
 	group := &cobra.Command{
 		Use:   "module",
 		Short: "Offline platform module tooling",
 		Long: "Offline tooling for platform module definitions: lint " +
 			"checks a module definition and its rendered manifests " +
-			"without a cluster.",
-		// Deferred subcommands such as `run` are rejected as unknown
-		// commands; a bare `module` shows this help.
+			"without a cluster, and run installs one module definition " +
+			"and its controller package onto a cluster.",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			return command.Help()
@@ -29,7 +37,8 @@ func NewModuleCommand(run lint.Run) *cobra.Command {
 		SilenceErrors: true,
 	}
 
-	group.AddCommand(lint.NewLintCommand(run))
+	group.AddCommand(lint.NewLintCommand(lintRun))
+	group.AddCommand(run.NewRunCommand(runRun, getter))
 
 	return group
 }
