@@ -114,14 +114,14 @@ type PlatformModuleDefinitionSpec struct {
 }
 
 // Instance identifies the module's custom resource: the resource type
-// the controller owns and the instance name a runner uses to create
-// and look up the resource. Neither is a rendering input: the
-// renderer names the in-memory module instance and the Helm release
-// after metadata.name.
+// the module controller owns and the instance name that custom
+// resource would carry. Both are descriptive identity: nothing in
+// this tooling creates or looks up the custom resource, and rendering
+// never uses them — the Helm release name comes from metadata.name.
 type Instance struct {
 	// Name is the module instance name. It is empty when the
 	// definition omits it or authors an explicit empty string; both
-	// are equivalent here, and Normalize then defaults it to
+	// are equivalent here, and the loader then defaults it to
 	// metadata.name.
 	//
 	// +optional
@@ -160,8 +160,10 @@ func (t ModuleType) String() string {
 }
 
 // Manifests selects a rendering backend and its single local input
-// directory. The block matching format is required; the other block
-// must be absent.
+// directory. The block matching format may be omitted — its entry
+// path then defaults to the definition file's own directory — or
+// given with an empty path for the same co-located default; the other
+// block must be absent.
 type Manifests struct {
 	// +required
 	Format Format `json:"format"`
@@ -231,8 +233,9 @@ type Controller struct {
 type ControllerDeployment struct {
 	// Name is the controller Deployment name. It is empty when the
 	// definition omits it or authors an explicit empty string; both
-	// are equivalent here, and a runner falls back to the Helm
-	// release or module name.
+	// are equivalent here, and the run then falls back to the
+	// module's metadata.name when selecting the controller
+	// Deployment.
 	//
 	// +optional
 	Name string `json:"name,omitzero"`
@@ -252,7 +255,7 @@ type ContainerDefinition struct {
 	// Name is the main container name. It is empty when the
 	// definition omits it or authors an explicit empty string; both
 	// are equivalent here, and the main container then defaults to
-	// DefaultMainContainerName during Normalize.
+	// DefaultMainContainerName when the loader applies its defaults.
 	//
 	// +optional
 	Name string `json:"name,omitzero"`

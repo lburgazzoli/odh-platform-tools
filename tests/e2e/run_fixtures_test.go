@@ -27,14 +27,19 @@ package e2e
 // pipeline image, a whole-token related-image reference, or an
 // intentionally unpullable tag for nonconvergence.
 //
-// The pinned generic workload image is the registry.k8s.io pause
-// image: a successful no-op init container and a long-running main
-// container, with no custom controller build or publication.
+// The pinned generic workload image is digest-pinned busybox: the
+// chart authors one successful no-op init container command and one
+// long-running main container command for it, with no custom
+// controller build or publication.
 
 const (
-	// pauseImage is the recorded pause image pin supporting both a
-	// successful init and a long-running main container.
-	pauseImage = "registry.k8s.io/pause@sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a"
+	// workloadImage is the recorded generic workload image pin: with
+	// the chart's per-container commands it supports both a
+	// successful init container (`sh -c "exit 0"`) and a long-running
+	// main container (`sleep infinity`), with no custom controller
+	// build or publication. Injection replaces images only, so the
+	// chart authors the commands once for both containers.
+	workloadImage = "busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
 
 	// unpullableImage is an intentionally nonexistent tag: workload
 	// pods stay pending forever, proving default runs never wait for
@@ -42,8 +47,10 @@ const (
 	unpullableImage = "registry.k8s.io/pause:no-such-tag-exists"
 
 	// sourceImageRef is a whole-token related-image reference the
-	// file or environment source resolves.
-	sourceImageRef = "quay.io/example/alpha:v1"
+	// file or environment source resolves: only a complete {{NAME}}
+	// token resolves, and resolution is never recursive. The value is
+	// YAML-quoted because a bare {{ opens a flow mapping.
+	sourceImageRef = "'{{RELATED_IMAGE_ALPHA}}'"
 
 	// helmDefinitionTemplate is the Helm scenario definition.
 	helmDefinitionTemplate = `apiVersion: config.opendatahub.io/v1alpha1
@@ -122,7 +129,9 @@ replicas: 1
 	// container whose LOG_LEVEL starts as a valueFrom reference the
 	// injector replaces, and a replica count the authored values
 	// tune. Placement is the release namespace the template
-	// requests.
+	// requests. The commands are authored per container for the
+	// pinned generic workload image: the init exits successfully and
+	// the main runs indefinitely — injection replaces images only.
 	deploymentTemplate = `apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -142,9 +151,11 @@ spec:
       initContainers:
       - name: installer
         image: registry.k8s.io/pause:3.10
+        command: ["sh", "-c", "exit 0"]
       containers:
       - name: manager
         image: registry.k8s.io/pause:3.10
+        command: ["sleep", "infinity"]
         env:
         - name: LOG_LEVEL
           valueFrom:
@@ -374,9 +385,11 @@ spec:
       initContainers:
       - name: installer
         image: registry.k8s.io/pause:3.10
+        command: ["sh", "-c", "exit 0"]
       containers:
       - name: manager
         image: registry.k8s.io/pause:3.10
+        command: ["sleep", "infinity"]
         env:
         - name: LOG_LEVEL
           valueFrom:

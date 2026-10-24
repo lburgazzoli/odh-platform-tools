@@ -31,6 +31,7 @@ import (
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	runcli "github.com/lburgazzoli/odh-platform-tools/cmd/module/run"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // The live scenarios are sequential by design: they share one engine
@@ -51,7 +52,7 @@ func TestRunLiveHelmAppliesAndOwns(t *testing.T) {
 	s := newScenario(t)
 	s.failClosed(t)
 	s.createNamespace(t, s.targetNS)
-	s.writeHelmModule(t, pauseImage, nil)
+	s.writeHelmModule(t, workloadImage, nil)
 
 	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA=quay.io/example/alpha:v3\n")
 
@@ -62,7 +63,7 @@ func TestRunLiveHelmAppliesAndOwns(t *testing.T) {
 	g.Expect(report.Status).To(Equal(runcli.StatusApplied))
 	g.Expect(report.ApplyCompleted).To(BeTrue())
 	g.Expect(report.Wait).To(BeNil())
-	g.Expect(report.Publication).To(Equal("applied"))
+	g.Expect(report.Publication).To(Equal("confirmed"))
 	g.Expect(report.Owner).NotTo(BeNil())
 	g.Expect(report.Owner.Name).To(Equal(s.name))
 	g.Expect(report.Owner.Kind).To(Equal("PlatformModuleDefinition"))
@@ -76,7 +77,7 @@ func TestRunLiveHelmAppliesAndOwns(t *testing.T) {
 	definition := s.definition(t)
 
 	g.Expect(definition.UID).To(Equal(types.UID(report.Owner.UID)))
-	g.Expect(definition.Spec.Manifests.Format).To(Equal("helm"))
+	g.Expect(definition.Spec.Manifests.Format).To(Equal(v1alpha1.FormatHelm))
 	g.Expect(definition.Spec.Manifests.Helm.Path).To(Equal("./manifests/chart"))
 	g.Expect(string(definition.Spec.Manifests.Helm.Values["message"].Raw)).To(Equal(`"authored-value"`))
 
@@ -101,8 +102,8 @@ func TestRunLiveHelmAppliesAndOwns(t *testing.T) {
 	installer := containerByName(t, deployment.Spec.Template.Spec, "installer")
 	manager := containerByName(t, deployment.Spec.Template.Spec, "manager")
 
-	g.Expect(installer.Image).To(Equal(pauseImage))
-	g.Expect(manager.Image).To(Equal(pauseImage))
+	g.Expect(installer.Image).To(Equal(workloadImage))
+	g.Expect(manager.Image).To(Equal(workloadImage))
 
 	level, present := envVar(manager, "LOG_LEVEL")
 	g.Expect(present).To(BeTrue())
@@ -177,7 +178,7 @@ func TestRunLiveHelmSpecUpdateAcrossNamespaces(t *testing.T) {
 	s := newScenario(t)
 	s.failClosed(t)
 	s.createNamespace(t, s.targetNS)
-	s.writeHelmModule(t, pauseImage, nil)
+	s.writeHelmModule(t, workloadImage, nil)
 
 	first, _, exitCode := s.runCLI(t)
 
@@ -194,7 +195,7 @@ func TestRunLiveHelmSpecUpdateAcrossNamespaces(t *testing.T) {
 	secondNS := "run2-" + s.suffix
 	s.createNamespace(t, secondNS)
 	s.runNS = secondNS
-	s.writeHelmModule(t, pauseImage, nil)
+	s.writeHelmModule(t, workloadImage, nil)
 
 	second, _, exitCode := s.runCLI(t)
 
@@ -255,7 +256,7 @@ func TestRunLiveKustomizeApplies(t *testing.T) {
 	s := newScenario(t)
 	s.failClosed(t)
 	s.createNamespace(t, s.targetNS)
-	s.writeKustomizeModule(t, pauseImage)
+	s.writeKustomizeModule(t, workloadImage)
 
 	report, _, exitCode := s.runCLI(t)
 
@@ -272,8 +273,8 @@ func TestRunLiveKustomizeApplies(t *testing.T) {
 	installer := containerByName(t, deployment.Spec.Template.Spec, "installer")
 	manager := containerByName(t, deployment.Spec.Template.Spec, "manager")
 
-	g.Expect(installer.Image).To(Equal(pauseImage))
-	g.Expect(manager.Image).To(Equal(pauseImage))
+	g.Expect(installer.Image).To(Equal(workloadImage))
+	g.Expect(manager.Image).To(Equal(workloadImage))
 
 	level, present := envVar(manager, "LOG_LEVEL")
 	g.Expect(present).To(BeTrue())
@@ -314,7 +315,7 @@ func TestRunLiveForeignAdoption(t *testing.T) {
 	g.Expect(engine(t).Client().Create(t.Context(), foreign)).To(Succeed())
 	s.track(t, configMapGVK, s.targetNS, "adopted-cm")
 
-	s.writeHelmModule(t, pauseImage, map[string]string{
+	s.writeHelmModule(t, workloadImage, map[string]string{
 		"foreign-cm.yaml": foreignConfigMapTemplate,
 	})
 
@@ -342,7 +343,7 @@ func TestRunLiveReservedPayloadRejectedAtRender(t *testing.T) {
 
 	s := newScenario(t)
 	s.failClosed(t)
-	s.writeHelmModule(t, pauseImage, map[string]string{
+	s.writeHelmModule(t, workloadImage, map[string]string{
 		"reserved.yaml": reservedResourceTemplate,
 	})
 
@@ -367,15 +368,16 @@ func TestRunLiveReservedPayloadRejectedAtRender(t *testing.T) {
 
 // TestRunLiveInvalidPayloadRetainsOwner proves a real admission
 // failure is bounded and reported as partial state: the owner stays
-// confirmed, the objects applied before the failure exist, and the
-// workload after it was never applied.
+// confirmed, the payload applies continue past the rejected object
+// (the framework deploys with continue-on-error), the valid objects
+// stand, and only the object the server rejected is absent.
 func TestRunLiveInvalidPayloadRetainsOwner(t *testing.T) {
 	g := NewWithT(t)
 
 	s := newScenario(t)
 	s.failClosed(t)
 	s.createNamespace(t, s.targetNS)
-	s.writeHelmModule(t, pauseImage, map[string]string{
+	s.writeHelmModule(t, workloadImage, map[string]string{
 		"invalid-cm.yaml": invalidConfigMapTemplate,
 	})
 
@@ -388,7 +390,7 @@ func TestRunLiveInvalidPayloadRetainsOwner(t *testing.T) {
 	g.Expect(report.Attempted).To(Equal("deploy"))
 	g.Expect(report.Completed).To(Equal("render"))
 	g.Expect(report.Owner).NotTo(BeNil())
-	g.Expect(report.Publication).To(Equal("applied"))
+	g.Expect(report.Publication).To(Equal("confirmed"))
 	g.Expect(report.ApplyCompleted).To(BeFalse())
 
 	// The confirmed owner is retained on the server.
@@ -397,16 +399,20 @@ func TestRunLiveInvalidPayloadRetainsOwner(t *testing.T) {
 
 	s.trackRunObjects(t)
 
-	// The resources sorted ahead of the invalid ConfigMap exist;
-	// the Deployment sorted after it does not.
-	g.Expect(s.configMap(t, s.targetNS, "values-cm").Data["message"]).To(Equal("authored-value"))
-
-	deployment := &unstructured.Unstructured{}
-	deployment.SetGroupVersionKind(deploymentGVK)
+	// The object the server rejected is absent; everything else the
+	// action could apply stands as partial state.
+	rejected := &unstructured.Unstructured{}
+	rejected.SetGroupVersionKind(configMapGVK)
 
 	err := engine(t).Client().Get(t.Context(),
-		crclient.ObjectKey{Namespace: s.targetNS, Name: "synthetic-controller"}, deployment)
+		crclient.ObjectKey{Namespace: s.targetNS, Name: "invalid-cm"}, rejected)
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+
+	g.Expect(s.configMap(t, s.targetNS, "values-cm").Data["message"]).To(Equal("authored-value"))
+
+	deployment := s.deployment(t, s.targetNS, "synthetic-controller")
+	manager := containerByName(t, deployment.Spec.Template.Spec, "manager")
+	g.Expect(manager.Image).To(Equal(workloadImage))
 }
 
 // TestRunLiveDefaultDoesNotWaitForWorkload proves default command
@@ -452,7 +458,7 @@ func TestRunLiveWaitCompletesRollout(t *testing.T) {
 
 	s.writeHelmModule(t, sourceImageRef, nil)
 
-	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA="+pauseImage+"\n")
+	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA="+workloadImage+"\n")
 
 	report, _, exitCode := s.runCLI(t,
 		"--related-images-file", imagesFile,
@@ -477,12 +483,13 @@ func TestRunLiveWaitCompletesRollout(t *testing.T) {
 
 	manager := containerByName(t,
 		s.deployment(t, s.targetNS, "synthetic-controller").Spec.Template.Spec, "manager")
-	g.Expect(manager.Image).To(Equal(pauseImage))
+	g.Expect(manager.Image).To(Equal(workloadImage))
 }
 
 // TestRunLiveWaitShortTimeoutRetainsOwner proves a wait that cannot
-// complete within its explicit budget fails the command as a runtime
-// failure while the owner and the apply completion stay confirmed.
+// complete within its explicit budget fails the command — the
+// deadline classifies as a cancellation, which always wins — while
+// the owner and the apply completion stay confirmed.
 func TestRunLiveWaitShortTimeoutRetainsOwner(t *testing.T) {
 	g := NewWithT(t)
 
@@ -504,7 +511,7 @@ func TestRunLiveWaitShortTimeoutRetainsOwner(t *testing.T) {
 	g.Expect(exitCode).To(Equal(runcli.ExitFailure))
 	g.Expect(report.Status).To(Equal(runcli.StatusFailed))
 	g.Expect(report.Failure).NotTo(BeNil())
-	g.Expect(report.Failure.Category).To(Equal(runcli.FailureRuntime))
+	g.Expect(report.Failure.Category).To(Equal(runcli.FailureCancelled))
 	g.Expect(report.Owner).NotTo(BeNil())
 	g.Expect(report.ApplyCompleted).To(BeTrue())
 	g.Expect(report.Wait).NotTo(BeNil())

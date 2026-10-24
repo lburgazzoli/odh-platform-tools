@@ -42,6 +42,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -61,7 +62,6 @@ var (
 	namespaceGVK  = schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Namespace"}
 	crdGVK        = apiextensionsv1.SchemeGroupVersion.WithKind("CustomResourceDefinition")
 	configMapGVK  = corev1.SchemeGroupVersion.WithKind("ConfigMap")
-	deploymentGVK = appsv1.SchemeGroupVersion.WithKind("Deployment")
 )
 
 // cliBinary is the real CLI the suite executes, built once by
@@ -236,7 +236,9 @@ func sortedKeys(entries map[string]string) []string {
 // failClosed proves the scenario's identities are unused before any
 // CLI call: the definition, the payload CRD, and both namespaces must
 // be absent. Any hit is a foreign object — on an external cluster
-// especially — and the scenario refuses to run over it.
+// especially — and the scenario refuses to run over it. A kind the
+// server does not serve yet is absent too: on a fresh cluster the
+// definition CRD is only bootstrapped by the first run.
 func (s *scenario) failClosed(t *testing.T) {
 	t.Helper()
 
@@ -265,9 +267,15 @@ func (s *scenario) failClosed(t *testing.T) {
 				check.what, check.name)
 		}
 
-		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
-			"checking the absence of the %s %q", check.what, check.name)
+		g.Expect(isAbsent(err)).To(BeTrue(),
+			"checking the absence of the %s %q: %v", check.what, check.name, err)
 	}
+}
+
+// isAbsent reports whether a lookup error proves the object cannot
+// exist: a NotFound status, or the kind itself not being served yet.
+func isAbsent(err error) bool {
+	return apierrors.IsNotFound(err) || meta.IsNoMatchError(err)
 }
 
 // createNamespace creates one namespace the scenario owns: tracked
