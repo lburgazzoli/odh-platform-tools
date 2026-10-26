@@ -169,10 +169,13 @@ func TestWaitForCRDToBeEstablishedRequiresBothConditions(t *testing.T) {
 	g.Expect(script.requestCount("widgets.example.com")).To(BeNumerically(">=", 2))
 }
 
-// TestWaitForCRDToBeEstablishedHonorsPollInterval pins that the
-// configured interval bounds the delay between polls: a wait whose
-// second observation succeeds takes at least one interval, and a
-// tightened interval reaches it well inside the default.
+// TestWaitForCRDToBeEstablishedHonorsPollInterval pins the option
+// resolution through behavior: a wait whose second observation
+// succeeds takes at least one configured interval, stays well inside
+// the default when the interval is tightened, and non-positive
+// intervals and nil options alongside the real one change nothing —
+// a zero or negative interval would collapse the delay, a fall-back
+// to the default would exceed the bound.
 func TestWaitForCRDToBeEstablishedHonorsPollInterval(t *testing.T) {
 	t.Parallel()
 
@@ -187,7 +190,11 @@ func TestWaitForCRDToBeEstablishedHonorsPollInterval(t *testing.T) {
 
 	start := time.Now()
 	g.Expect(WaitForCRDToBeEstablished(
-		t.Context(), client, "widgets.example.com", WithPollInterval(50*time.Millisecond),
+		t.Context(), client, "widgets.example.com",
+		WithPollInterval(50*time.Millisecond),
+		WithPollInterval(0),
+		WithPollInterval(-time.Second),
+		WaitOption(nil),
 	)).To(Succeed())
 	elapsed := time.Since(start)
 
@@ -227,33 +234,4 @@ func TestWaitForCRDToBeEstablishedHonorsCancellation(t *testing.T) {
 	cancel()
 
 	g.Expect(WaitForCRDToBeEstablished(ctx, client, "widgets.example.com")).To(MatchError(context.Canceled))
-}
-
-// TestWaitOptionsDefault pins the recorded default poll interval.
-func TestWaitOptionsDefault(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	options := newOptions()
-
-	g.Expect(options.PollInterval).To(Equal(DefaultPollInterval))
-}
-
-// TestWaitOptionsOverrides proves the poll interval is selectable and
-// that non-positive values and nil options keep the default.
-func TestWaitOptionsOverrides(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	options := newOptions(WithPollInterval(10 * time.Millisecond))
-	g.Expect(options.PollInterval).To(Equal(10 * time.Millisecond))
-
-	ignored := newOptions(
-		nil,
-		WithPollInterval(0),
-		WithPollInterval(-time.Second),
-	)
-	g.Expect(ignored.PollInterval).To(Equal(DefaultPollInterval))
 }

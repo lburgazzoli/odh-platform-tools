@@ -45,21 +45,6 @@ func (opts WaitOptions) ApplyTo(target *WaitOptions) {
 // recorded defaults; a nil option is ignored.
 type WaitOption = option.Option[WaitOptions]
 
-// newOptions applies the options over the recorded defaults.
-func newOptions(opts ...WaitOption) WaitOptions {
-	defaults := WaitOptions{
-		PollInterval: DefaultPollInterval,
-	}
-
-	for _, opt := range opts {
-		if opt != nil {
-			opt.ApplyTo(&defaults)
-		}
-	}
-
-	return defaults
-}
-
 // WithPollInterval sets the delay between establishment polls; the
 // first poll stays immediate. A non-positive interval is ignored,
 // keeping the default.

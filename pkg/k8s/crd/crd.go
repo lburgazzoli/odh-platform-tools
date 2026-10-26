@@ -44,7 +44,15 @@ func WaitForCRDToBeEstablished(
 	name string,
 	opts ...WaitOption,
 ) error {
-	options := newOptions(opts...)
+	options := WaitOptions{
+		PollInterval: DefaultPollInterval,
+	}
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt.ApplyTo(&options)
+		}
+	}
 
 	return wait.PollUntilContextCancel(ctx, options.PollInterval, true, func(ctx context.Context) (bool, error) {
 		var crd apiextensionsv1.CustomResourceDefinition
