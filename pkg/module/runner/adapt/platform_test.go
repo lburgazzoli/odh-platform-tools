@@ -12,8 +12,8 @@ import (
 )
 
 // moduleConfigMapYAML is a module-rendered ConfigMap that happens to
-// carry the platform config name, with its own data key, a stale
-// platform version, and a stale cert-manager key.
+// carry the platform config name, with its own data key, binaryData,
+// a stale platform version, and a stale cert-manager key.
 const moduleConfigMapYAML = `apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -23,6 +23,8 @@ data:
   MODULE_KEY: module-value
   platformVersion: "1.0.0"
   CERT_MANAGER_ISSUER_REF_NAME: stale-issuer
+binaryData:
+  extra.bin: dGVzdA==
 `
 
 // malformedDataConfigMapYAML is a module-rendered ConfigMap of the
@@ -37,8 +39,8 @@ data:
 `
 
 // firstConfigMapYAML and secondConfigMapYAML are two ConfigMaps of
-// the same name in different namespaces, pinning the kind/name-only
-// index and its last-wins semantics.
+// the same name in different namespaces, pinning the
+// namespace-insensitive selection and its last-wins semantics.
 const firstConfigMapYAML = `apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -56,6 +58,26 @@ metadata:
   namespace: second-namespace
 data:
   MODULE_KEY: second-value
+`
+
+// wrongGroupConfigMapYAML is a ConfigMap lookalike of the platform
+// config name in a foreign group.
+const wrongGroupConfigMapYAML = `apiVersion: config.example.com/v1
+kind: ConfigMap
+metadata:
+  name: odh-synthetic-config
+data:
+  MODULE_KEY: wrong-group
+`
+
+// wrongVersionConfigMapYAML is a ConfigMap lookalike of the platform
+// config name in the wrong core version.
+const wrongVersionConfigMapYAML = `apiVersion: v2
+kind: ConfigMap
+metadata:
+  name: odh-synthetic-config
+data:
+  MODULE_KEY: wrong-version
 `
 
 // gateConfigMapYAML is a ConfigMap carrying the operator's upgrade-gate
@@ -137,6 +159,7 @@ func TestPlatformConfigInjectorMergesExisting(t *testing.T) {
 		jq.Match(`.data | has("CERT_MANAGER_ISSUER_REF_NAME") | not`),
 		jq.Match(`.metadata.namespace == "rendered-namespace"`),
 		jq.Match(`.metadata | has("annotations") | not`),
+		jq.Match(`.binaryData["extra.bin"] == "dGVzdA=="`),
 	))
 }
 
@@ -168,13 +191,13 @@ func TestPlatformConfigInjectorReplacesMalformedData(t *testing.T) {
 	))
 }
 
-// TestPlatformConfigInjectorIndexKindNameOnly pins that ConfigMaps
-// are matched by kind and name only — namespace-insensitive — and
-// that a later resource with the same name wins the merge.
+// TestPlatformConfigInjectorLastExactMatchWins pins that selection is
+// namespace-insensitive and the last exact match of the name wins the
+// merge.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_platform_config.go
-// (indexConfigMapsByName), commit 5a1d17f57b32.
-func TestPlatformConfigInjectorIndexKindNameOnly(t *testing.T) {
+// (indexConfigMapsByName last-wins), commit 5a1d17f57b32.
+func TestPlatformConfigInjectorLastExactMatchWins(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -202,6 +225,72 @@ func TestPlatformConfigInjectorIndexKindNameOnly(t *testing.T) {
 	second := findResource(t, resources[1:], "ConfigMap", "odh-synthetic-config")
 	g.Expect(second.Object).To(SatisfyAll(
 		jq.Match(`.data.MODULE_KEY == "second-value"`),
+		jq.Match(`.data.platformVersion == "2.19.0"`),
+	))
+}
+
+// TestPlatformConfigInjectorExactGVKSelection pins that only the exact
+// core/v1 ConfigMap group/version/kind is a candidate: same-name
+// lookalikes in a foreign group or wrong version never shadow an
+// earlier valid match, wherever they sit in the batch, and pass
+// through untouched with the batch order preserved.
+func TestPlatformConfigInjectorExactGVKSelection(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	var render enginetypes.PostRenderer = (&PlatformConfigInjector{
+		Definition:            newDefinitionPointer(),
+		ApplicationsNamespace: "opendatahub",
+		PlatformVersion:       "2.19.0",
+	}).Run
+
+	resources, err := render(t.Context(), []unstructured.Unstructured{
+		resource(t, firstConfigMapYAML),
+		resource(t, wrongGroupConfigMapYAML),
+		resource(t, wrongVersionConfigMapYAML),
+	})
+	g.Expect(err).To(Succeed())
+
+	g.Expect(resources).To(HaveLen(3))
+
+	first := findResource(t, resources[:1], "ConfigMap", "odh-synthetic-config")
+	g.Expect(first.Object).To(SatisfyAll(
+		jq.Match(`.data.MODULE_KEY == "first-value"`),
+		jq.Match(`.data.platformVersion == "2.19.0"`),
+	))
+
+	g.Expect(resources[1]).To(Equal(resource(t, wrongGroupConfigMapYAML)))
+	g.Expect(resources[2]).To(Equal(resource(t, wrongVersionConfigMapYAML)))
+}
+
+// TestPlatformConfigInjectorAppendsWithLookalikeOnly pins that a batch
+// containing only a wrong-GVK lookalike keeps it unchanged and appends
+// a real core/v1 platform config ConfigMap.
+func TestPlatformConfigInjectorAppendsWithLookalikeOnly(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	var render enginetypes.PostRenderer = (&PlatformConfigInjector{
+		Definition:            newDefinitionPointer(),
+		ApplicationsNamespace: "opendatahub",
+		PlatformVersion:       "2.19.0",
+	}).Run
+
+	resources, err := render(t.Context(), []unstructured.Unstructured{
+		resource(t, wrongGroupConfigMapYAML),
+	})
+	g.Expect(err).To(Succeed())
+
+	g.Expect(resources).To(HaveLen(2))
+	g.Expect(resources[0]).To(Equal(resource(t, wrongGroupConfigMapYAML)))
+
+	configMap := findResource(t, resources[1:], "ConfigMap", "odh-synthetic-config")
+	g.Expect(configMap.Object).To(SatisfyAll(
+		jq.Match(`.apiVersion == "v1"`),
+		jq.Match(`.kind == "ConfigMap"`),
+		jq.Match(`.metadata.namespace == "opendatahub"`),
 		jq.Match(`.data.platformVersion == "2.19.0"`),
 	))
 }

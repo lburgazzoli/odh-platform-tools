@@ -12,6 +12,7 @@ import (
 	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
 	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 
+	gvk "github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
@@ -49,22 +50,17 @@ var platformManagedCertManagerKeys = []string{
 	certManagerIstioCACertPathKey,
 }
 
-// PlatformConfigInjector is the engine post-renderer porting the
-// operator's injectPlatformConfig (internal/controller/modules/modules_controller_actions_platform_config.go)
-// for a single always-enabled module: the odh-<module>-config
-// ConfigMap is created in the applications namespace, or the
-// platform-managed keys are merged into an existing ConfigMap of the
-// same name rendered by the module. Existing module-owned data keys
-// are preserved.
+// PlatformConfigInjector is the engine post-renderer that creates or
+// merges the per-module platform config ConfigMap: the
+// odh-<module>-config ConfigMap is created in the applications
+// namespace, or the platform-managed keys are merged into an existing
+// ConfigMap of the same name rendered by the module. Existing
+// module-owned data keys are preserved.
 //
-// Upstream reads the platform version from the reconciliation
-// request's release; here the runner supplies the canonical parsed
-// version string directly, so no release plumbing is carried.
-//
-// Upstream additionally seeds cert-manager bootstrap keys on XKS
-// platforms; that bootstrap is a platform concern with no
-// one-shot-install analogue, so this port never sets them and only
-// removes stale ones.
+// An existing ConfigMap matches on the exact core/v1 ConfigMap
+// group/version/kind plus name — namespace-insensitive, with the last
+// exact match winning. The runner supplies the canonical parsed
+// platform version string directly, so no release plumbing is carried.
 type PlatformConfigInjector struct {
 	// Definition is the loaded module definition. Its name forms the
 	// ConfigMap name; the runner owns the definition's lifetime.
@@ -92,17 +88,20 @@ func (inj *PlatformConfigInjector) Run(
 ) ([]unstructured.Unstructured, error) {
 	log := logf.FromContext(ctx)
 
-	existingCMs := indexConfigMapsByName(resources)
-
 	name := inj.Definition.Name
 	cmName := platformConfigName(name)
 
-	if idx, ok := existingCMs[cmName]; ok {
-		log.V(1).Info("merging platform config into existing ConfigMap",
-			"module", name, "configmap", cmName)
-		mergePlatformKeys(&resources[idx], inj.PlatformVersion)
+	// One reverse search: the last exact core/v1 ConfigMap of the name
+	// wins, regardless of namespace. Same-name lookalikes of another
+	// group/version are not candidates.
+	for i := len(resources) - 1; i >= 0; i-- {
+		if resources[i].GroupVersionKind() == gvk.ConfigMap && resources[i].GetName() == cmName {
+			log.V(1).Info("merging platform config into existing ConfigMap",
+				"module", name, "configmap", cmName)
+			mergePlatformKeys(&resources[i], inj.PlatformVersion)
 
-		return resources, nil
+			return resources, nil
+		}
 	}
 
 	log.V(1).Info("creating platform config ConfigMap",
@@ -114,6 +113,7 @@ func (inj *PlatformConfigInjector) Run(
 	if err != nil {
 		return nil, fmt.Errorf("converting platform config ConfigMap for %s: %w", name, err)
 	}
+	u.SetGroupVersionKind(gvk.ConfigMap)
 
 	resources = append(resources, *u)
 
@@ -126,14 +126,10 @@ func platformConfigName(moduleName string) string {
 	return platformConfigPrefix + moduleName + platformConfigSuffix
 }
 
-// buildPlatformConfigMap ports the operator's
-// buildPlatformConfigMap without the XKS extra params.
+// buildPlatformConfigMap returns the platform config ConfigMap; the
+// caller stamps its group/version/kind from the shared facade.
 func buildPlatformConfigMap(name string, namespace string, platformVersion string) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       "ConfigMap",
-		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
@@ -162,18 +158,4 @@ func mergePlatformKeys(u *unstructured.Unstructured, platformVersion string) {
 	data[platformVersionKey] = platformVersion
 
 	_ = unstructured.SetNestedStringMap(u.Object, data, "data")
-}
-
-// indexConfigMapsByName ports the operator's
-// indexConfigMapsByName: ConfigMaps are matched by kind and name
-// only — no group, version, or namespace — and a later resource with
-// the same name wins.
-func indexConfigMapsByName(resources []unstructured.Unstructured) map[string]int {
-	idx := make(map[string]int)
-	for i := range resources {
-		if resources[i].GetKind() == "ConfigMap" {
-			idx[resources[i].GetName()] = i
-		}
-	}
-	return idx
 }
