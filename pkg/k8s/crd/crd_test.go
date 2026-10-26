@@ -14,12 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package k8s
+package crd
 
 import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -48,11 +49,11 @@ func trueConditions(
 }
 
 // crdScript is the scripted CRD read behavior behind the wait's
-// client: per-name frames of condition sets, served in order with the
-// last frame sticky, and a per-name call counter. Names without
-// frames fall through to the underlying fake client — a stored
-// absence surfaces as a real NotFound. The scripted reads honor the
-// invocation context, like a real client.
+// client: frames of condition sets served in order with the last
+// frame sticky, and a call counter. A name without frames falls
+// through to the underlying fake client — a stored absence surfaces
+// as a real NotFound. The scripted reads honor the invocation
+// context, like a real client.
 type crdScript struct {
 	mu     sync.Mutex
 	calls  map[string]int
@@ -119,7 +120,7 @@ func newCRDScriptClient(
 	return client, script
 }
 
-// requestCount returns how many reads a CRD name received.
+// requestCount returns how many reads the name received.
 func (s *crdScript) requestCount(name string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -142,7 +143,9 @@ func TestWaitForCRDToBeEstablishedPolls(t *testing.T) {
 		},
 	})
 
-	g.Expect(WaitForCRDToBeEstablished(t.Context(), client, "widgets.example.com")).To(Succeed())
+	g.Expect(WaitForCRDToBeEstablished(
+		t.Context(), client, "widgets.example.com", WithPollInterval(time.Millisecond),
+	)).To(Succeed())
 	g.Expect(script.requestCount("widgets.example.com")).To(BeNumerically(">=", 2))
 }
 
@@ -160,32 +163,36 @@ func TestWaitForCRDToBeEstablishedRequiresBothConditions(t *testing.T) {
 		},
 	})
 
-	g.Expect(WaitForCRDToBeEstablished(t.Context(), client, "widgets.example.com")).To(Succeed())
+	g.Expect(WaitForCRDToBeEstablished(
+		t.Context(), client, "widgets.example.com", WithPollInterval(time.Millisecond),
+	)).To(Succeed())
 	g.Expect(script.requestCount("widgets.example.com")).To(BeNumerically(">=", 2))
 }
 
-// TestWaitForCRDToBeEstablishedWaitsForAllNames pins that every
-// requested name must serve before the wait completes: the second
-// name's late establishment holds the whole wait.
-func TestWaitForCRDToBeEstablishedWaitsForAllNames(t *testing.T) {
+// TestWaitForCRDToBeEstablishedHonorsPollInterval pins that the
+// configured interval bounds the delay between polls: a wait whose
+// second observation succeeds takes at least one interval, and a
+// tightened interval reaches it well inside the default.
+func TestWaitForCRDToBeEstablishedHonorsPollInterval(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	client, script := newCRDScriptClient(t, map[string][][]apiextensionsv1.CustomResourceDefinitionCondition{
+	client, _ := newCRDScriptClient(t, map[string][][]apiextensionsv1.CustomResourceDefinitionCondition{
 		"widgets.example.com": {
-			trueConditions(apiextensionsv1.Established, apiextensionsv1.NamesAccepted),
-		},
-		"gadgets.example.com": {
 			trueConditions(apiextensionsv1.NamesAccepted),
 			trueConditions(apiextensionsv1.Established, apiextensionsv1.NamesAccepted),
 		},
 	})
 
+	start := time.Now()
 	g.Expect(WaitForCRDToBeEstablished(
-		t.Context(), client, "widgets.example.com", "gadgets.example.com",
+		t.Context(), client, "widgets.example.com", WithPollInterval(50*time.Millisecond),
 	)).To(Succeed())
-	g.Expect(script.requestCount("gadgets.example.com")).To(BeNumerically(">=", 2))
+	elapsed := time.Since(start)
+
+	g.Expect(elapsed).To(BeNumerically(">=", 50*time.Millisecond))
+	g.Expect(elapsed).To(BeNumerically("<", DefaultPollInterval))
 }
 
 // TestWaitForCRDToBeEstablishedPreservesNotFoundIdentity pins that a
@@ -222,14 +229,31 @@ func TestWaitForCRDToBeEstablishedHonorsCancellation(t *testing.T) {
 	g.Expect(WaitForCRDToBeEstablished(ctx, client, "widgets.example.com")).To(MatchError(context.Canceled))
 }
 
-// TestWaitForCRDToBeEstablishedRequiresNames pins the empty-input
-// contract: no CRDs means nothing to wait for.
-func TestWaitForCRDToBeEstablishedRequiresNames(t *testing.T) {
+// TestWaitOptionsDefault pins the recorded default poll interval.
+func TestWaitOptionsDefault(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	client, _ := newCRDScriptClient(t, map[string][][]apiextensionsv1.CustomResourceDefinitionCondition{})
+	options := newOptions()
 
-	g.Expect(WaitForCRDToBeEstablished(t.Context(), client)).To(Succeed())
+	g.Expect(options.PollInterval).To(Equal(DefaultPollInterval))
+}
+
+// TestWaitOptionsOverrides proves the poll interval is selectable and
+// that non-positive values and nil options keep the default.
+func TestWaitOptionsOverrides(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	options := newOptions(WithPollInterval(10 * time.Millisecond))
+	g.Expect(options.PollInterval).To(Equal(10 * time.Millisecond))
+
+	ignored := newOptions(
+		nil,
+		WithPollInterval(0),
+		WithPollInterval(-time.Second),
+	)
+	g.Expect(ignored.PollInterval).To(Equal(DefaultPollInterval))
 }

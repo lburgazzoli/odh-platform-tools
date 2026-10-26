@@ -28,7 +28,7 @@ import (
 	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 
 	configcrd "github.com/lburgazzoli/odh-platform-tools/config/crd"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
+	k8scrd "github.com/lburgazzoli/odh-platform-tools/pkg/k8s/crd"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 )
@@ -66,7 +66,7 @@ func prepareOwner(
 		return nil, prepareFail("applying the definition custom resource definition", err)
 	}
 
-	if err := k8s.WaitForCRDToBeEstablished(ctx, client, v1alpha1.CRDName); err != nil {
+	if err := k8scrd.WaitForCRDToBeEstablished(ctx, client, v1alpha1.CRDName); err != nil {
 		return nil, prepareFail("waiting for the definition custom resource definition", err)
 	}
 
