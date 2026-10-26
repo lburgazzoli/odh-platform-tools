@@ -90,9 +90,9 @@ func TestLintChainInvalidDefinition(t *testing.T) {
 		contains string
 	}{
 		{
-			name:     "legacy spec.type",
-			content:  legacyTypeDefinitionYAML,
-			contains: `unknown object member name "type"`,
+			name:     "integer where a string is required",
+			content:  invalidTypeDefinitionYAML,
+			contains: "unable to convert unstructured object",
 		},
 	}
 

@@ -162,7 +162,7 @@ func TestCLIChainDefinitionErrorExitUsage(t *testing.T) {
 		name    string
 		content string
 	}{
-		{name: "legacy spec.type", content: legacyTypeDefinitionYAML},
+		{name: "integer where a string is required", content: invalidTypeDefinitionYAML},
 	}
 
 	for _, test := range tests {

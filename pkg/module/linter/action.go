@@ -12,7 +12,7 @@ import (
 )
 
 // DefinitionLoad loads and normalizes one module definition file. The
-// strict loader is the concrete implementation.
+// loader is the concrete implementation.
 type DefinitionLoad func(ctx context.Context, path string) (v1alpha1.PlatformModuleDefinition, error)
 
 // ManifestRender renders the manifest backend selected by a loaded

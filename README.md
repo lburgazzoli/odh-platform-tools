@@ -34,9 +34,12 @@ placeholders.
 
 A module is described by one file, `definition.yaml`, typed as plain
 authored data (`config.opendatahub.io/v1alpha1`, kind
-`PlatformModuleDefinition`). Loading is strict at the decoding level —
-unknown members, name-case mismatches, and type mismatches are rejected
-with file and line positions. Placement defaults belong to the loader:
+`PlatformModuleDefinition`). Loading goes through the framework's
+document decoder and unstructured-to-typed conversion — the same
+machinery the render actions use. Definition data is assumed correct:
+members the typed conversion does not map are dropped, type mismatches
+on mapped members are rejected, and duplicate keys fail. Placement
+defaults belong to the loader:
 an omitted instance name becomes `metadata.name`, and an omitted main
 container name becomes `manager`. Structural validation beyond
 decoding is deferred and will be added later as JSON Schema
@@ -100,9 +103,7 @@ definition file's own directory:
 The instance identity is descriptive data: nothing in this tooling
 creates or looks up the custom resource, and rendering never uses
 `spec.instance.name` — the Helm release name comes from
-`metadata.name`. Loading is strict about the layout: the superseded
-top-level `spec.type` location is rejected as an unknown member,
-including when it appears together with `spec.instance`.
+`metadata.name`.
 
 Lint neither resolves nor injects declarations: the rendered manifests
 keep whatever image and env the chart or kustomize tree authors. Run
@@ -422,7 +423,7 @@ execution error instead of reporting a finding.
                              │                               │ → Deploy → optional Wait)
         ┌────────────────────▼───────────────┐  ┌────────────▼─────────────────────┐
         │ pkg/module/loader                  │  │ pkg/module/runner                │
-        │ strict YAML → typed definition,    │  │ owner preparation, connection,   │
+        │ YAML → typed definition,           │  │ owner preparation, connection,   │
         │ placement defaults                 │  │ deploy, images, wait             │
         └────────────────────────────────────┘  └────────────┬─────────────────────┘
                                                                 │ shared renderers

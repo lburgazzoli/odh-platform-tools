@@ -142,7 +142,7 @@ func TestCLIRunLocalDefinitionFailure(t *testing.T) {
 	g := NewWithT(t)
 
 	root := t.TempDir()
-	writeModuleFile(t, root, "definition.yaml", legacyTypeDefinitionYAML)
+	writeModuleFile(t, root, "definition.yaml", invalidTypeDefinitionYAML)
 
 	stdout, stderr, exitCode := runCLIRun(root, "--output", "json")
 

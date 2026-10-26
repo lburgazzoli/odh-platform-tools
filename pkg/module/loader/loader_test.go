@@ -124,41 +124,11 @@ const definitionJSON = `{
 
 // Documents rejected while decoding, before structural validation.
 const (
-	unknownMemberYAML = `apiVersion: config.opendatahub.io/v1alpha1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-runtime:
-  namespace: opendatahub
-`
-
 	legacyModuleWrapperYAML = `module:
   type:
     group: components.platform.opendatahub.io
     version: v1alpha1
     kind: SyntheticModule
-`
-
-	// legacySpecTypeYAML places the module type at the superseded
-	// top-level spec.type location.
-	legacySpecTypeYAML = `apiVersion: config.opendatahub.io/v1alpha1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
-  manifests:
-    format: helm
-    helm:
-      path: ./manifests/chart
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
 `
 
 	// instanceNameDefinitionYAML is the Helm definition with an
@@ -192,9 +162,9 @@ metadata:
   namespace: opendatahub
 `
 
-	// duplicateKeyYAML relies on the Kubernetes YAML semantics of the
-	// single-pass decode: duplicate keys resolve last-wins instead of
-	// being rejected.
+	// duplicateKeyYAML relies on the framework decoder's yaml.v3
+	// semantics: duplicate keys are rejected instead of resolving
+	// last-wins.
 	duplicateKeyYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
@@ -284,60 +254,6 @@ metadata:
   name: .inf
 `
 )
-
-// initImageYAML is a definition whose init container carries the
-// removed image member.
-const initImageYAML = `apiVersion: config.opendatahub.io/v1alpha1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  instance:
-    type:
-      group: components.platform.opendatahub.io
-      version: v1alpha1
-      kind: SyntheticModule
-  manifests:
-    format: kustomize
-    kustomize:
-      path: ./manifests/overlays/development
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
-      initContainer:
-        name: copy-manifests
-        image: quay.io/example/controller:v1
-`
-
-// initEnvYAML is a definition whose init container carries the removed
-// env member.
-const initEnvYAML = `apiVersion: config.opendatahub.io/v1alpha1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  instance:
-    type:
-      group: components.platform.opendatahub.io
-      version: v1alpha1
-      kind: SyntheticModule
-  manifests:
-    format: kustomize
-    kustomize:
-      path: ./manifests/overlays/development
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
-      initContainer:
-        name: copy-manifests
-        env:
-          - name: INIT_MODE
-            value: copy
-`
 
 // Renderer entry files.
 const (
@@ -646,19 +562,21 @@ func TestLoadToleratesTrailingEmptyDocument(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-func TestLoadResolvesDuplicateKeysLastWins(t *testing.T) {
+// TestLoadRejectsDuplicateKeys pins the framework decoder's yaml.v3
+// semantics: a duplicate key is rejected rather than resolving
+// last-wins.
+func TestLoadRejectsDuplicateKeys(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	// The single-pass decode follows the Kubernetes YAML semantics:
-	// a duplicate key resolves last-wins rather than failing.
 	root := t.TempDir()
 	writeModuleFile(t, root, "definition.yaml", duplicateKeyYAML)
 
-	definition, err := Load(t.Context(), os.DirFS(root), "definition.yaml")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(definition.Name).To(Equal("duplicate"))
+	_, err := Load(t.Context(), os.DirFS(root), "definition.yaml")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
+	g.Expect(err.Error()).To(ContainSubstring(`mapping key "name" already defined`))
 }
 
 func TestLoadRejectsInvalidDocuments(t *testing.T) {
@@ -670,27 +588,20 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 		errContains string
 	}{
 		{
-			name:        "unknown member",
-			content:     unknownMemberYAML,
-			errContains: `unknown object member name "runtime"`,
-		},
-		{
+			// The legacy wrapper carries no kind, so the framework
+			// decoder skips it: the stream reads as no document.
 			name:        "legacy module wrapper",
 			content:     legacyModuleWrapperYAML,
-			errContains: `unknown object member name "module"`,
+			errContains: "one object document",
 		},
 		{
-			name:        "legacy spec.type",
-			content:     legacySpecTypeYAML,
-			errContains: `unknown object member name "type"`,
-		},
-		{
-			// The decoder reports type mismatches; the exact json
-			// wording varies between "cannot unmarshal" and
-			// "unable to unmarshal ... within".
+			// The typed conversion reports type mismatches; the
+			// converter wording varies with the scalar kind
+			// ("cannot convert int64 to string",
+			// "unrecognized type: string"), so assert the stem.
 			name:        "integer where a string is required",
 			content:     integerNameYAML,
-			errContains: "unmarshal",
+			errContains: "unable to convert unstructured object",
 		},
 		{
 			name:        "multiple documents",
@@ -698,20 +609,17 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 			errContains: "exactly one document",
 		},
 		{
-			// The root is a JSON string, not an object; the typed
-			// decode rejects the document shape. The jsonv2 error
-			// wording is not stable across processes ("cannot" or
-			// "unable to unmarshal"), so assert the shared stem.
+			// The root is a scalar, not a mapping; the framework
+			// decoder fails it at the YAML level.
 			name:        "scalar root",
 			content:     scalarRootYAML,
-			errContains: "unmarshal JSON string",
+			errContains: "unable to decode resource",
 		},
 		{
-			// See the scalar root case: assert only the stable stem
-			// of the jsonv2 type-mismatch wording.
+			// See the scalar root case: the root is a sequence.
 			name:        "list root",
 			content:     listRootYAML,
-			errContains: "unmarshal JSON array",
+			errContains: "unable to decode resource",
 		},
 		{
 			name:        "null root",
@@ -724,36 +632,23 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 			errContains: "one object document",
 		},
 		{
-			// The Kubernetes YAML machinery stringifies the key, so
-			// the typed decode rejects it as an unknown member.
+			// The document carries no kind, so the framework
+			// decoder skips it: the stream reads as no document.
 			name:        "non-string key",
 			content:     nonStringKeyYAML,
-			errContains: `unknown object member name "123"`,
+			errContains: "one object document",
 		},
 		{
-			// Merge keys resolve through the Kubernetes YAML
-			// machinery; this document still fails on its unknown
-			// root members. Which one is reported first depends on
-			// map iteration order, so only the failure kind is
-			// asserted.
+			// The document carries no kind, so the framework
+			// decoder skips it: the stream reads as no document.
 			name:        "merge key",
 			content:     mergeKeyYAML,
-			errContains: `unknown object member name`,
+			errContains: "one object document",
 		},
 		{
 			name:        "malformed yaml",
 			content:     malformedYAML,
 			errContains: "did not find expected",
-		},
-		{
-			name:        "removed init container image member",
-			content:     initImageYAML,
-			errContains: `unknown object member name "image"`,
-		},
-		{
-			name:        "removed init container env member",
-			content:     initEnvYAML,
-			errContains: `unknown object member name "env"`,
 		},
 	}
 
@@ -779,7 +674,9 @@ func TestLoadRejectsInvalidDocuments(t *testing.T) {
 }
 
 // timestampValueYAML is a valid Kustomize definition whose env value is
-// an unquoted date: the literal text survives as a string.
+// a quoted date: the literal text survives as a string. An unquoted
+// date would follow the framework decoder's yaml semantics and
+// normalize to RFC3339, so authored dates are quoted.
 const timestampValueYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
@@ -801,7 +698,7 @@ spec:
         image: quay.io/example/controller:v1
         env:
           - name: LOG_DATE
-            value: 2026-01-02
+            value: "2026-01-02"
 `
 
 func TestLoadRejectsNonStringScalars(t *testing.T) {
@@ -813,19 +710,26 @@ func TestLoadRejectsNonStringScalars(t *testing.T) {
 		errContains string
 	}{
 		{
+			// The typed conversion reports type mismatches; the
+			// converter wording varies with the scalar kind, so
+			// assert the stem.
 			name:        "boolean where a string is required",
 			content:     booleanNameYAML,
-			errContains: "unmarshal",
+			errContains: "unable to convert unstructured object",
 		},
 		{
+			// See the boolean case: assert only the stable stem of
+			// the converter's type-mismatch wording.
 			name:        "float where a string is required",
 			content:     floatNameYAML,
-			errContains: "unmarshal",
+			errContains: "unable to convert unstructured object",
 		},
 		{
+			// See the boolean case: assert only the stable stem of
+			// the converter's type-mismatch wording.
 			name:        "hexadecimal integer where a string is required",
 			content:     hexNameYAML,
-			errContains: "unmarshal",
+			errContains: "unable to convert unstructured object",
 		},
 		{
 			name:        "infinity is not a JSON number",
@@ -864,7 +768,7 @@ func TestLoadKeepsTimestampLiteralsAsStrings(t *testing.T) {
 	definition, err := Load(t.Context(), os.DirFS(root), "definition.yaml")
 	g.Expect(err).NotTo(HaveOccurred())
 
-	// The unquoted date stays literal text; it is never a parsed date.
+	// The quoted date stays literal text; it is never a parsed date.
 	g.Expect(*definition.Spec.Controller.Deployment.Container.Env[0].Value).To(Equal("2026-01-02"))
 }
 

@@ -333,7 +333,7 @@ func TestRunChainLocalFailuresStopBeforeClientOperations(t *testing.T) {
 		g := NewWithT(t)
 
 		root := t.TempDir()
-		writeModuleFile(t, root, "definition.yaml", legacyTypeDefinitionYAML)
+		writeModuleFile(t, root, "definition.yaml", invalidTypeDefinitionYAML)
 
 		harness := newRunHarness(t)
 

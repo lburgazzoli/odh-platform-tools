@@ -1,21 +1,23 @@
 // Package loader reads module definitions from explicit local files
-// into typed, normalized definitions. It is a generic module service:
-// it performs no environment lookup, rendering, linting, or cluster
-// access.
+// into typed, normalized definitions, decoding through the framework's
+// shared document machinery. It is a generic module service: it
+// performs no environment lookup, rendering, linting, or cluster
+// access. Definition data is assumed correct: members the typed
+// conversion does not map are dropped, while type mismatches on the
+// members it does map are rejected.
 package loader
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 
-	jsonv2 "encoding/json/v2"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 
-	yamlv2 "go.yaml.in/yaml/v2"
+	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
@@ -31,7 +33,7 @@ func New(fsys fs.FS) *Loader {
 	return &Loader{fsys: fsys}
 }
 
-// Load reads, strictly decodes, and validates the module definition at
+// Load reads, decodes, and validates the module definition at
 // path in fsys and returns it normalized: the one-shot form of
 // New(fsys).Load.
 //
@@ -59,7 +61,7 @@ func LoadFromPath(ctx context.Context, path string) (v1alpha1.PlatformModuleDefi
 	return Load(ctx, os.DirFS("/"), relative)
 }
 
-// Load reads and strictly decodes the module definition at path in
+// Load reads and decodes the module definition at path in
 // the loader's filesystem and returns it normalized.
 //
 // Every failure except cancellation is a configuration error matching
@@ -120,47 +122,34 @@ func (l *Loader) readDefinitionFile(path string) ([]byte, error) {
 	return data, nil
 }
 
-// decodeDefinition decodes the definition bytes in a single pass
-// through the go.yaml.in/yaml/v2 machinery that the Kubernetes YAML
-// conversion itself uses. The stream must hold exactly one nonempty
-// document: further documents fail instead of being silently ignored.
-// The document value is round-tripped through JSON for the strict
-// typed decode, which rejects unknown members and name-case
-// mismatches.
+// decodeDefinition decodes the definition bytes through the
+// framework's shared document decoder — the same resource decoding
+// the render actions use — and converts the single resulting document
+// to the typed definition with the framework's unstructured-to-typed
+// conversion. The stream must hold exactly one document: none or
+// several fail instead of being silently ignored.
 func (l *Loader) decodeDefinition(data []byte) (v1alpha1.PlatformModuleDefinition, error) {
-	decoder := yamlv2.NewDecoder(bytes.NewReader(data))
-
-	var document any
-	for document == nil {
-		if err := decoder.Decode(&document); err != nil {
-			if errors.Is(err, io.EOF) {
-				return v1alpha1.PlatformModuleDefinition{}, errors.New("definition must contain one object document")
-			}
-			return v1alpha1.PlatformModuleDefinition{}, err
-		}
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		return v1alpha1.PlatformModuleDefinition{}, err
 	}
 
-	var extra any
-	for {
-		err := decoder.Decode(&extra)
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return v1alpha1.PlatformModuleDefinition{}, err
-		}
-		if extra != nil {
-			return v1alpha1.PlatformModuleDefinition{}, errors.New("definition must contain exactly one document")
-		}
-	}
-
-	encoded, err := jsonv2.Marshal(document)
+	documents, err := fwresources.Decode(
+		serializer.NewCodecFactory(scheme).UniversalDeserializer(), data)
 	if err != nil {
 		return v1alpha1.PlatformModuleDefinition{}, err
 	}
 
+	if len(documents) == 0 {
+		return v1alpha1.PlatformModuleDefinition{}, errors.New("definition must contain one object document")
+	}
+
+	if len(documents) > 1 {
+		return v1alpha1.PlatformModuleDefinition{}, errors.New("definition must contain exactly one document")
+	}
+
 	var definition v1alpha1.PlatformModuleDefinition
-	if err := jsonv2.Unmarshal(encoded, &definition, jsonv2.RejectUnknownMembers(true)); err != nil {
+	if err := fwresources.ObjectFromUnstructured(scheme, &documents[0], &definition); err != nil {
 		return v1alpha1.PlatformModuleDefinition{}, err
 	}
 

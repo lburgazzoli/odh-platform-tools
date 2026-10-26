@@ -292,26 +292,12 @@ name: synthetic
 version: 1.0.0
 `
 
-	// legacyTypeDefinitionYAML uses the superseded top-level spec.type
-	// location.
-	legacyTypeDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
+	// invalidTypeDefinitionYAML fails the typed conversion: the
+	// metadata name is an integer where a string is required.
+	invalidTypeDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
-  name: broken
-spec:
-  type:
-    group: components.platform.opendatahub.io
-    version: v1alpha1
-    kind: SyntheticModule
-  manifests:
-    format: kustomize
-    kustomize:
-      path: ./manifests
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
+  name: 123
 `
 
 	escapingKustomizationYAML = `apiVersion: kustomize.config.k8s.io/v1beta1

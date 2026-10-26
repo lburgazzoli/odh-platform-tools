@@ -57,7 +57,7 @@ import (
 	images "github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/images"
 )
 
-// DefinitionLoad loads and normalizes one definition file. The strict
+// DefinitionLoad loads and normalizes one definition file. The
 // loader is the concrete implementation.
 type DefinitionLoad func(ctx context.Context, path string) (v1alpha1.PlatformModuleDefinition, error)
 

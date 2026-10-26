@@ -28,7 +28,7 @@ import (
 )
 
 // NewRunner returns the Cobra-free staged module run action wired
-// with the concrete reusable services: the strict loader, both
+// with the concrete reusable services: the loader, both
 // manifest backend renderers, the standard cluster connection, and
 // the framework payload apply; the definition owner preparation is
 // the runner's own step over that connection. Callers pass a plain
