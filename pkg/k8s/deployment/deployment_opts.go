@@ -60,12 +60,29 @@ func WithInitContainerImage(name string, image string) CustomizeOption {
 // state across Deployments. A missing container name is an error at
 // apply time, even for an empty env list.
 func WithContainerEnv(name string, envs []corev1.EnvVar) CustomizeOption {
+	return withContainerEnv(containerEnv, name, envs)
+}
+
+// WithInitContainerEnv merges the env vars into the first init
+// container with the exact name, with the same merge, snapshot, and
+// error semantics as WithContainerEnv.
+func WithInitContainerEnv(name string, envs []corev1.EnvVar) CustomizeOption {
+	return withContainerEnv(initContainerEnv, name, envs)
+}
+
+// withContainerEnv builds an env-merging option around the request
+// constructor, snapshotting the input at construction time.
+func withContainerEnv(
+	request func(name string, envs []corev1.EnvVar) customizationRequest,
+	name string,
+	envs []corev1.EnvVar,
+) CustomizeOption {
 	snapshot := make([]corev1.EnvVar, len(envs))
 	for i := range envs {
 		snapshot[i] = *envs[i].DeepCopy()
 	}
 
 	return option.FunctionalOption[CustomizeOptions](func(target *CustomizeOptions) {
-		target.requests = append(target.requests, containerEnv(name, snapshot))
+		target.requests = append(target.requests, request(name, snapshot))
 	})
 }

@@ -95,8 +95,8 @@ definition file's own directory:
 | `spec.manifests.helm.values` | Optional literal Helm values, merged over the chart defaults with the definition winning. No interpolation: `{{NAME}}`-looking text stays literal, like env values. Validated against the chart's `values.schema.json` when present. |
 | `spec.manifests.kustomize.path` | Optional directory containing `kustomization.yaml` (or `.yml`), relative to the definition file. Omitted or empty — or the whole `kustomize` block omitted — defaults to the definition file's own directory. Sibling bases and resource files are allowed; there is no `default/` fallback. |
 | `spec.controller.deployment.name` | The controller Deployment. When omitted, `module run` falls back to the module's `metadata.name` when selecting the controller Deployment for injection and waiting. |
-| `spec.controller.deployment.container` | The main container. `name` defaults to `manager` when omitted (loader default); `image` may be a literal or a whole-value `{{VARIABLE}}` reference resolved only by `module run`. |
-| `spec.controller.deployment.initContainer` | Optional init container, selected by `name` only. A resolved main image overrides the named init container too; init-specific image or env settings do not exist. |
+| `spec.controller.deployment.container` | The main container. `name` defaults to `manager` when omitted, and a fully omitted block is materialized as the default-named block (loader defaults); `image` may be a literal or a whole-value `{{VARIABLE}}` reference resolved only by `module run`, and it must resolve — the render fails otherwise. |
+| `spec.controller.deployment.initContainer` | Optional init container, selected by `name`, carrying an optional `image` of its own. The main image overrides the named init container when no init-specific image is declared; the effective image must resolve. The injected env vars land on the init container too. |
 | `spec.controller.deployment.container.env` | Explicit environment variables for the main container only. An explicit empty string is a valid value. |
 | `spec.relatedImages` | Optional list of portable environment-variable-style names. `module run` resolves them from the file or environment and injects them into the main container only; lint neither resolves nor injects them. |
 
@@ -231,17 +231,20 @@ caller can receive them.
 may be a literal or a whole-value `{{VARIABLE}}` reference. Reference
 resolution is the operator's Viper-style source chain, minus secrets:
 an explicit `--related-images-file` dotenv file, then the process
-environment, with the environment winning over the file. A resolved
-image replaces the main container's image and — when an init container
-is configured — the named init container's image too, unless the init
-target declares an image of its own, which then resolves and applies
-independently. Declared
-`relatedImages` names are injected as env vars into the main container
-only. Explicit definition env values replace same-named chart env
-vars, removing their `valueFrom`; the platform identity
-(`ODH_MODULE_OPERATOR_PLATFORM_TYPE`), `APPLICATIONS_NAMESPACE`, and
-`MONITORING_NAMESPACE` are injected the same way. Images are applied
-exactly as resolved: no digest hashing or mutation.
+environment, with the environment winning over the file. The image
+must resolve — the chart default is never kept silently — and it
+replaces the main container's image and the named init container's
+image too, unless the init target declares an image of its own, which
+then resolves and applies independently. Declared
+`relatedImages` names are injected as env vars into the main and
+configured init containers alike. Explicit definition env values
+replace same-named chart env vars, removing their `valueFrom`; the
+platform identity (`ODH_MODULE_OPERATOR_PLATFORM_TYPE`),
+`APPLICATIONS_NAMESPACE`, and `MONITORING_NAMESPACE` are injected the
+same way. Images are applied exactly as resolved: no digest hashing
+or mutation. The main container name — like an omitted container
+block, materialized as the default-named block — is defaulted by the
+loader, never by the injection pass.
 
 Injection targets the controller Deployment only after an exact
 apps/v1 Deployment group/version/kind and name match — the configured
@@ -251,21 +254,22 @@ on the target fails the render instead of being repaired, unknown
 fields on an adapted target may be dropped, and unrelated resources —
 including foreign or malformed Deployments — are never converted. The
 containers the definition names — the main container and a configured
-init container — must exist on the target: a missing one fails the
-render rather than being skipped.
+init container — must exist on the target, and their images must
+resolve: a missing container or an unresolved image fails the render
+rather than being skipped.
 
 The typed mutations themselves live in `pkg/k8s/deployment`:
 `Customize` applies named `WithContainerImage`,
-`WithInitContainerImage`, and `WithContainerEnv` options, erroring when
-a named container is missing. The injector owns the policy around that
-mechanics — which Deployment to select, and which names and images to
-resolve. The split is deliberate and one-way: the helper never
-decides targets, the injector never mutates typed containers.
-`Customize` reports only an error, so a matched target whose main
-container is found is always converted back after a successful pass —
-even when the image and env values were already correct or nothing
-resolved — while non-matching resources keep their original rendered
-maps untouched.
+`WithInitContainerImage`, `WithContainerEnv`, and
+`WithInitContainerEnv` options, erroring when a named container is
+missing. The injector owns the policy around that mechanics — which
+Deployment to select, and which names and images to resolve. The split
+is deliberate and one-way: the helper never decides targets, the
+injector never mutates typed containers. `Customize` reports only an
+error, so a matched target whose containers are found is always
+converted back after a successful pass — even when the image and env
+values were already correct — while non-matching resources keep their
+original rendered maps untouched.
 
 **Platform config.** The run creates or merges the
 `odh-<module>-config` ConfigMap carrying the `--platform-version`. An
@@ -527,11 +531,12 @@ and ApplyOrder. It is deliberately not the operator:
   through a typed round-trip, so a malformed typed field on the target
   fails the render instead of being repaired and unknown fields may be
   dropped. The containers the definition names must exist on the
-  target — a missing main or configured init container fails the
-  render — and a successfully customized target is always reserialized,
-  even when its image and env values were already correct; only
-  non-matching resources keep their rendered maps byte-for-byte.
-  Conversion checks representability, not admission validity.
+  target and their images must resolve — a missing main or configured
+  init container, or an unresolved image, fails the render — and a
+  successfully customized target is always reserialized, even when its
+  image and env values were already correct; only non-matching
+  resources keep their rendered maps byte-for-byte. Conversion checks
+  representability, not admission validity.
 - Platform config matching is the exact core/v1 ConfigMap
   group/version/kind plus name — namespace-insensitive, last match
   wins — not the operator's kind-only index.

@@ -330,7 +330,8 @@ func newEnvInjector(definition *toolApi.PlatformModuleDefinition) *EnvInjector {
 // TestEnvInjector pins the happy path: the resolved controller image
 // overrides the main and init containers, and the env entries append
 // after the chart env in operator precedence order — related images,
-// sorted extra env, then the nonempty platform env.
+// sorted extra env, then the nonempty platform env — into the main and
+// init containers alike.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (injectModuleEnv, injectEnvVarsIntoDeployment), commit 5a1d17f57b32.
@@ -362,6 +363,8 @@ func TestEnvInjector(t *testing.T) {
 			| .env[] | select(.name == "ODH_MODULE_OPERATOR_PLATFORM_TYPE") | .value == "self-managed"`),
 		jq.Match(`.spec.template.spec.initContainers[] | select(.name == "copy-manifests")
 			| .image == "quay.io/example/controller:v1"`),
+		jq.Match(`[.spec.template.spec.initContainers[] | select(.name == "copy-manifests") | .env[].name]
+			== ["RELATED_IMAGE_OPERAND","LOG_LEVEL","APPLICATIONS_NAMESPACE","MONITORING_NAMESPACE","ODH_MODULE_OPERATOR_PLATFORM_TYPE"]`),
 		jq.Match(`.spec.template.spec.containers[] | select(.name == "sidecar")
 			| .image == "registry.example/chart-sidecar:v0"`),
 		jq.Match(`.spec.template.spec.containers[] | select(.name == "sidecar") | has("env") | not`),
@@ -395,31 +398,45 @@ func TestEnvInjectorLiteralImage(t *testing.T) {
 	))
 }
 
-// TestEnvInjectorUnresolvedImages pins that missing image sources keep
-// the rendered defaults for the main container, the init container,
-// and the related-image env entries.
+// TestEnvInjectorUnresolvedImages pins the unresolved-image policy: a
+// controller image that does not resolve — authored or absent
+// altogether — fails the pass; the chart default is never kept
+// silently.
 //
 // Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
 // (injectEnvVarsIntoDeployment, os.Getenv empty branches), commit 5a1d17f57b32.
 func TestEnvInjectorUnresolvedImages(t *testing.T) {
 	t.Parallel()
 
-	g := NewWithT(t)
+	t.Run("authored controller image unresolved errors", func(t *testing.T) {
+		t.Parallel()
 
-	var render enginetypes.PostRenderer = (&EnvInjector{Definition: newDefinitionPointer()}).Run
+		g := NewWithT(t)
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
-	g.Expect(err).To(Succeed())
+		var render enginetypes.PostRenderer = (&EnvInjector{Definition: newDefinitionPointer()}).Run
 
-	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-	g.Expect(deployment.Object).To(SatisfyAll(
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .image == "registry.example/chart-controller:v0"`),
-		jq.Match(`.spec.template.spec.initContainers[] | select(.name == "copy-manifests")
-			| .image == "registry.example/chart-init:v0"`),
-		jq.Match(`[.spec.template.spec.containers[] | select(.name == "manager") | .env[].name]
-			== ["CHART_ENV","LOG_LEVEL"]`),
-	))
+		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring(`container "manager" image unresolved in Deployment synthetic-controller`))
+		g.Expect(resources).To(BeNil())
+	})
+
+	t.Run("nothing authored errors too", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		definition := newDefinition()
+		definition.Spec.Controller.Deployment.InitContainer = nil
+		definition.Spec.Controller.Deployment.Container.Image = ""
+
+		var render enginetypes.PostRenderer = (&EnvInjector{Definition: &definition}).Run
+
+		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring(`container "manager" image unresolved in Deployment synthetic-controller`))
+		g.Expect(resources).To(BeNil())
+	})
 }
 
 // TestEnvInjectorOverridesExistingEnvAndRemovesValueFrom pins that an
@@ -502,6 +519,7 @@ func TestEnvInjectorExtraEnvListMapSemantics(t *testing.T) {
 
 	definition := newDefinition()
 	definition.Spec.Controller.Deployment.InitContainer = nil
+	definition.Spec.Controller.Deployment.Container.Image = "quay.io/example/controller:v1"
 	definition.Spec.Controller.Deployment.Container.Env = []toolApi.EnvVar{
 		{Name: "ZETA", Value: new("one")},
 		{Name: "ALPHA"},
@@ -540,6 +558,7 @@ func TestEnvInjectorPlaceholderValueStaysLiteral(t *testing.T) {
 
 	definition := newDefinition()
 	definition.Spec.Controller.Deployment.InitContainer = nil
+	definition.Spec.Controller.Deployment.Container.Image = "quay.io/example/controller:v1"
 	definition.Spec.Controller.Deployment.Container.Env = []toolApi.EnvVar{
 		{Name: "LOG_LEVEL", Value: new("{{LOG_LEVEL}}")},
 	}
@@ -567,6 +586,7 @@ func TestEnvInjectorSortedExtraEnv(t *testing.T) {
 
 	definition := newDefinition()
 	definition.Spec.Controller.Deployment.InitContainer = nil
+	definition.Spec.Controller.Deployment.Container.Image = "quay.io/example/controller:v1"
 	definition.Spec.Controller.Deployment.Container.Env = []toolApi.EnvVar{
 		{Name: "ZETA", Value: new("z")},
 		{Name: "ALPHA", Value: new("a")},
@@ -580,34 +600,6 @@ func TestEnvInjectorSortedExtraEnv(t *testing.T) {
 	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(deployment.Object).To(jq.Match(`[.spec.template.spec.containers[] | select(.name == "manager") | .env[].name]
 		== ["CHART_ENV","ALPHA","ZETA"]`))
-}
-
-// TestEnvInjectorContainerNameFallback pins that an empty container
-// name targets the operator manager default.
-//
-// Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
-// (injectEnvVarsIntoDeployment, defaultContainerName), commit 5a1d17f57b32.
-func TestEnvInjectorContainerNameFallback(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	definition := newDefinition()
-	definition.Spec.Controller.Deployment.InitContainer = nil
-	definition.Spec.Controller.Deployment.Container.Name = ""
-
-	var render enginetypes.PostRenderer = newEnvInjector(&definition).Run
-
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
-	g.Expect(err).To(Succeed())
-
-	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-	g.Expect(deployment.Object).To(SatisfyAll(
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .image == "quay.io/example/controller:v1"`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "LOG_LEVEL") | .value == "debug"`),
-	))
 }
 
 // TestEnvInjectorDeploymentNameFallback pins that an empty deployment
@@ -831,12 +823,11 @@ func TestEnvInjectorDropsUnknownFieldsOnAdaptedTarget(t *testing.T) {
 	))
 }
 
-// TestEnvInjectorNoContainerBlock pins that a definition without a
-// container block injects no image and no extra env, while the
-// platform env still lands on the default-named container.
-//
-// Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
-// (injectEnvVarsIntoDeployment, mi.ControllerImage empty), commit 5a1d17f57b32.
+// TestEnvInjectorNoContainerBlock pins the loader contract from the
+// injector's side: a definition whose omitted container block the
+// loader materialized with the default name carries no image, and the
+// render fails on the unresolved image instead of silently keeping the
+// chart default.
 func TestEnvInjectorNoContainerBlock(t *testing.T) {
 	t.Parallel()
 
@@ -844,7 +835,9 @@ func TestEnvInjectorNoContainerBlock(t *testing.T) {
 
 	definition := newDefinition()
 	definition.Spec.Controller.Deployment.InitContainer = nil
-	definition.Spec.Controller.Deployment.Container = nil
+	definition.Spec.Controller.Deployment.Container = &toolApi.ContainerDefinition{
+		Name: toolApi.DefaultMainContainerName,
+	}
 
 	var render enginetypes.PostRenderer = (&EnvInjector{
 		Definition:            &definition,
@@ -853,15 +846,9 @@ func TestEnvInjectorNoContainerBlock(t *testing.T) {
 	}).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
-	g.Expect(err).To(Succeed())
-
-	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-	g.Expect(deployment.Object).To(SatisfyAll(
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .image == "registry.example/chart-controller:v0"`),
-		jq.Match(`[.spec.template.spec.containers[] | select(.name == "manager") | .env[].name]
-			== ["CHART_ENV","RELATED_IMAGE_OPERAND","APPLICATIONS_NAMESPACE"]`),
-	))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`container "manager" image unresolved in Deployment synthetic-controller`))
+	g.Expect(resources).To(BeNil())
 }
 
 // TestEnvInjectorIgnoresNonDeploymentResources pins that only exact
@@ -891,7 +878,8 @@ func TestEnvInjectorIgnoresNonDeploymentResources(t *testing.T) {
 // branches: a configured init container missing from the target —
 // absent, empty, or differently named — fails the pass regardless of
 // image resolution, an init container carrying its own image gets that
-// image instead of the main one, and no init target leaves the slice
+// image instead of the main one, an authored init image that does not
+// resolve fails the pass, and no init target leaves the slice
 // untouched.
 func TestEnvInjectorInitContainerBranches(t *testing.T) {
 	t.Parallel()
@@ -935,7 +923,7 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		g.Expect(resources).To(BeNil())
 	})
 
-	t.Run("missing named init with unresolved image errors", func(t *testing.T) {
+	t.Run("missing named init with unresolved main image errors on the main image", func(t *testing.T) {
 		t.Parallel()
 
 		g := NewWithT(t)
@@ -944,7 +932,7 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 
 		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentOtherInitYAML)})
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(err.Error()).To(ContainSubstring(`init container "copy-manifests" not found in Deployment synthetic-controller`))
+		g.Expect(err.Error()).To(ContainSubstring(`container "manager" image unresolved in Deployment synthetic-controller`))
 		g.Expect(resources).To(BeNil())
 	})
 
@@ -998,7 +986,7 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		))
 	})
 
-	t.Run("unresolved init image keeps chart default", func(t *testing.T) {
+	t.Run("unresolved init image errors", func(t *testing.T) {
 		t.Parallel()
 
 		g := NewWithT(t)
@@ -1009,15 +997,9 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		var render enginetypes.PostRenderer = newEnvInjector(&definition).Run
 
 		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
-		g.Expect(err).To(Succeed())
-
-		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-		g.Expect(deployment.Object).To(SatisfyAll(
-			jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-				| .image == "quay.io/example/controller:v1"`),
-			jq.Match(`.spec.template.spec.initContainers[] | select(.name == "copy-manifests")
-				| .image == "registry.example/chart-init:v0"`),
-		))
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring(`init container "copy-manifests" image unresolved in Deployment synthetic-controller`))
+		g.Expect(resources).To(BeNil())
 	})
 
 	t.Run("no init target leaves slice untouched", func(t *testing.T) {
@@ -1044,9 +1026,9 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 
 // TestEnvInjectorEmptyCustomizationStillRoundTrips pins the error-only
 // customization contract: a matched target with a found main container
-// is converted back even when the image is unresolved and the resolved
-// env list is empty — its unknown fields may be dropped — while a
-// foreign Deployment keeps its original rendered map.
+// is converted back even when the resolved env list is empty — its
+// unknown fields may be dropped — while a foreign Deployment keeps its
+// original rendered map.
 func TestEnvInjectorEmptyCustomizationStillRoundTrips(t *testing.T) {
 	t.Parallel()
 
@@ -1055,6 +1037,7 @@ func TestEnvInjectorEmptyCustomizationStillRoundTrips(t *testing.T) {
 	definition := newDefinition()
 	definition.Spec.RelatedImages = nil
 	definition.Spec.Controller.Deployment.InitContainer = nil
+	definition.Spec.Controller.Deployment.Container.Image = "quay.io/example/controller:v1"
 	definition.Spec.Controller.Deployment.Container.Env = nil
 
 	var render enginetypes.PostRenderer = (&EnvInjector{Definition: &definition}).Run
@@ -1065,14 +1048,14 @@ func TestEnvInjectorEmptyCustomizationStillRoundTrips(t *testing.T) {
 	})
 	g.Expect(err).To(Succeed())
 
-	// The valid target round-trips even though no image or env request
-	// had an effect: the sentinel extension is dropped and the chart
-	// image and env are unchanged.
+	// The valid target round-trips even though the env request carried
+	// nothing: the sentinel extension is dropped, the image is the
+	// literal, and the chart env is unchanged.
 	own := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(own.Object).To(SatisfyAll(
 		jq.Match(`.spec.template.spec | has("x-extension") | not`),
 		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .image == "registry.example/chart-controller:v0"`),
+			| .image == "quay.io/example/controller:v1"`),
 		jq.Match(`[.spec.template.spec.containers[] | select(.name == "manager") | .env[].name]
 			== ["CHART_ENV"]`),
 		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")

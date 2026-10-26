@@ -69,8 +69,8 @@ func TestRunChainHelmComposesStages(t *testing.T) {
 	g.Expect(result.WaitRequested).To(BeFalse())
 
 	// The controller Deployment: the literal image is shared by the
-	// main and init containers, and the main container alone carries
-	// the injected environment.
+	// main and init containers, and both carry the injected
+	// environment.
 	controller := harness.stored(t, runDeploymentGVK, "run-namespace", "synthetic-controller")
 	g.Expect(controller.Object).To(SatisfyAll(
 		jq.Match(`.metadata.namespace == "run-namespace"`),
@@ -81,7 +81,7 @@ func TestRunChainHelmComposesStages(t *testing.T) {
 		jq.Match(`.spec.template.spec.containers[0].env[1].value == "debug"`),
 		jq.Match(`.spec.template.spec.containers[0].env[2].value == "run-namespace"`),
 		jq.Match(`.spec.template.spec.containers[0].env[3].value == "OpenDataHub"`),
-		jq.Match(`.spec.template.spec.initContainers[0].env == null`),
+		jq.Match(`.spec.template.spec.initContainers[0].env // [] | map(.name) == ["RELATED_IMAGE_ALPHA","LOG_LEVEL","APPLICATIONS_NAMESPACE","ODH_MODULE_OPERATOR_PLATFORM_TYPE"]`),
 		jq.Match(`.metadata.ownerReferences[0].name == "synthetic"`),
 	))
 
@@ -196,8 +196,9 @@ func TestRunChainKustomizeComposesStages(t *testing.T) {
 
 // TestRunChainImageSourceResolution proves the image source contract
 // through the real chain: environment beats file, an explicitly empty
-// environment variable masks the file value and keeps the chart
-// default, and the file alone resolves when no variable is set.
+// environment variable masks the file value and the unresolved
+// controller image fails the run, and the file alone resolves when no
+// variable is set.
 func TestRunChainImageSourceResolution(t *testing.T) {
 	root := t.TempDir()
 	writeRunHelmVariant(t, root, runHelmSourceImageDefinitionYAML, runDeploymentTemplateYAML)
@@ -232,16 +233,12 @@ func TestRunChainImageSourceResolution(t *testing.T) {
 		options := runOptions(root)
 		options.RelatedImagesFile = runImagesFile(t, root, runImagesEnv)
 
+		// The masked controller image does not resolve, and the
+		// strict policy fails the run instead of keeping the chart
+		// default.
 		_, err := harness.run(t.Context(), options)
-		g.Expect(err).NotTo(HaveOccurred())
-
-		// The unresolved controller image keeps the chart default and
-		// no related-image env var is injected.
-		controller := harness.stored(t, runDeploymentGVK, "run-namespace", "synthetic-controller")
-		g.Expect(controller.Object).To(SatisfyAll(
-			jq.Match(`.spec.template.spec.containers[0].image == "quay.io/chart/synthetic-controller:v9"`),
-			jq.Match(`.spec.template.spec.containers[0].env // [] | map(.name) == ["APPLICATIONS_NAMESPACE","ODH_MODULE_OPERATOR_PLATFORM_TYPE"]`),
-		))
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring(`container "manager" image unresolved in Deployment synthetic-controller`))
 	})
 
 	t.Run("file alone resolves", func(t *testing.T) {

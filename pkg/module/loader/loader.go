@@ -111,21 +111,27 @@ func (l *Loader) Load(
 
 // applyDefaults applies the placement defaults to a freshly decoded
 // definition in place: an omitted instance name becomes metadata.name,
-// and an omitted main container name becomes
-// toolApi.DefaultMainContainerName. The two defaults are independent:
-// neither may skip the other. The definition belongs to the loader, so
-// in-place mutation is safe.
+// and an omitted main container block — or an omitted name within it —
+// becomes a block named toolApi.DefaultMainContainerName, so no
+// downstream processor needs to default the container name itself. The
+// defaults are independent: neither may skip the other. The definition
+// belongs to the loader, so in-place mutation is safe.
 func (l *Loader) applyDefaults(definition *toolApi.PlatformModuleDefinition) {
 	if definition.Spec.Instance.Name == "" {
 		definition.Spec.Instance.Name = definition.Name
 	}
 
-	container := definition.Spec.Controller.Deployment.Container
-	if container == nil || container.Name != "" {
+	if definition.Spec.Controller.Deployment.Container == nil {
+		definition.Spec.Controller.Deployment.Container = &toolApi.ContainerDefinition{
+			Name: toolApi.DefaultMainContainerName,
+		}
+
 		return
 	}
 
-	container.Name = toolApi.DefaultMainContainerName
+	if container := definition.Spec.Controller.Deployment.Container; container.Name == "" {
+		container.Name = toolApi.DefaultMainContainerName
+	}
 }
 
 // readDefinitionFile reads the definition file at path in the loader's

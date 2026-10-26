@@ -336,6 +336,59 @@ func TestCustomizeEnvMerge(t *testing.T) {
 	}))
 }
 
+// TestCustomizeInitEnvMerge pins that WithInitContainerEnv merges
+// into the named init container with the same replace-in-place and
+// append semantics as WithContainerEnv, leaving the regular
+// containers' env untouched.
+func TestCustomizeInitEnvMerge(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	d := newTestDeployment()
+	d.Spec.Template.Spec.InitContainers[0].Env = []corev1.EnvVar{
+		envVar("FIRST", "old-first"),
+		envVar("KEEP", "keep-value"),
+	}
+	d.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{
+		envVar("MANAGER_ONLY", "manager-value"),
+	}
+
+	g.Expect(Customize(d,
+		WithInitContainerEnv("copy-manifests", []corev1.EnvVar{
+			envVar("FIRST", "new-first"),
+			envVar("APPENDED", "appended-value"),
+		}),
+	)).To(Succeed())
+
+	g.Expect(d.Spec.Template.Spec.InitContainers[0].Env).To(Equal([]corev1.EnvVar{
+		envVar("FIRST", "new-first"),
+		envVar("KEEP", "keep-value"),
+		envVar("APPENDED", "appended-value"),
+	}))
+
+	g.Expect(d.Spec.Template.Spec.Containers[0].Env).To(Equal([]corev1.EnvVar{
+		envVar("MANAGER_ONLY", "manager-value"),
+	}))
+}
+
+// TestCustomizeInitEnvMissingContainerErrors pins that a named init
+// container missing from the target fails the request even for an
+// empty env list.
+func TestCustomizeInitEnvMissingContainerErrors(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	d := newTestDeployment()
+
+	err := Customize(d,
+		WithInitContainerEnv("absent-init", []corev1.EnvVar{envVar("X", "x")}),
+	)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`init container "absent-init" not found in Deployment synthetic-controller`))
+}
+
 // TestCustomizeEnvSourceReplacement pins that the full incoming
 // EnvVar replaces the old entry in both directions: a literal override
 // clears an old valueFrom, and an incoming source replaces an old

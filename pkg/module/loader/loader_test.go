@@ -407,6 +407,27 @@ spec:
         image: quay.io/example/controller:v1
 `
 
+// noContainerDefinitionYAML is the Helm definition with no main
+// container block at all.
+const noContainerDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: helm
+    helm:
+      path: ./manifests/chart
+  controller:
+    deployment:
+      name: synthetic-controller
+`
+
 // authoredNamesDefinitionYAML is the Helm definition with both the
 // instance name and the main container name authored.
 const authoredNamesDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
@@ -460,6 +481,12 @@ func TestLoadDefaultsNamesIndependently(t *testing.T) {
 			name:          "container name omitted",
 			content:       instanceNameDefinitionYAML,
 			wantInstance:  "synthetic-trainer",
+			wantContainer: toolApi.DefaultMainContainerName,
+		},
+		{
+			name:          "container block omitted",
+			content:       noContainerDefinitionYAML,
+			wantInstance:  "synthetic",
 			wantContainer: toolApi.DefaultMainContainerName,
 		},
 		{

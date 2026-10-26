@@ -229,7 +229,8 @@ type Controller struct {
 
 // ControllerDeployment names the controller Deployment and its
 // selected containers. The main container carries image and env
-// settings; the init container is selected by name only.
+// settings; the init container is selected by name and may carry an
+// image of its own.
 type ControllerDeployment struct {
 	// Name is the controller Deployment name. It is empty when the
 	// definition omits it or authors an explicit empty string; both
@@ -240,6 +241,10 @@ type ControllerDeployment struct {
 	// +optional
 	Name string `json:"name,omitzero"`
 
+	// Container is the controller main container. An omitted block is
+	// materialized by the loader as a block named
+	// DefaultMainContainerName carrying no image.
+	//
 	// +optional
 	Container *ContainerDefinition `json:"container,omitzero"`
 
@@ -249,9 +254,9 @@ type ControllerDeployment struct {
 
 // ContainerDefinition describes the controller's main container. The
 // image may be a literal pipeline-built value or a whole-value
-// {{VARIABLE}} reference; when it resolves, it also overrides the init
-// container selected by InitContainer unless that target carries an
-// image of its own.
+// {{VARIABLE}} reference; it must resolve at run time, and it also
+// overrides the init container selected by InitContainer unless that
+// target carries an image of its own.
 type ContainerDefinition struct {
 	// Name is the main container name. It is empty when the
 	// definition omits it or authors an explicit empty string; both
@@ -263,13 +268,15 @@ type ContainerDefinition struct {
 
 	// Image is the main container image. It may be a literal or a
 	// whole-value {{VARIABLE}} reference; its contents stay opaque
-	// here and are resolved by the runner, never by lint.
+	// here and are resolved by the runner, never by lint. An image
+	// that does not resolve fails the render; the chart default is
+	// never kept silently.
 	//
 	// +required
 	Image string `json:"image"`
 
-	// Env declares explicit environment variables for the main
-	// container only.
+	// Env declares explicit environment variables merged into the
+	// controller containers.
 	//
 	// +optional
 	Env []EnvVar `json:"env,omitzero"`
@@ -278,8 +285,8 @@ type ContainerDefinition struct {
 // ContainerTarget selects one controller container by name and may
 // carry its own image: a resolved target image overrides the named
 // init container directly, and when the target carries no image the
-// resolved main image overrides it instead. Env injection affects
-// only the main container.
+// resolved main image overrides it instead. The injected env vars
+// land on the main and init containers alike.
 type ContainerTarget struct {
 	// Name is the init container name. It is empty when the
 	// definition omits it or authors an explicit empty string; both
@@ -292,9 +299,9 @@ type ContainerTarget struct {
 	// Image is the init container image, distinct from the main
 	// container's. It may be a literal or a whole-value {{VARIABLE}}
 	// reference; its contents stay opaque here and are resolved by the
-	// runner, never by lint. When it is empty, the resolved main image
-	// applies instead; when it is set but unresolved, the rendered init
-	// container image is kept.
+	// runner, never by lint. When it is empty, the main container's
+	// image applies instead; the effective image must resolve, and an
+	// unresolved one fails the render.
 	//
 	// +optional
 	Image string `json:"image,omitzero"`

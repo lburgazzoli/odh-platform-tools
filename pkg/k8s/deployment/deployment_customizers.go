@@ -72,12 +72,32 @@ func containerEnv(name string, envs []corev1.EnvVar) customizationRequest {
 			return fmt.Errorf("container %q not found in Deployment %s", name, d.Name)
 		}
 
-		container := &d.Spec.Template.Spec.Containers[idx]
-
-		for _, env := range envs {
-			container.Env = k8s.MergeEnv(container.Env, *env.DeepCopy())
-		}
+		mergeContainerEnv(&d.Spec.Template.Spec.Containers[idx], envs)
 
 		return nil
+	}
+}
+
+// initContainerEnv returns the request merging env vars into the first
+// init container with the exact name; the container must exist even
+// for an empty env list.
+func initContainerEnv(name string, envs []corev1.EnvVar) customizationRequest {
+	return func(d *appsv1.Deployment) error {
+		idx, ok := k8s.FindContainer(d.Spec.Template.Spec.InitContainers, name)
+		if !ok {
+			return fmt.Errorf("init container %q not found in Deployment %s", name, d.Name)
+		}
+
+		mergeContainerEnv(&d.Spec.Template.Spec.InitContainers[idx], envs)
+
+		return nil
+	}
+}
+
+// mergeContainerEnv merges the env vars into the container's env list,
+// deep-copying each incoming entry.
+func mergeContainerEnv(container *corev1.Container, envs []corev1.EnvVar) {
+	for _, env := range envs {
+		container.Env = k8s.MergeEnv(container.Env, *env.DeepCopy())
 	}
 }

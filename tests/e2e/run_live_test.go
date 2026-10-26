@@ -92,8 +92,9 @@ func TestRunLiveHelmAppliesAndOwns(t *testing.T) {
 	g.Expect(crdEstablished).To(BeTrue())
 
 	// The controller Deployment: authored replica tuning, the shared
-	// main/init literal image with no hash, the injected env on the
-	// main container only, with the chart's valueFrom replaced.
+	// main/init literal image with no hash, the injected env on both
+	// the main and init containers, with the chart's valueFrom
+	// replaced.
 	deployment := s.deployment(t, s.targetNS, "synthetic-controller")
 
 	g.Expect(*deployment.Spec.Replicas).To(Equal(int32(2)))
@@ -121,10 +122,12 @@ func TestRunLiveHelmAppliesAndOwns(t *testing.T) {
 	g.Expect(present).To(BeTrue())
 	g.Expect(relatedImage.Value).To(Equal("quay.io/example/alpha:v3"))
 
-	_, present = envVar(installer, "LOG_LEVEL")
-	g.Expect(present).To(BeFalse())
-	_, present = envVar(installer, "APPLICATIONS_NAMESPACE")
-	g.Expect(present).To(BeFalse())
+	installerLevel, present := envVar(installer, "LOG_LEVEL")
+	g.Expect(present).To(BeTrue())
+	g.Expect(installerLevel.Value).To(Equal("debug"))
+	installerApplications, present := envVar(installer, "APPLICATIONS_NAMESPACE")
+	g.Expect(present).To(BeTrue())
+	g.Expect(installerApplications.Value).To(Equal(s.targetNS))
 
 	// The RBAC references point inside the real placement.
 	binding := s.roleBinding(t, s.targetNS, "synthetic-binding")

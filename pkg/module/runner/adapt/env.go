@@ -114,7 +114,8 @@ func (inj *EnvInjector) Run(
 // delegates the container and init container mutations to their
 // adapters, and returns the converted-back resource. The containers the
 // definition names — the main container and a configured init
-// container — must exist on the target: a missing one fails the pass.
+// container — must exist on the target, and their images must resolve:
+// a missing container or an unresolved image fails the pass.
 // A successfully customized target is always reserialized, even when
 // no effective field value changed.
 func (inj *EnvInjector) adaptDeployment(
@@ -130,12 +131,11 @@ func (inj *EnvInjector) adaptDeployment(
 		return nil, fmt.Errorf("deployment %s has no containers", obj.GetName())
 	}
 
-	mainImage, err := inj.adaptContainer(ctx, typed)
-	if err != nil {
+	if err := inj.adaptContainer(ctx, typed); err != nil {
 		return nil, err
 	}
 
-	if err := inj.adaptInitContainer(typed, mainImage); err != nil {
+	if err := inj.adaptInitContainer(ctx, typed); err != nil {
 		return nil, err
 	}
 
@@ -148,84 +148,74 @@ func (inj *EnvInjector) adaptDeployment(
 }
 
 // adaptContainer applies the main container customization: the named
-// container must exist on the target, a resolved image replaces its
-// image, and the injected env vars are merged into its env list. It
-// returns the resolved image, which the init container adapter falls
-// back to.
+// container must exist on the target, its image must resolve — a
+// resolved image replaces the container's image — and the injected env
+// vars are merged into its env list. The name comes defaulted from the
+// loader; this adapter never defaults it.
 func (inj *EnvInjector) adaptContainer(
 	ctx context.Context,
 	typed *appsv1.Deployment,
-) (string, error) {
-	log := logf.FromContext(ctx)
+) error {
+	container := inj.Definition.Spec.Controller.Deployment.Container
 
-	descriptor := inj.Definition.Spec.Controller.Deployment.Container
-
-	name := toolApi.DefaultMainContainerName
-	if descriptor != nil && descriptor.Name != "" {
-		name = descriptor.Name
+	if _, found := k8s.FindContainer(typed.Spec.Template.Spec.Containers, container.Name); !found {
+		return fmt.Errorf("container %q not found in Deployment %s", container.Name, typed.Name)
 	}
 
-	if _, found := k8s.FindContainer(typed.Spec.Template.Spec.Containers, name); !found {
-		return "", fmt.Errorf("container %q not found in Deployment %s", name, typed.Name)
-	}
-
-	image := ""
-	if descriptor != nil {
-		image = images.ResolveImage(descriptor.Image, inj.Images)
-	}
-
-	if image != "" {
-		if err := deployment.Customize(
-			typed,
-			deployment.WithContainerImage(name, image),
-		); err != nil {
-			return "", fmt.Errorf("deployment %s: %w", typed.Name, err)
-		}
-	} else if descriptor != nil && descriptor.Image != "" {
-		log.V(1).Info("controller image unresolved, keeping chart default",
-			"deployment", typed.Name)
+	image := images.ResolveImage(container.Image, inj.Images)
+	if image == "" {
+		return fmt.Errorf("container %q image unresolved in Deployment %s", container.Name, typed.Name)
 	}
 
 	if err := deployment.Customize(
 		typed,
-		deployment.WithContainerEnv(name, inj.injectedEnvVars(ctx)),
+		deployment.WithContainerImage(container.Name, image),
+		deployment.WithContainerEnv(container.Name, inj.injectedEnvVars(ctx)),
 	); err != nil {
-		return "", fmt.Errorf("deployment %s: %w", typed.Name, err)
+		return fmt.Errorf("deployment %s: %w", typed.Name, err)
 	}
 
-	return image, nil
+	return nil
 }
 
 // adaptInitContainer applies the init container customization: the
-// configured init container must exist on the target, and it carries
-// its own resolved image when it declares one — the resolved main
-// image otherwise; an unresolved effective image keeps the chart
-// default. No init container configured means no mutation.
+// configured init container must be named, must exist on the target,
+// and its image — the one it declares, or the main container's when it
+// declares none — must resolve; the injected env vars are merged into
+// its env list the same way as the main container's. No init container
+// configured means no mutation.
 func (inj *EnvInjector) adaptInitContainer(
+	ctx context.Context,
 	typed *appsv1.Deployment,
-	mainImage string,
 ) error {
 	init := inj.Definition.Spec.Controller.Deployment.InitContainer
 	if init == nil {
 		return nil
+	}
+	if init.Name == "" {
+		return fmt.Errorf("unnamed init container in Deployment %s", typed.Name)
 	}
 
 	if _, found := k8s.FindContainer(typed.Spec.Template.Spec.InitContainers, init.Name); !found {
 		return fmt.Errorf("init container %q not found in Deployment %s", init.Name, typed.Name)
 	}
 
-	image := mainImage
-	if init.Image != "" {
-		image = images.ResolveImage(init.Image, inj.Images)
+	image := init.Image
+	if image == "" {
+		image = inj.Definition.Spec.Controller.Deployment.Container.Image
 	}
 
-	if image != "" {
-		if err := deployment.Customize(
-			typed,
-			deployment.WithInitContainerImage(init.Name, image),
-		); err != nil {
-			return fmt.Errorf("deployment %s: %w", typed.Name, err)
-		}
+	image = images.ResolveImage(image, inj.Images)
+	if image == "" {
+		return fmt.Errorf("init container %q image unresolved in Deployment %s", init.Name, typed.Name)
+	}
+
+	if err := deployment.Customize(
+		typed,
+		deployment.WithInitContainerImage(init.Name, image),
+		deployment.WithInitContainerEnv(init.Name, inj.injectedEnvVars(ctx)),
+	); err != nil {
+		return fmt.Errorf("deployment %s: %w", typed.Name, err)
 	}
 
 	return nil
