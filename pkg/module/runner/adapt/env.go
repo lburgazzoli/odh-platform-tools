@@ -6,7 +6,6 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -17,6 +16,7 @@ import (
 	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 
 	gvk "github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/k8s/deployment"
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/images"
 )
@@ -92,7 +92,7 @@ func (inj *EnvInjector) Run(
 			continue
 		}
 
-		adapted, err := inj.adaptDeployment(log, &resources[i])
+		adapted, err := inj.adaptDeployment(ctx, &resources[i])
 		if err != nil {
 			log.Error(err, "failed to inject env vars into Deployment",
 				"deployment", resources[i].GetName(),
@@ -111,20 +111,24 @@ func (inj *EnvInjector) Run(
 }
 
 // adaptDeployment converts the targeted Deployment to its typed form,
-// applies the image and env mutations, and returns the converted-back
-// resource. It returns a nil resource when nothing was injected or the
-// target container is absent, leaving the caller's original object
-// untouched — no-adaptation paths are never reserialized.
+// delegates the image and env mutations to the typed customization
+// options, and returns the converted-back resource. It returns a nil
+// resource only when the target container is absent, leaving the
+// caller's original object untouched — that skip path is never
+// reserialized, while a successfully customized target always is, even
+// when no effective field value changed.
 func (inj *EnvInjector) adaptDeployment(
-	log logr.Logger,
+	ctx context.Context,
 	obj *unstructured.Unstructured,
 ) (*unstructured.Unstructured, error) {
-	deployment := &appsv1.Deployment{}
-	if err := fwresources.ObjectFromUnstructured(clientgoscheme.Scheme, obj, deployment); err != nil {
+	log := logf.FromContext(ctx)
+
+	typed := &appsv1.Deployment{}
+	if err := fwresources.ObjectFromUnstructured(clientgoscheme.Scheme, obj, typed); err != nil {
 		return nil, fmt.Errorf("deployment %s: %w", obj.GetName(), err)
 	}
 
-	podSpec := &deployment.Spec.Template.Spec
+	podSpec := &typed.Spec.Template.Spec
 	if len(podSpec.Containers) == 0 {
 		return nil, fmt.Errorf("deployment %s has no containers", obj.GetName())
 	}
@@ -150,41 +154,34 @@ func (inj *EnvInjector) adaptDeployment(
 		return nil, nil
 	}
 
-	container := &podSpec.Containers[idx]
-
-	var injected int
+	var opts []deployment.CustomizeOption
 
 	if image != "" {
-		container.Image = image
-		injected++
-		log.V(3).Info("overriding controller image",
-			"deployment", obj.GetName(), "container", targetName)
+		opts = append(opts, deployment.WithContainerImage(targetName, image))
 
-		initInjected, err := inj.injectInitContainerImage(log, deployment, image)
-		if err != nil {
-			return nil, err
+		// The same resolved image goes to the main and init containers
+		// or neither: an absent or empty initContainers list skips, and
+		// a configured name missing from a nonempty list errors —
+		// reached only when the image resolved, since an unresolved
+		// image omits the init option entirely.
+		if init := descriptor.InitContainer; init != nil && len(podSpec.InitContainers) > 0 {
+			opts = append(opts, deployment.WithInitContainerImage(init.Name, image))
 		}
-		injected += initInjected
 	} else if descriptor.Container != nil && descriptor.Container.Image != "" {
 		log.V(1).Info("controller image unresolved, keeping chart default",
 			"deployment", obj.GetName())
 	}
 
-	injected += injectEnvVars(container, inj.injectedEnvVars(log))
+	opts = append(opts, deployment.WithContainerEnv(targetName, inj.injectedEnvVars(ctx)))
 
-	if injected == 0 {
-		return nil, nil
-	}
-
-	out, err := fwresources.ObjectToUnstructured(clientgoscheme.Scheme, deployment)
-	if err != nil {
+	if err := deployment.Customize(typed, opts...); err != nil {
 		return nil, fmt.Errorf("deployment %s: %w", obj.GetName(), err)
 	}
 
-	log.V(3).Info("injected env vars into module Deployment",
-		"name", obj.GetName(),
-		"count", injected,
-	)
+	out, err := fwresources.ObjectToUnstructured(clientgoscheme.Scheme, typed)
+	if err != nil {
+		return nil, fmt.Errorf("deployment %s: %w", obj.GetName(), err)
+	}
 
 	return out, nil
 }
@@ -195,7 +192,9 @@ func (inj *EnvInjector) adaptDeployment(
 // env. Later entries win over earlier ones once applied. Unresolved
 // related images are skipped, and a nil descriptor env value projects
 // to the empty string.
-func (inj *EnvInjector) injectedEnvVars(log logr.Logger) []corev1.EnvVar {
+func (inj *EnvInjector) injectedEnvVars(ctx context.Context) []corev1.EnvVar {
+	log := logf.FromContext(ctx)
+
 	var envVars []corev1.EnvVar
 
 	for _, relImg := range inj.Definition.Spec.RelatedImages {
@@ -240,79 +239,4 @@ func (inj *EnvInjector) injectedEnvVars(log logr.Logger) []corev1.EnvVar {
 	}
 
 	return envVars
-}
-
-// injectEnvVars applies the env vars to the container's env list and
-// reports how many entries changed.
-func injectEnvVars(container *corev1.Container, envVars []corev1.EnvVar) int {
-	var injected int
-
-	for _, envVar := range envVars {
-		if setEnv(&container.Env, envVar.Name, envVar.Value) {
-			injected++
-		}
-	}
-
-	return injected
-}
-
-// injectInitContainerImage injects the resolved image into the
-// configured init container of the typed Deployment: an unconfigured
-// name and an absent or empty initContainers list are skips, while a
-// configured name missing from a nonempty list is an error — reached
-// only when the controller image resolved, since the same nonempty
-// image goes to the main and init containers or neither.
-func (inj *EnvInjector) injectInitContainerImage(
-	log logr.Logger,
-	deployment *appsv1.Deployment,
-	image string,
-) (int, error) {
-	init := inj.Definition.Spec.Controller.Deployment.InitContainer
-	if init == nil {
-		return 0, nil
-	}
-
-	initContainers := deployment.Spec.Template.Spec.InitContainers
-	if len(initContainers) == 0 {
-		log.V(1).Info("no initContainers in Deployment, skipping init container image injection",
-			"deployment", deployment.Name)
-		return 0, nil
-	}
-
-	idx := slices.IndexFunc(initContainers, func(c corev1.Container) bool {
-		return c.Name == init.Name
-	})
-	if idx < 0 {
-		return 0, fmt.Errorf("init container %q not found in Deployment %s", init.Name, deployment.Name)
-	}
-
-	initContainers[idx].Image = image
-
-	log.V(3).Info("overriding init container image",
-		"deployment", deployment.Name, "initContainer", init.Name)
-
-	return 1, nil
-}
-
-// setEnv adds or overrides a typed env var on the container's list,
-// clearing any valueFrom, and reports whether a change was made. The
-// first entry with the name is updated; an entry already carrying the
-// exact value and no valueFrom is left untouched.
-func setEnv(env *[]corev1.EnvVar, name string, value string) bool {
-	for i := range *env {
-		if (*env)[i].Name == name {
-			if (*env)[i].Value == value && (*env)[i].ValueFrom == nil {
-				return false
-			}
-
-			(*env)[i].Value = value
-			(*env)[i].ValueFrom = nil
-
-			return true
-		}
-	}
-
-	*env = append(*env, corev1.EnvVar{Name: name, Value: value})
-
-	return true
 }

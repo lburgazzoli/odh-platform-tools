@@ -53,6 +53,21 @@ spec:
           value: chart-value
 `
 
+// deploymentEmptyInitYAML is the controller Deployment with an empty
+// initContainers list.
+const deploymentEmptyInitYAML = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthetic-controller
+spec:
+  template:
+    spec:
+      initContainers: []
+      containers:
+      - name: manager
+        image: registry.example/chart-controller:v0
+`
+
 // deploymentOtherInitYAML is the controller Deployment whose init
 // container is not the configured one.
 const deploymentOtherInitYAML = `apiVersion: apps/v1
@@ -88,6 +103,27 @@ spec:
             secretKeyRef:
               name: operand-secret
               key: image
+`
+
+// controllerDeploymentAlreadyCorrectYAML is the controller Deployment
+// already carrying the resolved main and init images and the extra env
+// value the injector would apply.
+const controllerDeploymentAlreadyCorrectYAML = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthetic-controller
+spec:
+  template:
+    spec:
+      initContainers:
+      - name: copy-manifests
+        image: quay.io/example/controller:v1
+      containers:
+      - name: manager
+        image: quay.io/example/controller:v1
+        env:
+        - name: LOG_LEVEL
+          value: debug
 `
 
 // controllerDeploymentMalformedEnvYAML is the controller Deployment
@@ -869,6 +905,24 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		))
 	})
 
+	t.Run("empty init slice skips", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+
+		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentEmptyInitYAML)})
+		g.Expect(err).To(Succeed())
+
+		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+		g.Expect(deployment.Object).To(SatisfyAll(
+			jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
+				| .image == "quay.io/example/controller:v1"`),
+			jq.Match(`.spec.template.spec | has("initContainers") | not`),
+		))
+	})
+
 	t.Run("missing named init with resolved image errors", func(t *testing.T) {
 		t.Parallel()
 
@@ -917,6 +971,78 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		g.Expect(deployment.Object).To(jq.Match(`.spec.template.spec.initContainers[] | select(.name == "copy-manifests")
 			| .image == "registry.example/chart-init:v0"`))
 	})
+}
+
+// TestEnvInjectorEmptyCustomizationStillRoundTrips pins the error-only
+// customization contract: a matched target with a found main container
+// is converted back even when the image is unresolved and the resolved
+// env list is empty — its unknown fields may be dropped — while a
+// missing-main target and a foreign Deployment keep their original
+// rendered maps.
+func TestEnvInjectorEmptyCustomizationStillRoundTrips(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	definition := newDefinition()
+	definition.Spec.RelatedImages = nil
+	definition.Spec.Controller.Deployment.Container.Env = nil
+
+	var render enginetypes.PostRenderer = (&EnvInjector{Definition: &definition}).Run
+
+	resources, err := render(t.Context(), []unstructured.Unstructured{
+		resource(t, controllerDeploymentUnknownFieldYAML),
+		resource(t, deploymentWrongMainContainerYAML),
+		resource(t, otherDeploymentYAML),
+	})
+	g.Expect(err).To(Succeed())
+
+	// The valid target round-trips even though no image or env request
+	// had an effect: the sentinel extension is dropped and the chart
+	// image and env are unchanged.
+	own := findResource(t, resources, "Deployment", "synthetic-controller")
+	g.Expect(own.Object).To(SatisfyAll(
+		jq.Match(`.spec.template.spec | has("x-extension") | not`),
+		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
+			| .image == "registry.example/chart-controller:v0"`),
+		jq.Match(`[.spec.template.spec.containers[] | select(.name == "manager") | .env[].name]
+			== ["CHART_ENV"]`),
+		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
+			| .env[] | select(.name == "CHART_ENV") | .value == "chart-value"`),
+	))
+
+	// The skip and passthrough paths keep their original maps.
+	g.Expect(resources[1]).To(Equal(resource(t, deploymentWrongMainContainerYAML)))
+	g.Expect(resources[2]).To(Equal(resource(t, otherDeploymentYAML)))
+}
+
+// TestEnvInjectorAlreadyCorrectValuesStillRoundTrips pins that a
+// matched target already carrying the resolved images and the extra
+// env value is still customized successfully — with no change count to
+// rely on — and the applied values are identical to the rendered ones.
+func TestEnvInjectorAlreadyCorrectValuesStillRoundTrips(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+
+	resources, err := render(t.Context(), []unstructured.Unstructured{
+		resource(t, controllerDeploymentAlreadyCorrectYAML),
+	})
+	g.Expect(err).To(Succeed())
+
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+	g.Expect(deployment.Object).To(SatisfyAll(
+		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
+			| .image == "quay.io/example/controller:v1"`),
+		jq.Match(`.spec.template.spec.initContainers[] | select(.name == "copy-manifests")
+			| .image == "quay.io/example/controller:v1"`),
+		jq.Match(`[.spec.template.spec.containers[] | select(.name == "manager") | .env[].name]
+			== ["LOG_LEVEL","RELATED_IMAGE_OPERAND","APPLICATIONS_NAMESPACE","MONITORING_NAMESPACE","ODH_MODULE_OPERATOR_PLATFORM_TYPE"]`),
+		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
+			| .env[] | select(.name == "LOG_LEVEL") | .value == "debug"`),
+	))
 }
 
 // TestEnvInjectorDoesNotMutateInputs pins that the injector only reads
