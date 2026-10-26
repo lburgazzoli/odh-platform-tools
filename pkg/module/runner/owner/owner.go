@@ -310,9 +310,10 @@ func normalize(connection *cluster.Connection, owner *v1alpha1.PlatformModuleDef
 }
 
 // publicationError classifies a failed publication request. A request
-// the server answered is definitive — rejected; a request whose
-// outcome went unreported — a lost response or a cancellation — is
-// unknown, never an inference that no write occurred.
+// the server answered definitively is rejected; a request whose
+// outcome went unreported — a lost response, a cancellation, or a
+// timeout answer — is unknown, never an inference that no write
+// occurred.
 func publicationError(
 	owner *v1alpha1.PlatformModuleDefinition,
 	operation string,
@@ -325,9 +326,11 @@ func publicationError(
 	return newError(OutcomeRejected, owner, operation, "", cause)
 }
 
-// isLostResponse reports whether a request error carries no server
-// answer: a transport failure, a cancellation, or a deadline. Server
-// answers — including every Kubernetes status error — are definitive.
+// isLostResponse reports whether a request error carries no usable
+// server answer: a transport failure, a cancellation, a deadline, or
+// a timeout status — the one server answer whose write outcome stays
+// ambiguous, which is why client-go retries these. Every other
+// Kubernetes status error is a definitive answer.
 func isLostResponse(err error) bool {
 	if err == nil {
 		return false
@@ -338,5 +341,11 @@ func isLostResponse(err error) bool {
 	}
 
 	var status *apierrors.StatusError
-	return !errors.As(err, &status)
+	if errors.As(err, &status) {
+		// The write may have committed while the answer was late,
+		// so a timeout answer is as ambiguous as a lost one.
+		return apierrors.IsTimeout(status) || apierrors.IsServerTimeout(status)
+	}
+
+	return true
 }
