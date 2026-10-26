@@ -208,17 +208,24 @@ the controller package renders; `--applications-namespace` overrides
 it for the controller package only. Payload resources that author
 their own namespace keep it.
 
-**Rendering.** The run renders with the same engine-backed renderers
-lint uses, cooperatively and without a hard render deadline: framework
-render calls are not interruptible mid-call, and cancellation is
-honored before and after each call while API calls stay bounded by the
-remaining invocation deadline. The engine's builtin namespace plugin
-places namespace-less resources into the effective applications
-namespace and rewrites the references that name a namespace (for
-example RoleBinding subjects); co-located same-named entries keep
-their order through the engine's ApplyOrder post-renderer; authored
-literal Helm values are merged over the chart defaults with the
-definition winning.
+**Rendering.** The run and lint share one centralized rendering
+service, `renderer.Render`, which selects the native backend from the
+definition's manifest format and drives it through the shared
+manifest-kit engine. Rendering is cooperative and has no hard render
+deadline: native render calls are not interruptible mid-call, and
+cancellation is honored before rendering, between every post-renderer,
+and on the final result, so a render that finished after the context
+expired never becomes successful output. The engine's builtin
+namespace plugin places namespace-less resources into the effective
+applications namespace and rewrites the references that name a
+namespace (for example RoleBinding subjects); co-located same-named
+entries keep their order through the engine's ApplyOrder
+post-renderer; authored literal Helm values are merged over the chart
+defaults with the definition winning. The service's payload guard
+fails the render itself on reserved identities — the module's own
+instances, any PlatformModuleDefinition, and the persisted definition
+CRD — after every caller post-renderer enriched the batch, so no
+caller can receive them.
 
 **Image and env injection.** The controller main container's `image`
 may be a literal or a whole-value `{{VARIABLE}}` reference. Reference
@@ -426,11 +433,12 @@ execution error instead of reporting a finding.
         │ YAML → typed definition,           │  │ owner preparation, connection,   │
         │ placement defaults                 │  │ deploy, images, wait             │
         └────────────────────────────────────┘  └────────────┬─────────────────────┘
-                                                                │ shared renderers
+                                                                │ rendering service
                                    ┌────────────────────────────▼──────────────────┐
-                                   │ pkg/module/renderer/{helm,kustomize}           │
-                                   │ engine-faithful render wrappers, restrictions   │
-                                   │ off, namespace plugin and ApplyOrder           │
+                                   │ pkg/module/renderer                            │
+                                   │ backend selection, engine execution, guard,    │
+                                   │ options; helm/kustomize construct the native   │
+                                   │ backends; source resolves entry paths          │
                                    └────────────────────────┬──────────────────────┘
                                                             │ []unstructured.Unstructured
                                    ┌────────────────────────▼──────────────────────┐
@@ -445,16 +453,19 @@ execution error instead of reporting a finding.
   with JSON tags — no runtime.Object, no Scheme registration, no
   generated deepcopy. The persisted owner type is the generated
   v1alpha1 definition with its embedded CRD.
-- **Services stay reusable.** The loader and both renderer wrappers
-  remain independently callable; the runner's owner preparation,
-  connection, deploy, image, and wait stages compose behind one
-  action.
-- **Engine-faithful rendering.** The framework actions render the
-  configured entry directly with engine load restrictions off, so
-  rendering behaves like a plain `kustomize build` or `helm template`
-  over the same tree: sibling bases, patches, and generators load as
-  authored, and any input the engine rejects fails with the engine's
-  own error.
+- **Services stay reusable.** The loader and the centralized
+  rendering service remain independently callable; the runner's owner
+  preparation, connection, deploy, image, and wait stages compose
+  behind one action.
+- **Engine-faithful rendering.** The centralized rendering service
+  renders the configured entry directly through the native
+  manifest-kit backends, so rendering behaves like a plain
+  `kustomize build` or `helm template` over the same tree. Kustomize
+  load restrictions stay at the engine's RootOnly default: references
+  within the allowed root load — sibling bases, patches, and
+  generators as authored — while a path escaping the root fails with
+  the engine's own error; any input the engine rejects fails the
+  render with the engine's own error.
 
 ## Parity boundaries
 
@@ -544,8 +555,10 @@ make vulncheck          # vulnerability check
 ```
 
 Layout: all code lives under `pkg/` with a singular `module` package
-tree (`api/v1alpha1`, `loader`, `renderer/{helm,kustomize}`, `linter`,
-`runner`); the parent `pkg/module` is the composition facade;
+tree (`api/v1alpha1`, `loader`, `renderer` with the `helm` and
+`kustomize` backend constructors and the `source` entry resolver,
+`linter`, `runner`); the parent `pkg/module` is the composition
+facade;
 `cmd/main.go` is only the executable entrypoint. The offline
 integration suite lives under `tests/integration` behind the
 `integration` build tag; the live e2e suite lives under `tests/e2e`
