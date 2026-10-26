@@ -44,6 +44,38 @@ func Render(ctx context.Context, definition v1alpha1.PlatformModuleDefinition, d
 	return RenderWithOptions(ctx, definition, definitionFile, renderer.Options{})
 }
 
+// New builds the native Helm renderer for the module described by
+// definition, whose file was loaded from definitionFile: the chart
+// entry resolves against the definition file's directory, the release
+// name is the module's metadata.name, and namespace — the release
+// namespace, exposed to chart templates as .Release.Namespace without
+// filling metadata.namespace — is passed already resolved. Authored
+// literal values decode lazily inside the source's own values
+// function, so a malformed entry surfaces as a render failure, not a
+// construction failure.
+//
+// The explicit flags preserve the old framework action's effective
+// struct-valued options: strict templates, and no renderer-added
+// content hash or source annotations, where the native renderer would
+// default the content hash to true.
+func New(
+	definition v1alpha1.PlatformModuleDefinition,
+	definitionFile string,
+	namespace string,
+) (enginetypes.Renderer, error) {
+	native, err := helm.New(
+		[]helm.Source{helmSource(definition, definitionFile, namespace)},
+		helm.WithStrict(true),
+		helm.WithContentHash(false),
+		helm.WithSourceAnnotations(false),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("helm render for module %s: %w", definition.Name, err)
+	}
+
+	return native, nil
+}
+
 // RenderWithOptions renders the module with runtime options: the
 // options' namespace becomes the Helm release namespace, exposing
 // .Release.Namespace to chart templates, and the options'
@@ -61,20 +93,9 @@ func RenderWithOptions(
 		return nil, err
 	}
 
-	source := helmSource(definition, definitionFile, options)
-
-	// The explicit flags preserve the old framework action's
-	// effective struct-valued options: strict templates, and no
-	// renderer-added content hash or source annotations, where the
-	// native renderer would default the content hash to true.
-	native, err := helm.New(
-		[]helm.Source{source},
-		helm.WithStrict(true),
-		helm.WithContentHash(false),
-		helm.WithSourceAnnotations(false),
-	)
+	native, err := New(definition, definitionFile, options.Namespace)
 	if err != nil {
-		return nil, fmt.Errorf("helm render for module %s: %w", definition.Name, err)
+		return nil, err
 	}
 
 	shared, err := renderer.NewEngine(native, options)
@@ -105,7 +126,7 @@ func RenderWithOptions(
 // helmSource builds the native Helm chart source for a definition:
 // the chart entry resolves against the definition file's directory,
 // the release name is the module's metadata.name, and the release
-// namespace carries the options' namespace without filling
+// namespace carries the resolved namespace without filling
 // metadata.namespace. Authored literal values decode lazily inside
 // the source's own values function — the renderer's error channel —
 // so a malformed entry surfaces as a render failure, not a new error
@@ -113,7 +134,7 @@ func RenderWithOptions(
 func helmSource(
 	definition v1alpha1.PlatformModuleDefinition,
 	definitionFile string,
-	options renderer.Options,
+	namespace string,
 ) helm.Source {
 	var path string
 	var values map[string]apiextensionsv1.JSON
@@ -126,7 +147,7 @@ func helmSource(
 	source := helm.Source{
 		Chart:            renderer.ResolveEntry(filepath.Dir(definitionFile), path),
 		ReleaseName:      definition.Name,
-		ReleaseNamespace: options.Namespace,
+		ReleaseNamespace: namespace,
 	}
 
 	if values != nil {
