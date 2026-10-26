@@ -111,24 +111,15 @@ const notFoundStatusJSON = `{"kind":"Status","apiVersion":"v1","status":"Failure
 const internalErrorStatusJSON = `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"broken","reason":"InternalError","code":500}
 `
 
-// crdEstablishedJSON is an established custom resource definition.
-const crdEstablishedJSON = `{"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition","metadata":{"name":"widgets.example.com"},"status":{"conditions":[{"type":"Established","status":"True"},{"type":"NamesAccepted","status":"True"}]}}
-`
-
-// crdUnestablishedJSON is a custom resource definition that exists
-// but is not established yet.
-const crdUnestablishedJSON = `{"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition","metadata":{"name":"widgets.example.com"},"status":{"conditions":[{"type":"Established","status":"False"},{"type":"NamesAccepted","status":"True"}]}}
-`
-
 // emptyListJSON is an empty list response for unhandled reads.
 const emptyListJSON = `{"apiVersion":"v1","kind":"List","items":[]}
 `
 
 // fakeAPIServer is a minimal API server double: core, apiextensions
-// and toggleable widget-group discovery, namespace reads, CRD reads,
-// widget reads, a hanging namespace for request-bound tests, and a
-// generic empty-list response. It records the impersonation user of
-// the requests it receives.
+// and toggleable widget-group discovery, namespace reads, widget
+// reads, a hanging namespace for request-bound tests, and a generic
+// empty-list response. It records the impersonation user of the
+// requests it receives.
 type fakeAPIServer struct {
 	*httptest.Server
 
@@ -137,8 +128,6 @@ type fakeAPIServer struct {
 
 	mu         sync.Mutex
 	namespaces map[string]int
-	crdBodies  map[string][]string
-	crdCalls   map[string]int
 }
 
 // newFakeAPIServer starts the double; the server closes with the
@@ -148,8 +137,6 @@ func newFakeAPIServer(t *testing.T) *fakeAPIServer {
 
 	fake := &fakeAPIServer{
 		namespaces: map[string]int{},
-		crdBodies:  map[string][]string{},
-		crdCalls:   map[string]int{},
 	}
 	fake.Server = httptest.NewServer(fake)
 
@@ -164,23 +151,6 @@ func (s *fakeAPIServer) setNamespace(name string, status int) {
 	defer s.mu.Unlock()
 
 	s.namespaces[name] = status
-}
-
-// setCRD serves the given response bodies for one CRD name in order;
-// the last body is sticky.
-func (s *fakeAPIServer) setCRD(name string, bodies ...string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.crdBodies[name] = bodies
-}
-
-// crdRequestCount returns how many reads a CRD name received.
-func (s *fakeAPIServer) crdRequestCount(name string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.crdCalls[name]
 }
 
 // ServeHTTP implements http.Handler.
@@ -242,26 +212,8 @@ func (s *fakeAPIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/apis/widgets.example.com/v1/namespaces/"):
 		writeJSON(widgetJSON)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/"):
-		name := strings.TrimPrefix(r.URL.Path, "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/")
-
-		s.mu.Lock()
-		s.crdCalls[name]++
-		bodies := s.crdBodies[name]
-		s.mu.Unlock()
-
-		if len(bodies) == 0 {
-			w.WriteHeader(http.StatusNotFound)
-			writeJSON(notFoundStatusJSON)
-
-			return
-		}
-
-		call := s.crdRequestCount(name)
-		if call > len(bodies) {
-			call = len(bodies)
-		}
-
-		writeJSON(bodies[call-1])
+		w.WriteHeader(http.StatusNotFound)
+		writeJSON(notFoundStatusJSON)
 	default:
 		writeJSON(emptyListJSON)
 	}
@@ -456,69 +408,6 @@ func TestNamespaceExists(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(apierrors.IsInternalError(err)).To(BeTrue())
 	g.Expect(broken).To(BeFalse())
-}
-
-// TestWaitCRDsWaitsForEstablishment pins the polling: a CRD that is
-// not established on the first read is retried until both conditions
-// hold, without inventing success from a partial state.
-func TestWaitCRDsWaitsForEstablishment(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	server := newFakeAPIServer(t)
-	server.setCRD("widgets.example.com", crdUnestablishedJSON, crdEstablishedJSON)
-
-	connection := connected(t.Context(), t, g, server, "")
-
-	g.Expect(connection.WaitCRDs(t.Context(), "widgets.example.com")).To(Succeed())
-	g.Expect(server.crdRequestCount("widgets.example.com")).To(BeNumerically(">=", 2))
-}
-
-// TestWaitCRDsPreservesNotFoundIdentity pins that a missing CRD
-// surfaces as an apiextensions NotFound, not a generic poll timeout.
-func TestWaitCRDsPreservesNotFoundIdentity(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	server := newFakeAPIServer(t)
-	connection := connected(t.Context(), t, g, server, "")
-
-	err := connection.WaitCRDs(t.Context(), "widgets.example.com")
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
-}
-
-// TestWaitCRDsHonorsCancellation pins that a canceled context stops
-// the wait with its own identity.
-func TestWaitCRDsHonorsCancellation(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	server := newFakeAPIServer(t)
-	server.setCRD("widgets.example.com", crdUnestablishedJSON)
-
-	connection := connected(t.Context(), t, g, server, "")
-
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	g.Expect(connection.WaitCRDs(ctx, "widgets.example.com")).To(MatchError(context.Canceled))
-}
-
-// TestWaitCRDsRequiresNames pins the empty-input contract: no CRDs
-// means nothing to wait for.
-func TestWaitCRDsRequiresNames(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	server := newFakeAPIServer(t)
-	connection := connected(t.Context(), t, g, server, "")
-
-	g.Expect(connection.WaitCRDs(t.Context())).To(Succeed())
 }
 
 // TestClientMapperAutoReloadsEstablishedCRDs pins that the default

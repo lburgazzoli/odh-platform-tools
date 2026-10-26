@@ -32,7 +32,6 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -40,10 +39,6 @@ import (
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
-
-// crdPollInterval is the delay between CRD establishment polls; the
-// first poll is immediate.
-const crdPollInterval = 500 * time.Millisecond
 
 // errNilGetter marks a missing standard configuration getter.
 var errNilGetter = errors.New("kubernetes configuration getter is nil")
@@ -144,40 +139,6 @@ func (c *Connection) Client() crclient.Client {
 	return c.client
 }
 
-// WaitCRDs polls the named custom resource definitions through the
-// controller-runtime client until every one reports both Established
-// and NamesAccepted. No discovery refresh follows: the client's lazy
-// mapper reloads missing groups itself, so groups served by CRDs
-// established here become mappable on the next lookup. Errors are
-// returned with their identity preserved — an apiextensions NotFound,
-// a context cancellation, or any request error reaches the caller
-// unwrapped in kind, and a failure means no successful establishment
-// is claimed.
-func (c *Connection) WaitCRDs(ctx context.Context, names ...string) error {
-	if len(names) == 0 {
-		return ctx.Err()
-	}
-
-	return wait.PollUntilContextCancel(ctx, crdPollInterval, true, func(ctx context.Context) (bool, error) {
-		for _, name := range names {
-			var crd apiextensionsv1.CustomResourceDefinition
-			if err := c.client.Get(ctx, crclient.ObjectKey{Name: name}, &crd); err != nil {
-				return false, err
-			}
-
-			if !conditionTrue(crd.Status.Conditions, apiextensionsv1.Established) {
-				return false, nil
-			}
-
-			if !conditionTrue(crd.Status.Conditions, apiextensionsv1.NamesAccepted) {
-				return false, nil
-			}
-		}
-
-		return true, nil
-	})
-}
-
 // NamespaceExists reports whether the namespace exists. It is a
 // read-only check: no namespace is ever created or mutated, and an
 // absent namespace is a plain false, leaving the caller to decide
@@ -197,19 +158,4 @@ func (c *Connection) NamespaceExists(ctx context.Context, name string) (bool, er
 	}
 
 	return true, nil
-}
-
-// conditionTrue reports whether the named condition is present and
-// true.
-func conditionTrue(
-	conditions []apiextensionsv1.CustomResourceDefinitionCondition,
-	conditionType apiextensionsv1.CustomResourceDefinitionConditionType,
-) bool {
-	for _, condition := range conditions {
-		if condition.Type == conditionType {
-			return condition.Status == apiextensionsv1.ConditionTrue
-		}
-	}
-
-	return false
 }
