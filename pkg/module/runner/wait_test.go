@@ -445,7 +445,7 @@ func TestWaitMissingTargetFailsAfterApply(t *testing.T) {
 
 	g.Expect(result).To(Equal(Result{
 		Attempted:      StageDeploy,
-		Completed:      StageRender,
+		Completed:      StageDeploy,
 		Owner:          confirmed,
 		Publication:    moduleowner.OutcomeConfirmed,
 		ApplyCompleted: true,
@@ -796,7 +796,7 @@ func TestWaitTimeoutIsRuntimeError(t *testing.T) {
 
 	g.Expect(result).To(Equal(Result{
 		Attempted:      StageDeploy,
-		Completed:      StageRender,
+		Completed:      StageDeploy,
 		Owner:          confirmed,
 		Publication:    moduleowner.OutcomeConfirmed,
 		ApplyCompleted: true,

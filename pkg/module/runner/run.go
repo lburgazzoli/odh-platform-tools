@@ -82,10 +82,12 @@ func (r *Runner) Run(ctx context.Context) (Result, error) {
 
 	// The opt-in wait runs once, after the successful apply, over the
 	// same still-live invocation context; a wait failure is a runtime
-	// error that retains everything the deploy confirmed.
+	// error that retains everything the deploy confirmed, deploy
+	// included: the completed stage stays deploy, because the apply
+	// succeeded — only the wait failed.
 	if r.options.Wait {
 		if err := r.Wait(ctx); err != nil {
-			return r.report(StageDeploy, err)
+			return r.reportCompleted(StageDeploy, StageDeploy, err)
 		}
 	}
 
@@ -102,6 +104,14 @@ func (r *Runner) report(attempted Stage, err error) (Result, error) {
 		completed = attempted.preceding()
 	}
 
+	return r.reportCompleted(attempted, completed, err)
+}
+
+// reportCompleted snapshots the runner's confirmed state with the
+// completed stage stated explicitly. Stage failures use report's
+// preceding-stage rule; a wait failure passes deploy for both — the
+// apply already completed, and only the wait failed.
+func (r *Runner) reportCompleted(attempted, completed Stage, err error) (Result, error) {
 	publication := r.publication
 	if publication == "" {
 		publication = moduleowner.OutcomeNotAttempted

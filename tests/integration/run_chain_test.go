@@ -597,7 +597,7 @@ func TestRunChainWaitShortBudgetTimesOut(t *testing.T) {
 	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
 
 	g.Expect(result.Attempted).To(Equal(runner.StageDeploy))
-	g.Expect(result.Completed).To(Equal(runner.StageRender))
+	g.Expect(result.Completed).To(Equal(runner.StageDeploy))
 	g.Expect(result.Publication).To(Equal(moduleowner.OutcomeConfirmed))
 	g.Expect(result.Owner).NotTo(BeNil())
 	g.Expect(result.ApplyCompleted).To(BeTrue())

@@ -248,8 +248,9 @@ raised (`--wait-timeout=5m`); the first deadline wins, so a longer
 wait budget never extends the remaining overall `--timeout`. A
 successful wait reports the rollout completion and the exact targets
 (`wait.targets` in the JSON report); a failed or timed-out wait fails
-the run as a runtime failure while the applied state and the confirmed
-owner are retained — the wait is explicit, not part of Deploy.
+the run as a runtime failure while the applied state, the confirmed
+owner, and the completed deploy stage are retained — the wait is
+explicit, not part of Deploy.
 
 **JSON report.** `--output=json` writes one document:
 

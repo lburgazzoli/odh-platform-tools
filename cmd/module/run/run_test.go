@@ -309,7 +309,7 @@ wait: completed (run-namespace/synthetic-controller)
 		recorder := &recordingRun{
 			result: runner.Result{
 				Attempted:      runner.StageDeploy,
-				Completed:      runner.StageRender,
+				Completed:      runner.StageDeploy,
 				Owner:          confirmedOwner(),
 				Publication:    moduleowner.OutcomeConfirmed,
 				ApplyCompleted: true,
@@ -330,7 +330,7 @@ wait: completed (run-namespace/synthetic-controller)
 		g.Expect(stdout).To(Equal(`module run definition.yaml: failed
 owner: synthetic (uid definition-uid)
 publication: confirmed
-stages: render completed
+stages: deploy completed
 apply: completed
 wait: incomplete
 cancelled: waiting for module synthetic controller rollout: context deadline exceeded
@@ -454,7 +454,7 @@ func TestRunCommandJSONReportGolden(t *testing.T) {
 		recorder := &recordingRun{
 			result: runner.Result{
 				Attempted:      runner.StageDeploy,
-				Completed:      runner.StageRender,
+				Completed:      runner.StageDeploy,
 				Owner:          confirmedOwner(),
 				Publication:    moduleowner.OutcomeConfirmed,
 				ApplyCompleted: true,
@@ -479,7 +479,7 @@ func TestRunCommandJSONReportGolden(t *testing.T) {
 			},
 			"publication": "confirmed",
 			"attemptedStage": "deploy",
-			"completedStage": "render",
+			"completedStage": "deploy",
 			"applyCompleted": true,
 			"wait": {
 				"requested": true,
