@@ -25,6 +25,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer/protobuf"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	crclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
 
@@ -104,19 +107,14 @@ const ownerCRDEstablishedStatusJSON = `{"conditions":[{"type":"Established","sta
 // fakeOwnerServer is a minimal API server double for the owner: core,
 // apiextensions, and module definition discovery; CRD and definition
 // storage with UID/resourceVersion assignment, apply-conflict
-// injection, raced-deletion simulation, lost apply responses
-// that abort the connection after the write is stored, and
-// server-timeout apply answers after the write is stored. It records
+// injection, raced-deletion simulation, and lost apply responses
+// that abort the connection after the write is stored. It records
 // every submitted definition apply body, query, and content type.
 type fakeOwnerServer struct {
 	*httptest.Server
 
 	loseApply   bool
 	vanishOnGet bool
-
-	// timeoutApply answers a stored apply with a server-timeout
-	// status: the write is committed but the answer is late.
-	timeoutApply bool
 
 	forbidDefinitionApply bool
 	applyConflicts        int
@@ -528,19 +526,11 @@ func (s *fakeOwnerServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.applyContentTypes = append(s.applyContentTypes, r.Header.Get("Content-Type"))
 		s.definitionWrites[name]++
 		lose := s.loseApply
-		timeout := s.timeoutApply
 		s.mu.Unlock()
 
 		if lose {
 			// The write is stored but the response never arrives.
 			panic(http.ErrAbortHandler)
-		}
-
-		if timeout {
-			// The write is stored but the answer is late: the
-			// server-timeout status client-go treats as retryable.
-			writeStatus(http.StatusGatewayTimeout, "Timeout")
-			return
 		}
 
 		writeJSON(status, string(encoded))
@@ -578,6 +568,11 @@ const (
 	definitionUID = "definition-uid"
 	syntheticName = "synthetic"
 )
+
+// errUnreportedWrite is the sentinel the injected-error publication
+// test fails the apply with: a non-status failure the generic
+// write-outcome policy classifies as an unreported request.
+var errUnreportedWrite = errors.New("connection reset by peer")
 
 // connected returns a connection to the fake server through standard
 // ConfigFlags: a real kubeconfig on disk with the server address
@@ -1032,41 +1027,45 @@ func TestEnsureLostApplyResponseRetainsIdentity(t *testing.T) {
 	)
 }
 
-// TestEnsureApplyTimeoutIsUnknown proves a server-timeout apply answer
-// is an unknown publication — the write may have committed while the
-// answer was late, the same ambiguity client-go retries timeouts for —
-// with the identity a prior read confirmed still retained.
-func TestEnsureApplyTimeoutIsUnknown(t *testing.T) {
+// TestPublishUnreportedWriteIsUnknown proves a definition apply whose
+// failure the generic write-outcome policy classifies as unreported
+// propagates as an unknown publication with no confirmed identity and
+// the sentinel cause reachable through errors.Is. The classification
+// table itself lives in the cluster package; this test pins only the
+// owner mapping, with the error injected straight into the apply.
+func TestPublishUnreportedWriteIsUnknown(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
-	server := newFakeOwnerServer(t)
-	server.seedDefinition(t, marshalDefinition(t, g, newLiveDefinition()))
-	server.timeoutApply = true
 
-	changed := newAuthoredDefinition()
-	changed.Spec.Manifests.Helm.Values["replicas"] = apiextensionsv1.JSON{Raw: []byte(`3`)}
+	scheme := runtime.NewScheme()
+	g.Expect(v1alpha1.AddToScheme(scheme)).To(Succeed())
 
-	owner, err := ensured(t.Context(), t, g, server, changed)
+	// The pre-read answers NotFound — the absent-owner case — so the
+	// apply is the only write the sentinel fails.
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(
+				context.Context,
+				crclient.WithWatch,
+				runtime.ApplyConfiguration,
+				...crclient.ApplyOption,
+			) error {
+				return errUnreportedWrite
+			},
+		}).
+		Build()
 
-	g.Expect(owner).NotTo(BeNil())
-	g.Expect(owner.UID).To(Equal(types.UID(definitionUID)))
+	owner, err := publish(t.Context(), cluster.NewWithClient(client), newAuthoredDefinition())
+
+	g.Expect(owner).To(BeNil())
 
 	typed := ownerError(g, err)
 	g.Expect(typed.Outcome).To(Equal(OutcomeUnknown))
-	g.Expect(typed.Owner).NotTo(BeNil())
-	g.Expect(typed.Owner.UID).To(Equal(types.UID(definitionUID)))
+	g.Expect(typed.Owner).To(BeNil())
 	g.Expect(typed.Error()).To(ContainSubstring("not reported"))
-
-	// The timeout identity survives on the cause for errors.As/Is.
-	g.Expect(apierrors.IsTimeout(err)).To(BeTrue())
-
-	// The server stored the new spec; only the answer was late.
-	// client-go may retry the timeout, so the write count is a floor.
-	g.Expect(server.definitionWriteCount()).To(BeNumerically(">=", 1))
-	g.Expect(server.storedDefinition(t)).To(
-		jq.Match(`.spec.manifests.helm.values.replicas == 3`),
-	)
+	g.Expect(errors.Is(err, errUnreportedWrite)).To(BeTrue())
 }
 
 // TestEnsureApplyConflictIsRejected proves a competing field manager's
