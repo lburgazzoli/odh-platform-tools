@@ -19,10 +19,12 @@ package cluster
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -33,7 +35,8 @@ import (
 // These tests spawn real helper subprocesses to prove the
 // supervision contract, so they never run in parallel with each
 // other: a supervised operation must be able to attribute every
-// process spawned after its baseline to itself.
+// process it spawned — new since its baseline and descending from
+// this binary — to itself, and only those.
 
 // TestSuperviseReturnsOperationResult proves an operation that
 // finishes inside its budget returns its own result untouched.
@@ -143,6 +146,93 @@ func TestSuperviseKillsProcessTree(t *testing.T) {
 		// Signal 0 probes existence: ESRCH means the process is gone.
 		return syscall.Kill(pid, 0) != nil
 	}).WithTimeout(10 * time.Second).WithPolling(50 * time.Millisecond).Should(BeTrue())
+}
+
+// TestSuperviseSparesUnrelatedProcesses proves termination never
+// reaches processes this test binary did not spawn: an orphan
+// re-parented away from the binary — standing in for any unrelated
+// host process that appears during the supervised window — survives
+// a supervised operation's timeout kill, while the operation's own
+// helper is killed and the goroutine joins.
+func TestSuperviseSparesUnrelatedProcesses(t *testing.T) {
+	g := NewWithT(t)
+
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "orphan.pid")
+
+	err := supervise(t.Context(), "orphan-sparing operation", 150*time.Millisecond, 10*time.Second, nil,
+		func() error {
+			// A double-forked sleep: the shell exits at once and the
+			// background sleep re-parents away from this binary — a
+			// new process whose ancestry no longer reaches it, like a
+			// sibling build or desktop helper spawned during the
+			// supervised window.
+			script := "sleep 300 & echo $! > " + pidFile + "; exit"
+
+			detached := exec.Command("sh", "-c", script)
+
+			if startErr := detached.Start(); startErr != nil {
+				return startErr
+			}
+
+			shPID := detached.Process.Pid
+
+			if waitErr := detached.Wait(); waitErr != nil {
+				return waitErr
+			}
+
+			// The orphan must be re-parented before the budget
+			// expires, or the kill would legitimately see it as our
+			// own still-attached child.
+			deadline := time.Now().Add(10 * time.Second)
+
+			for {
+				content, readErr := os.ReadFile(pidFile)
+				if readErr == nil {
+					if pid, parseErr := strconv.Atoi(strings.TrimSpace(string(content))); parseErr == nil {
+						if ppid, ok := parentPID(pid); ok && ppid != shPID {
+							break
+						}
+					}
+				}
+
+				if time.Now().After(deadline) {
+					return errors.New("the orphan never re-parented away from the shell")
+				}
+
+				time.Sleep(10 * time.Millisecond)
+			}
+
+			// The operation's own helper: the kill takes it, which
+			// unblocks this goroutine inside the grace period.
+			stuck := exec.Command("sleep", "300")
+
+			if startErr := stuck.Start(); startErr != nil {
+				return startErr
+			}
+
+			waitErr := stuck.Wait()
+
+			return fmt.Errorf("operation was terminated: %v", waitErr)
+		})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("orphan-sparing operation exceeded"))
+
+	content, readErr := os.ReadFile(pidFile)
+	g.Expect(readErr).NotTo(HaveOccurred())
+
+	orphanPID, parseErr := strconv.Atoi(strings.TrimSpace(string(content)))
+	g.Expect(parseErr).NotTo(HaveOccurred())
+
+	// The unrelated process survived the kill: still alive, still
+	// re-parented away.
+	g.Eventually(func() bool {
+		ppid, ok := parentPID(orphanPID)
+		return ok && ppid != os.Getpid()
+	}).WithTimeout(5 * time.Second).WithPolling(50 * time.Millisecond).Should(BeTrue())
+
+	// The test cleans up the process it spawned on its own behalf.
+	g.Expect(syscall.Kill(orphanPID, syscall.SIGKILL)).To(Succeed())
 }
 
 // TestSuperviseParentDeadlineWins proves the caller's deadline caps

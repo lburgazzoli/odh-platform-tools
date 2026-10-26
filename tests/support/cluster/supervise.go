@@ -35,15 +35,16 @@ import (
 // subprocesses (container runtime, kubectl) it spawns as direct
 // children of this process. supervise runs the operation on a
 // supervised goroutine and bounds it: when the operation's budget
-// expires, every helper process tree that appeared after the
-// operation started — and only those, identified by parentage, never
-// processes the test binary already owned — is killed, which is what
-// unblocks the provider call, and the goroutine is then joined
-// within a bounded grace period. On the happy path and after every
-// successful termination the goroutine has returned before supervise
-// does; only an operation that survives the kill of its whole helper
-// tree and the grace period is reported as still running, and that
-// error names it.
+// expires, every helper process tree that both appeared after the
+// operation started and descends from this process — and only those,
+// identified by parentage, never processes the host spawned on its
+// own and never processes already alive at the baseline — is killed,
+// which is what unblocks the provider call, and the goroutine is then
+// joined within a bounded grace period. On the happy path and after
+// every successful termination the goroutine has returned before
+// supervise does; only an operation that survives the kill of its
+// whole helper tree and the grace period is reported as still
+// running, and that error names it.
 //
 // The budget derives from the caller's context through
 // context.WithTimeout, so the parent deadline always wins.
@@ -107,9 +108,10 @@ func supervise(
 	}
 }
 
-// childProcessTrees snapshots every process of this test binary's
-// process tree keyed by PID, with each process's parent, so a later
-// snapshot can identify exactly the trees an operation spawned. A
+// childProcessTrees snapshots every process visible in /proc, keyed
+// by PID with each process's parent, so a later snapshot can identify
+// the trees an operation spawned. The kill step restricts by
+// ancestry and freshness; this snapshot alone attributes nothing. A
 // non-Linux environment without /proc yields an empty snapshot: the
 // bounded join still applies, only the kill does not.
 func childProcessTrees() map[int]int {
@@ -140,18 +142,27 @@ func childProcessTrees() map[int]int {
 }
 
 // killNewProcessTrees kills every process tree rooted at a process
-// that appeared after the baseline snapshot — the helper trees a
-// supervised operation spawned — and returns how many processes were
-// signalled. Processes alive at the baseline, and their existing
-// descendants, are never touched.
+// that both appeared after the baseline snapshot and descends from
+// this process — the helper trees a supervised operation spawned —
+// and returns how many processes were signalled. Processes alive at
+// the baseline, their descendants, and processes spawned by anything
+// else on the host are never touched.
 func killNewProcessTrees(baseline map[int]int) int {
 	current := childProcessTrees()
 
+	descendants := processDescendants(current, os.Getpid())
+
 	newRoots := map[int]struct{}{}
 	for pid := range current {
-		if _, old := baseline[pid]; !old {
-			newRoots[pid] = struct{}{}
+		if _, old := baseline[pid]; old {
+			continue
 		}
+
+		if _, mine := descendants[pid]; !mine {
+			continue
+		}
+
+		newRoots[pid] = struct{}{}
 	}
 
 	// A new root's descendants are new too, wherever they attach;
@@ -184,6 +195,32 @@ func killNewProcessTrees(baseline map[int]int) int {
 	}
 
 	return killed
+}
+
+// processDescendants resolves every process that descends from root
+// in the given PID-to-parent snapshot, transitively: the set starts
+// at root and absorbs any process whose current parent is already in
+// it. Re-parented subtrees are covered only where the current chain
+// still reaches root.
+func processDescendants(trees map[int]int, root int) map[int]struct{} {
+	descendants := map[int]struct{}{root: {}}
+
+	for changed := true; changed; {
+		changed = false
+
+		for pid, ppid := range trees {
+			if _, selected := descendants[pid]; selected {
+				continue
+			}
+
+			if _, selected := descendants[ppid]; selected {
+				descendants[pid] = struct{}{}
+				changed = true
+			}
+		}
+	}
+
+	return descendants
 }
 
 // parentPID reads one process's parent PID from /proc. The comm

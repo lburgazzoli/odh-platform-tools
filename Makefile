@@ -73,7 +73,6 @@ test-e2e-kind: ## Run the live e2e suite against an isolated, engine-owned Kind 
 .PHONY: test-e2e-external
 test-e2e-external: ## Run the live e2e suite against a confirmed external cluster (ODH_PLATFORM_TOOLS_E2E_EXTERNAL_KUBECONFIG and _CONTEXT required)
 	ODH_PLATFORM_TOOLS_E2E_ENGINE=external go test -race -count=1 -tags e2e -timeout 40m ./tests/e2e
-	go tool cover -func=cover.out
 
 ##@ Linting
 
