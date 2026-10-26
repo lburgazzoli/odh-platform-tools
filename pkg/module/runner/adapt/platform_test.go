@@ -58,6 +58,19 @@ data:
   MODULE_KEY: second-value
 `
 
+// gateConfigMapYAML is a ConfigMap carrying the operator's upgrade-gate
+// label; gates are out of scope, so it is an ordinary resource.
+const gateConfigMapYAML = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: odh-synthetic-upgrade-gate
+  namespace: opendatahub
+  labels:
+    platform.opendatahub.io/upgrade-gate: "true"
+data:
+  release: "2.19.0"
+`
+
 // TestPlatformConfigInjectorCreates pins that the odh-<module>-config
 // ConfigMap is appended in the applications namespace with the
 // canonical runner-supplied platform version, and no rollout hash or
@@ -191,4 +204,54 @@ func TestPlatformConfigInjectorIndexKindNameOnly(t *testing.T) {
 		jq.Match(`.data.MODULE_KEY == "second-value"`),
 		jq.Match(`.data.platformVersion == "2.19.0"`),
 	))
+}
+
+// TestPlatformConfigInjectorDoesNotMutateDefinition pins that the
+// injector only reads the definition the runner owns: after a full
+// pass over a rendered batch, it is exactly as supplied.
+func TestPlatformConfigInjectorDoesNotMutateDefinition(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	definition := newDefinitionPointer()
+
+	var render enginetypes.PostRenderer = (&PlatformConfigInjector{
+		Definition:            definition,
+		ApplicationsNamespace: "opendatahub",
+		PlatformVersion:       "2.19.0",
+	}).Run
+
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, moduleConfigMapYAML)})
+	g.Expect(err).To(Succeed())
+
+	g.Expect(resources).To(HaveLen(1))
+	g.Expect(*definition).To(Equal(newDefinition()))
+}
+
+// TestPlatformConfigInjectorPassesGateConfigMapsThrough pins that a
+// ConfigMap carrying the operator's upgrade-gate label is an ordinary
+// rendered resource: it is neither extracted, reported, nor otherwise
+// touched — no gates subsystem exists here.
+func TestPlatformConfigInjectorPassesGateConfigMapsThrough(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	var render enginetypes.PostRenderer = (&PlatformConfigInjector{
+		Definition:            newDefinitionPointer(),
+		ApplicationsNamespace: "opendatahub",
+		PlatformVersion:       "2.19.0",
+	}).Run
+
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, gateConfigMapYAML)})
+	g.Expect(err).To(Succeed())
+
+	// The gate ConfigMap passes through untouched; the only addition
+	// is the ordinary platform config ConfigMap.
+	g.Expect(resources).To(HaveLen(2))
+	g.Expect(resources[0]).To(Equal(resource(t, gateConfigMapYAML)))
+
+	configMap := findResource(t, resources[1:], "ConfigMap", "odh-synthetic-config")
+	g.Expect(configMap.Object).To(jq.Match(`.data.platformVersion == "2.19.0"`))
 }

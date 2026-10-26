@@ -36,19 +36,6 @@ spec:
         image: registry.example/chart-sidecar:v0
 `
 
-// gateConfigMapYAML is a ConfigMap carrying the operator's upgrade-gate
-// label; gates are out of scope, so it is an ordinary resource.
-const gateConfigMapYAML = `apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: odh-synthetic-upgrade-gate
-  namespace: opendatahub
-  labels:
-    platform.opendatahub.io/upgrade-gate: "true"
-data:
-  release: "2.19.0"
-`
-
 // deploymentWithoutInitYAML is the controller Deployment with no init
 // containers.
 const deploymentWithoutInitYAML = `apiVersion: apps/v1
@@ -168,15 +155,17 @@ spec:
         image: registry.example/chart-controller:v0
 `
 
-// serviceYAML is a non-Deployment rendered resource.
-const serviceYAML = `apiVersion: v1
-kind: Service
-metadata:
-  name: synthetic-service
-spec:
-  ports:
-  - port: 8080
-`
+// newEnvInjector returns the env injector for the given definition
+// and fully populated runtime inputs.
+func newEnvInjector(definition *toolApi.PlatformModuleDefinition) *EnvInjector {
+	return &EnvInjector{
+		Definition:            definition,
+		Images:                newResolvedImages(),
+		ApplicationsNamespace: "opendatahub",
+		MonitoringNamespace:   "opendatahub-monitoring",
+		PlatformType:          "self-managed",
+	}
+}
 
 // TestEnvInjector pins the happy path: the resolved controller image
 // overrides the main and init containers, and the env entries append
@@ -695,4 +684,25 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		g.Expect(deployment.Object).To(jq.Match(`.spec.template.spec.initContainers[] | select(.name == "copy-manifests")
 			| .image == "registry.example/chart-init:v0"`))
 	})
+}
+
+// TestEnvInjectorDoesNotMutateInputs pins that the injector only reads
+// the definition and the image snapshot the runner owns: after a full
+// pass over a rendered batch, both are exactly as supplied.
+func TestEnvInjectorDoesNotMutateInputs(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	definition := newDefinitionPointer()
+	injector := newEnvInjector(definition)
+
+	var render enginetypes.PostRenderer = injector.Run
+
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+	g.Expect(err).To(Succeed())
+	g.Expect(resources).To(HaveLen(1))
+
+	g.Expect(*definition).To(Equal(newDefinition()))
+	g.Expect(injector.Images).To(Equal(newResolvedImages()))
 }
