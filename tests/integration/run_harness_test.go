@@ -98,8 +98,7 @@ import (
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/helm"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/kustomize"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/deploy"
@@ -430,8 +429,7 @@ func (h *runHarness) run(ctx context.Context, options runner.Options) (runner.Re
 		options,
 		h.getter,
 		loader.LoadFromPath,
-		helm.RenderWithOptions,
-		kustomize.RenderWithOptions,
+		renderer.Render,
 		h.connect,
 		deploy.Apply,
 	)

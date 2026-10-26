@@ -98,14 +98,13 @@ func TestNewEngineResolvesRenderOptions(t *testing.T) {
 		}
 	}
 
-	shared, err := NewEngine(
-		optsTestRenderer{},
-		nil,
-		option.FunctionalOption[RenderOptions](nil),
-		RenderOptions{PostRenderers: []enginetypes.PostRenderer{observing("preset")}},
-		WithPostRenderer(observing("first")),
-		WithPostRenderer(observing("second")),
-	)
+	shared, err := newEngine(optsTestRenderer{}, RenderOptions{
+		PostRenderers: []enginetypes.PostRenderer{
+			observing("preset"),
+			observing("first"),
+			observing("second"),
+		},
+	})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	resources, err := shared.Render(t.Context())
@@ -125,6 +124,34 @@ func TestNewEngineResolvesRenderOptions(t *testing.T) {
 	// The engine returned the processed batch with no further sort.
 	g.Expect(len(resources)).To(Equal(3))
 	g.Expect(resources[0].GetNamespace() + "/" + resources[0].GetName()).To(Equal("alpha/shared"))
+}
+
+// TestResolveOptionsIgnoresNilOptions proves the public resolution
+// semantics: nil interface and typed nil functional options are
+// ignored, and the surviving options apply in order exactly once.
+func TestResolveOptionsIgnoresNilOptions(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	var calls []string
+
+	resolved := resolveOptions(
+		nil,
+		option.FunctionalOption[RenderOptions](nil),
+		RenderOptions{Namespace: "preset-namespace"},
+		WithNamespace("modules"),
+		WithPostRenderer(recordingPostRenderer(&calls, "first")),
+		WithPostRenderer(recordingPostRenderer(&calls, "second")),
+	)
+
+	g.Expect(resolved.Namespace).To(Equal("modules"))
+	g.Expect(resolved.PostRenderers).To(HaveLen(2))
+
+	for _, postRenderer := range resolved.PostRenderers {
+		_, _ = postRenderer(t.Context(), nil)
+	}
+	g.Expect(calls).To(Equal([]string{"first", "second"}))
 }
 
 // TestRenderOptionsApplyToPinsOrderingAndCloning proves option

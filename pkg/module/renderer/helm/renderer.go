@@ -1,5 +1,7 @@
-// Package helm renders Helm-based module definitions through the
-// direct manifest-kit Helm renderer driven by the shared engine.
+// Package helm builds the native manifest-kit Helm renderer for
+// Helm-based module definitions. Construction is its whole job: the
+// shared rendering service in the parent renderer package drives the
+// returned renderer through the shared engine, ordering, and guard.
 package helm
 
 import (
@@ -7,7 +9,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	jsonv2 "encoding/json/v2"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
@@ -15,34 +17,8 @@ import (
 	helm "github.com/k8s-manifest-kit/renderer-helm/pkg"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/source"
 )
-
-// Render renders the module described by definition, whose file was
-// loaded from definitionFile, through the direct Helm renderer with
-// no runtime options, and returns the rendered objects.
-//
-// The renderer renders the configured chart directory directly with
-// no cache and no client attached. Chart strictness, values schema
-// validation, bundled CRDs, dependency handling, and output ordering
-// all come from the native renderer and the shared engine: this
-// wrapper only maps the chart path, the module name as the Helm
-// release name, and the effective options the old framework action
-// produced — strict templates, and no renderer-added content hash or
-// source annotations. It never resolves replacement strings, never
-// sets values beyond the definition's authored literals, and never
-// adds repository configuration, so descriptor images and environment
-// entries cannot affect the output.
-//
-// The returned list contains every object the engine rendered for the
-// chart; callers filtering it must not assume they hold the raw chart
-// documents. The shared payload guard runs on the output: instances
-// of the definition's own module type, any PlatformModuleDefinition,
-// and the persisted definition CRD fail the render, so no caller can
-// receive them.
-func Render(ctx context.Context, definition v1alpha1.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error) {
-	return RenderWithOptions(ctx, definition, definitionFile, renderer.Options{})
-}
 
 // New builds the native Helm renderer for the module described by
 // definition, whose file was loaded from definitionFile: the chart
@@ -57,7 +33,11 @@ func Render(ctx context.Context, definition v1alpha1.PlatformModuleDefinition, d
 // The explicit flags preserve the old framework action's effective
 // struct-valued options: strict templates, and no renderer-added
 // content hash or source annotations, where the native renderer would
-// default the content hash to true.
+// default the content hash to true. The renderer carries no cache and
+// no client, never resolves replacement strings, never sets values
+// beyond the definition's authored literals, and never adds repository
+// configuration, so descriptor images and environment entries cannot
+// affect the output.
 func New(
 	definition v1alpha1.PlatformModuleDefinition,
 	definitionFile string,
@@ -74,53 +54,6 @@ func New(
 	}
 
 	return native, nil
-}
-
-// RenderWithOptions renders the module with runtime options: the
-// options' namespace becomes the Helm release namespace, exposing
-// .Release.Namespace to chart templates, and the options'
-// post-renderers run after the shared engine's apply-order
-// post-renderer. The renderer never fills metadata.namespace itself —
-// a template that does not use .Release.Namespace renders
-// namespace-less output, exactly as with no options.
-func RenderWithOptions(
-	ctx context.Context,
-	definition v1alpha1.PlatformModuleDefinition,
-	definitionFile string,
-	options renderer.Options,
-) ([]unstructured.Unstructured, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	native, err := New(definition, definitionFile, options.Namespace)
-	if err != nil {
-		return nil, err
-	}
-
-	shared, err := renderer.NewEngine(native, options)
-	if err != nil {
-		return nil, fmt.Errorf("helm render for module %s: %w", definition.Name, err)
-	}
-
-	resources, err := shared.Render(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("helm render for module %s: %w", definition.Name, err)
-	}
-
-	// The shared payload guard fails the render itself on reserved
-	// objects; they are never silently dropped.
-	if err := renderer.CheckReserved(definition, resources); err != nil {
-		return nil, fmt.Errorf("helm render for module %s: %w", definition.Name, err)
-	}
-
-	// A render that finished after the context expired never becomes
-	// successful output.
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	return resources, nil
 }
 
 // helmSource builds the native Helm chart source for a definition:
@@ -145,16 +78,44 @@ func helmSource(
 	}
 
 	source := helm.Source{
-		Chart:            renderer.ResolveEntry(filepath.Dir(definitionFile), path),
+		Chart:            source.ResolveEntry(filepath.Dir(definitionFile), path),
 		ReleaseName:      definition.Name,
 		ReleaseNamespace: namespace,
 	}
 
 	if values != nil {
 		source.Values = func(context.Context) (enginetypes.Values, error) {
-			return renderer.DecodeHelmValues(values)
+			return decodeHelmValues(values)
 		}
 	}
 
 	return source
+}
+
+// decodeHelmValues decodes authored literal chart values to the map
+// the Helm renderer consumes. Each entry is raw JSON exactly as
+// authored — placeholder-looking text stays literal — and the round
+// trip cannot fail for content that loaded successfully, but a
+// malformed entry is reported rather than dropped.
+//
+// A null entry is represented by apiextensions JSON with empty Raw —
+// its UnmarshalJSON leaves Raw untouched for null while MarshalJSON
+// emits null again — so empty Raw decodes as JSON null, not as an EOF
+// failure.
+func decodeHelmValues(values map[string]apiextensionsv1.JSON) (enginetypes.Values, error) {
+	result := make(enginetypes.Values, len(values))
+
+	for key, value := range values {
+		var decoded any
+
+		if len(value.Raw) == 0 {
+			decoded = nil
+		} else if err := jsonv2.Unmarshal(value.Raw, &decoded); err != nil {
+			return nil, fmt.Errorf("helm value %q: %w", key, err)
+		}
+
+		result[key] = decoded
+	}
+
+	return result, nil
 }

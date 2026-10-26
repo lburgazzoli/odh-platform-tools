@@ -38,8 +38,6 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/helm"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/kustomize"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 )
 
@@ -213,8 +211,8 @@ type stubRunner struct {
 	// the owner preparation and the rollout wait both run through it.
 	cluster *prepareCluster
 
-	// renderOptions captures the shared options Render passed.
-	renderOptions *renderer.Options
+	// renderOptions captures the resolved options Render passed.
+	renderOptions *renderer.RenderOptions
 
 	// loadError, renderError, connectError, and applyError drive the
 	// stub behavior; appliedOwner, appliedRelease, and
@@ -258,7 +256,6 @@ func newStubRunner(t *testing.T, options Options) *stubRunner {
 		testGetter(t),
 		stub.load,
 		stub.render,
-		stub.render,
 		stub.connect,
 		stub.apply,
 	)
@@ -278,20 +275,26 @@ func (s *stubRunner) load(_ context.Context, _ string, _ ...loader.LoadOption) (
 	return s.definition, s.loadError
 }
 
-// render is the backend render stub; it captures the shared options
-// and the invocation context, runs the optional hook, and returns
-// one empty resource so Deploy has a payload.
+// render is the render stub; it resolves the supplied options to
+// RenderOptions for assertions, captures the invocation context, runs
+// the optional hook, and returns one empty resource so Deploy has a
+// payload.
 func (s *stubRunner) render(
 	ctx context.Context,
 	_ v1alpha1.PlatformModuleDefinition,
 	_ string,
-	options renderer.Options,
+	opts ...renderer.RenderOption,
 ) ([]unstructured.Unstructured, error) {
 	s.record("render")
 
 	s.renderCtx = ctx
 
-	captured := options
+	captured := renderer.RenderOptions{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt.ApplyTo(&captured)
+		}
+	}
 	s.renderOptions = &captured
 
 	if s.renderHook != nil {
@@ -811,8 +814,7 @@ func TestLoadRenderComposeRealServicesOffline(t *testing.T) {
 		options,
 		testGetter(t),
 		loader.LoadFromPath,
-		helm.RenderWithOptions,
-		kustomize.RenderWithOptions,
+		renderer.Render,
 		stub.connect,
 		stub.apply,
 	)

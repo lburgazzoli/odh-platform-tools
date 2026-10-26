@@ -8,8 +8,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
-	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
 
 // DefinitionLoad loads and normalizes one module definition file. The
@@ -22,9 +22,14 @@ type DefinitionLoad func(
 ) (v1alpha1.PlatformModuleDefinition, error)
 
 // ManifestRender renders the manifest backend selected by a loaded
-// definition and returns the rendered objects. The Helm and Kustomize
-// backend wrappers are the concrete implementations.
-type ManifestRender func(ctx context.Context, definition v1alpha1.PlatformModuleDefinition, definitionFile string) ([]unstructured.Unstructured, error)
+// definition and returns the rendered objects. The centralized
+// rendering service is the concrete implementation.
+type ManifestRender func(
+	ctx context.Context,
+	definition v1alpha1.PlatformModuleDefinition,
+	definitionFile string,
+	opts ...renderer.RenderOption,
+) ([]unstructured.Unstructured, error)
 
 // Action composes loading, backend rendering, and validation into one
 // lint invocation: it loads the definition, renders its manifest
@@ -33,34 +38,31 @@ type ManifestRender func(ctx context.Context, definition v1alpha1.PlatformModule
 // environment resolution or injection, never prints, and holds no
 // per-call state: the same action is safe for concurrent runs.
 type Action struct {
-	load            DefinitionLoad
-	renderHelm      ManifestRender
-	renderKustomize ManifestRender
-	validate        Validation
+	load     DefinitionLoad
+	render   ManifestRender
+	validate Validation
 }
 
 // NewAction wires the action with its service boundaries: the loader,
-// both backend renderers, and the validation function. The root
+// the centralized renderer, and the validation function. The root
 // module facade passes the concrete reusable services and the default
 // checks; tests inject fakes.
 func NewAction(
 	load DefinitionLoad,
-	renderHelm ManifestRender,
-	renderKustomize ManifestRender,
+	render ManifestRender,
 	validate Validation,
 ) *Action {
 	return &Action{
-		load:            load,
-		renderHelm:      renderHelm,
-		renderKustomize: renderKustomize,
-		validate:        validate,
+		load:     load,
+		render:   render,
+		validate: validate,
 	}
 }
 
 // Run lints the module defined by options.DefinitionFile:
-// validate options, load, select the backend from the loaded
-// definition's manifest format, render, then run the validation
-// function over the returned objects.
+// validate options, load, render through the centralized rendering
+// service with no runtime options, then run the validation function
+// over the returned objects.
 //
 // Execution errors follow the error-category contract: a cancelled
 // context keeps its cancellation identity and takes precedence over
@@ -85,12 +87,7 @@ func (a *Action) Run(ctx context.Context, options Options) (Result, error) {
 		return Result{}, err
 	}
 
-	render, err := a.backendFor(definition)
-	if err != nil {
-		return Result{}, err
-	}
-
-	resources, err := render(ctx, definition, options.DefinitionFile)
+	resources, err := a.render(ctx, definition, options.DefinitionFile)
 	if err != nil {
 		return Result{}, err
 	}
@@ -116,21 +113,4 @@ func (a *Action) Run(ctx context.Context, options Options) (Result, error) {
 	})
 
 	return Result{Diagnostics: diagnostics}, nil
-}
-
-// backendFor selects the rendering service for the loaded definition's
-// manifest format. Structural validation is deferred, so an
-// unsupported value reaches this point as a definition failure rather
-// than being caught at load time.
-func (a *Action) backendFor(definition v1alpha1.PlatformModuleDefinition) (ManifestRender, error) {
-	switch definition.Spec.Manifests.Format {
-	case v1alpha1.FormatHelm:
-		return a.renderHelm, nil
-	case v1alpha1.FormatKustomize:
-		return a.renderKustomize, nil
-	default:
-		return nil, moduleerrors.NewDefinitionErrorf("unsupported manifest format %q for module %s",
-			definition.Spec.Manifests.Format,
-			definition.Name)
-	}
 }

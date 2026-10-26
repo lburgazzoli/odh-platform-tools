@@ -10,20 +10,18 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/deployments"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/types"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/helm"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/kustomize"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
 
 // NewLinter returns the Cobra-free module lint action wired with the
-// concrete reusable loader, both manifest backend renderers, and the
-// operator-parity checks. Callers pass a plain linter.Options struct
-// and a context; the action itself performs no flag parsing,
+// concrete reusable loader, the centralized rendering service, and
+// the operator-parity checks. Callers pass a plain linter.Options
+// struct and a context; the action itself performs no flag parsing,
 // printing, or environment resolution.
 func NewLinter() *linter.Action {
 	return linter.NewAction(
 		linter.DefinitionLoad(loader.LoadFromPath),
-		linter.ManifestRender(helm.Render),
-		linter.ManifestRender(kustomize.Render),
+		linter.ManifestRender(renderer.Render),
 		checks.And(
 			types.Validate,
 			deployments.Validate,

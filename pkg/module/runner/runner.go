@@ -47,10 +47,7 @@ import (
 
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
 
-	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
-
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
-	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/adapt"
@@ -68,13 +65,13 @@ type DefinitionLoad func(
 ) (v1alpha1.PlatformModuleDefinition, error)
 
 // ManifestRender renders the manifest backend selected by a loaded
-// definition with shared runtime options. The Helm and Kustomize
-// backend wrappers are the concrete implementations.
+// definition with shared runtime options. The centralized rendering
+// service is the concrete implementation.
 type ManifestRender func(
 	ctx context.Context,
 	definition v1alpha1.PlatformModuleDefinition,
 	definitionFile string,
-	options renderer.Options,
+	opts ...renderer.RenderOption,
 ) ([]unstructured.Unstructured, error)
 
 // Connect builds the invocation-scoped cluster connection. The
@@ -111,11 +108,10 @@ type Runner struct {
 	getter  genericclioptions.RESTClientGetter
 	options Options
 
-	load            DefinitionLoad
-	renderHelm      ManifestRender
-	renderKustomize ManifestRender
-	connect         Connect
-	apply           ApplyPayload
+	load    DefinitionLoad
+	render  ManifestRender
+	connect Connect
+	apply   ApplyPayload
 
 	stage stage
 
@@ -140,7 +136,7 @@ type Runner struct {
 
 // New wires the runner with its service boundaries: the standard
 // getter the invocation resolves namespace and connection from, and
-// the narrow I/O seams — loader, both backend renderers, connection,
+// the narrow I/O seams — loader, the centralized renderer, connection,
 // and payload apply. The owner preparation is the runner's own step
 // over the connection. The root module facade passes the concrete
 // reusable services; tests inject fakes.
@@ -148,20 +144,18 @@ func New(
 	options Options,
 	getter genericclioptions.RESTClientGetter,
 	load DefinitionLoad,
-	renderHelm ManifestRender,
-	renderKustomize ManifestRender,
+	render ManifestRender,
 	connect Connect,
 	apply ApplyPayload,
 ) *Runner {
 	return &Runner{
-		getter:          getter,
-		options:         options,
-		load:            load,
-		renderHelm:      renderHelm,
-		renderKustomize: renderKustomize,
-		connect:         connect,
-		apply:           apply,
-		stage:           stageNew,
+		getter:  getter,
+		options: options,
+		load:    load,
+		render:  render,
+		connect: connect,
+		apply:   apply,
+		stage:   stageNew,
 
 		waitPollInterval: defaultWaitPollInterval,
 	}
@@ -240,31 +234,25 @@ func (r *Runner) Load(ctx context.Context) error {
 	return nil
 }
 
-// Render is the rendering stage: the selected backend renders the
-// definition with the shared engine — the library apply-order
-// post-renderer first, then the env injector, then the platform
-// config injector, each exactly once — into the applications
+// Render is the rendering stage: the centralized rendering service
+// renders the definition with the shared engine — the library
+// apply-order post-renderer first, then the env injector, then the
+// platform config injector, each exactly once — into the applications
 // namespace. It performs no client or HTTP request and no owner or
 // payload write.
 //
-// The renderer itself has already rejected reserved identities as
-// render errors, and the backend guarantees that a render finishing
-// after the context expired never becomes successful output. The
-// stage holds every seam to the same contract, rejecting a late
-// successful return after the context expired, so no failed render
-// result is published here.
+// The rendering service has already rejected reserved identities as
+// render errors and guarantees that a render finishing after the
+// context expired never becomes successful output. The stage holds
+// every seam to the same contract, rejecting a late successful return
+// after the context expired, so no failed render result is published
+// here.
 func (r *Runner) Render(ctx context.Context) error {
 	if err := r.begin(stageRendered); err != nil {
 		return err
 	}
 
 	if err := ctx.Err(); err != nil {
-		r.fail()
-		return err
-	}
-
-	render, err := r.backendFor(r.definition)
-	if err != nil {
 		r.fail()
 		return err
 	}
@@ -282,10 +270,11 @@ func (r *Runner) Render(ctx context.Context) error {
 		PlatformVersion:       r.release.Version.String(),
 	}
 
-	resources, err := render(ctx, *r.definition, r.options.DefinitionFile, renderer.Options{
-		Namespace:     r.applicationsNamespace,
-		PostRenderers: []enginetypes.PostRenderer{env.Run, config.Run},
-	})
+	resources, err := r.render(ctx, *r.definition, r.options.DefinitionFile,
+		renderer.WithNamespace(r.applicationsNamespace),
+		renderer.WithPostRenderer(env.Run),
+		renderer.WithPostRenderer(config.Run),
+	)
 	if err != nil {
 		r.fail()
 		return err
@@ -388,23 +377,6 @@ func (r *Runner) begin(next stage) error {
 // identity — stays readable after it.
 func (r *Runner) fail() {
 	r.stage = stageFailed
-}
-
-// backendFor selects the rendering service for the loaded
-// definition's manifest format. Structural validation is deferred, so
-// an unsupported value reaches this point as a definition failure
-// rather than being caught at load time.
-func (r *Runner) backendFor(definition *v1alpha1.PlatformModuleDefinition) (ManifestRender, error) {
-	switch definition.Spec.Manifests.Format {
-	case v1alpha1.FormatHelm:
-		return r.renderHelm, nil
-	case v1alpha1.FormatKustomize:
-		return r.renderKustomize, nil
-	default:
-		return nil, moduleerrors.NewDefinitionErrorf("unsupported manifest format %q for module %s",
-			definition.Spec.Manifests.Format,
-			definition.Name)
-	}
 }
 
 // snapshotImages snapshots the image sources of one definition: the

@@ -4,8 +4,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
-	"context"
-	"errors"
 	"maps"
 	"os"
 	"path/filepath"
@@ -13,16 +11,13 @@ import (
 	"strings"
 	"testing"
 
-	. "github.com/onsi/gomega"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
-
-	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
+	. "github.com/onsi/gomega"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
 
 // definitionYAML is the valid Helm module definition.
@@ -32,56 +27,6 @@ metadata:
   name: synthetic
 spec:
   instance:
-    type:
-      group: components.platform.opendatahub.io
-      version: v1alpha1
-      kind: SyntheticModule
-  manifests:
-    format: helm
-    helm:
-      path: ./manifests/chart
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
-`
-
-// definitionWithEnvYAML is the Helm module definition with controller
-// descriptor env entries.
-const definitionWithEnvYAML = `apiVersion: config.opendatahub.io/v1alpha1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  instance:
-    type:
-      group: components.platform.opendatahub.io
-      version: v1alpha1
-      kind: SyntheticModule
-  manifests:
-    format: helm
-    helm:
-      path: ./manifests/chart
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v2
-        env:
-        - name: LOG_LEVEL
-          value: debug
-`
-
-// definitionWithInstanceNameYAML sets an explicit instance name
-// different from the module name.
-const definitionWithInstanceNameYAML = `apiVersion: config.opendatahub.io/v1alpha1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  instance:
-    name: synthetic-trainer
     type:
       group: components.platform.opendatahub.io
       version: v1alpha1
@@ -187,6 +132,32 @@ spec:
   replicas: {{ .Values.replicas }}
 `
 
+// definitionWithEnvYAML is the Helm module definition with controller
+// descriptor env entries.
+const definitionWithEnvYAML = `apiVersion: config.opendatahub.io/v1alpha1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: helm
+    helm:
+      path: ./manifests/chart
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        image: quay.io/example/controller:v2
+        env:
+        - name: LOG_LEVEL
+          value: debug
+`
+
 // vendoredTemplateYAML is the vendored dependency's namespace-less
 // service template.
 const vendoredTemplateYAML = `apiVersion: v1
@@ -207,68 +178,6 @@ const crdFileYAML = `apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   name: syntheticmodules.components.platform.opendatahub.io
-`
-
-// sharedAlphaConfigMapYAML and sharedBetaConfigMapYAML are same-named
-// ConfigMaps in different namespaces.
-const sharedAlphaConfigMapYAML = `apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: shared
-  namespace: alpha
-`
-
-const sharedBetaConfigMapYAML = `apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: shared
-  namespace: beta
-`
-
-// valuesKindsTemplateYAML renders the authored value kinds into
-// ConfigMap data.
-const valuesKindsTemplateYAML = `apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: values-cm
-data:
-  scalar: {{ .Values.scalar | toJson | quote }}
-  nested: {{ .Values.nested | toJson | quote }}
-  list: {{ .Values.list | toJson | quote }}
-  flag: {{ .Values.flag | toJson | quote }}
-  placeholder: {{ .Values.placeholder | toJson | quote }}
-`
-
-// valuesKindsDefinitionYAML authors literal chart values of every
-// JSON kind, including a null entry.
-const valuesKindsDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
-kind: PlatformModuleDefinition
-metadata:
-  name: synthetic
-spec:
-  instance:
-    type:
-      group: components.platform.opendatahub.io
-      version: v1alpha1
-      kind: SyntheticModule
-  manifests:
-    format: helm
-    helm:
-      values:
-        scalar: 2
-        nested:
-          tag: v1.0.0
-        list:
-        - a
-        - b
-        flag: true
-        nullValue: null
-        placeholder: "{{RELATED_IMAGE_EXAMPLE_CONTROLLER}}"
-  controller:
-    deployment:
-      name: synthetic-controller
-      container:
-        image: quay.io/example/controller:v1
 `
 
 // strictMissingKeyTemplateYAML references a value the chart does not
@@ -393,238 +302,6 @@ func findResource(t *testing.T, resources []unstructured.Unstructured, kind stri
 	return unstructured.Unstructured{}
 }
 
-func TestRenderHelmChart(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	root := t.TempDir()
-	writeChartFixture(t, root)
-
-	resources, err := Render(t.Context(), loadDefinition(t, root), filepath.Join(root, "definition.yaml"))
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(resources).NotTo(BeEmpty())
-
-	// The release name is the module name and chart values map from
-	// the chart defaults.
-	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-	replicas, found, err := unstructured.NestedInt64(deployment.Object, "spec", "replicas")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(found).To(BeTrue())
-	g.Expect(replicas).To(Equal(int64(1)))
-
-	// Vendored dependency templates render from the chart's charts/ archive.
-	g.Expect(findResource(t, resources, "Service", "synthetic-service")).NotTo(BeZero())
-}
-
-// TestRenderHelmCoLocatedChart proves a definition that omits the
-// helm block renders the chart co-located with the definition file:
-// the entry defaults to the definition file's own directory through
-// the real engine, and the chart loader carries the definition file
-// as inert chart content.
-func TestRenderHelmCoLocatedChart(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	root := t.TempDir()
-	writeCoLocatedChartFixture(t, root, coLocatedDefinitionYAML)
-
-	resources, err := Render(t.Context(), loadDefinitionFile(t, root, "module.yaml"), filepath.Join(root, "module.yaml"))
-	g.Expect(err).NotTo(HaveOccurred())
-
-	// The chart defaults apply: the definition authors no values.
-	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-	replicas, found, err := unstructured.NestedInt64(deployment.Object, "spec", "replicas")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(found).To(BeTrue())
-	g.Expect(replicas).To(Equal(int64(1)))
-}
-
-// TestRenderHelmDefinitionValues proves authored literal values merge
-// over the chart defaults with operator-identical precedence — chart
-// default 1, definition value 2 — through the real engine, with the
-// omitted path defaulting to the definition file's directory.
-func TestRenderHelmDefinitionValues(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	root := t.TempDir()
-	writeCoLocatedChartFixture(t, root, definitionWithValuesYAML)
-
-	resources, err := Render(t.Context(), loadDefinitionFile(t, root, "module.yaml"), filepath.Join(root, "module.yaml"))
-	g.Expect(err).NotTo(HaveOccurred())
-
-	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-	replicas, found, err := unstructured.NestedInt64(deployment.Object, "spec", "replicas")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(found).To(BeTrue())
-	g.Expect(replicas).To(Equal(int64(2)))
-}
-
-func TestRenderHelmRejectsInvalidValuesAgainstSchema(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	root := t.TempDir()
-	writeChartFixture(t, root)
-	// The framework action is strict: values must satisfy the chart's
-	// values.schema.json, validated offline.
-	writeModuleFile(t, root, "manifests/chart/values.yaml", "replicas: 0\n")
-
-	resources, err := Render(t.Context(), loadDefinition(t, root), filepath.Join(root, "definition.yaml"))
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(resources).To(BeNil())
-	g.Expect(err.Error()).To(ContainSubstring("helm render for module synthetic"))
-}
-
-func TestRenderHelmIgnoresControllerDescriptor(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	withDescriptor := t.TempDir()
-	writeChartFixture(t, withDescriptor)
-	writeModuleFile(t, withDescriptor, "definition.yaml", definitionWithEnvYAML)
-
-	withoutDescriptor := t.TempDir()
-	writeChartFixture(t, withoutDescriptor)
-
-	first, err := Render(t.Context(), loadDefinition(t, withDescriptor), filepath.Join(withDescriptor, "definition.yaml"))
-	g.Expect(err).NotTo(HaveOccurred())
-
-	second, err := Render(t.Context(), loadDefinition(t, withoutDescriptor), filepath.Join(withoutDescriptor, "definition.yaml"))
-	g.Expect(err).NotTo(HaveOccurred())
-
-	// Descriptor images and env entries never reach rendering: no
-	// process environment is read and the output is identical.
-	g.Expect(first).To(Equal(second))
-}
-
-func TestRenderHelmIgnoresInstanceName(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	withoutName := t.TempDir()
-	writeChartFixture(t, withoutName)
-
-	withName := t.TempDir()
-	writeChartFixture(t, withName)
-	writeModuleFile(t, withName, "definition.yaml", definitionWithInstanceNameYAML)
-
-	omitted, err := Render(t.Context(), loadDefinition(t, withoutName), filepath.Join(withoutName, "definition.yaml"))
-	g.Expect(err).NotTo(HaveOccurred())
-
-	explicit, err := Render(t.Context(), loadDefinition(t, withName), filepath.Join(withName, "definition.yaml"))
-	g.Expect(err).NotTo(HaveOccurred())
-
-	// The configured instance name is reserved for future custom
-	// resource creation and lookup: the rendered resources are
-	// identical whether it is omitted or explicit.
-	g.Expect(explicit).To(Equal(omitted))
-}
-
-func TestRenderHelmIsStatelessAcrossCalls(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	first := t.TempDir()
-	writeChartFixture(t, first)
-
-	second := t.TempDir()
-	writeChartFixture(t, second)
-	writeModuleFile(t, second, "definition.yaml", strings.Replace(definitionYAML, "name: synthetic", "name: other", 1))
-
-	firstOutput, err := Render(t.Context(), loadDefinition(t, first), filepath.Join(first, "definition.yaml"))
-	g.Expect(err).NotTo(HaveOccurred())
-
-	_, err = Render(t.Context(), loadDefinition(t, second), filepath.Join(second, "definition.yaml"))
-	g.Expect(err).NotTo(HaveOccurred())
-
-	repeated, err := Render(t.Context(), loadDefinition(t, first), filepath.Join(first, "definition.yaml"))
-	g.Expect(err).NotTo(HaveOccurred())
-
-	// Repeated renders of the same module are identical: no state
-	// leaks between calls.
-	g.Expect(repeated).To(Equal(firstOutput))
-}
-
-func TestRenderHelmPropagatesCancellation(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	root := t.TempDir()
-	writeChartFixture(t, root)
-
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	resources, err := Render(ctx, loadDefinition(t, root), filepath.Join(root, "definition.yaml"))
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(resources).To(BeNil())
-	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
-}
-
-func TestRenderHelmWithOptionsReleaseNamespace(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	root := t.TempDir()
-	writeChartFixture(t, root)
-	writeModuleFile(t, root, "manifests/chart/templates/deployment.yaml", namespacedTemplateYAML)
-
-	definition := loadDefinition(t, root)
-	definitionFile := filepath.Join(root, "definition.yaml")
-
-	resources, err := RenderWithOptions(t.Context(), definition, definitionFile, renderer.Options{
-		Namespace: "opendatahub",
-	})
-	g.Expect(err).NotTo(HaveOccurred())
-
-	// The options' namespace is the release namespace: a template
-	// using .Release.Namespace renders into it.
-	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-	g.Expect(deployment.Object).To(SatisfyAll(
-		jq.Match(`.metadata.namespace == "opendatahub"`),
-	))
-
-	// Helm does not fill metadata.namespace itself: a template that
-	// does not use .Release.Namespace stays namespace-less, exactly
-	// as the operator's normal deploy action would see it.
-	service := findResource(t, resources, "Service", "synthetic-service")
-	g.Expect(service.Object).To(SatisfyAll(
-		jq.Match(`.metadata | has("namespace") | not`),
-	))
-}
-
-func TestRenderHelmZeroOptionsReproduceOfflineRender(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	root := t.TempDir()
-	writeChartFixture(t, root)
-
-	definition := loadDefinition(t, root)
-	definitionFile := filepath.Join(root, "definition.yaml")
-
-	offline, err := Render(t.Context(), definition, definitionFile)
-	g.Expect(err).NotTo(HaveOccurred())
-
-	zeroOptions, err := RenderWithOptions(t.Context(), definition, definitionFile, renderer.Options{})
-	g.Expect(err).NotTo(HaveOccurred())
-
-	// Render is the zero-option adapter over the same implementation:
-	// the offline lint output is reproduced exactly.
-	g.Expect(zeroOptions).To(Equal(offline))
-}
-
 // assertNoRendererMetadata fails when any rendered object carries a
 // renderer-added annotation from the manifest kit.
 func assertNoRendererMetadata(t *testing.T, resources []unstructured.Unstructured) {
@@ -639,11 +316,133 @@ func assertNoRendererMetadata(t *testing.T, resources []unstructured.Unstructure
 	}
 }
 
-// TestRenderHelmAddsNoRendererMetadata proves the explicit
-// ContentHash=false and SourceAnnotations=false options preserve the
-// old framework action's effective output: neither chart templates
-// nor bundled chart CRDs gain a content hash or source annotation.
-func TestRenderHelmAddsNoRendererMetadata(t *testing.T) {
+// TestNewHelmChartRendersFromConfiguredPath proves the native
+// constructor renders the configured chart directory through Process:
+// the release name is the module name, chart values map from the chart
+// defaults, and vendored dependency templates render from the chart's
+// charts/ archive.
+func TestNewHelmChartRendersFromConfiguredPath(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeChartFixture(t, root)
+
+	native, err := New(loadDefinition(t, root), filepath.Join(root, "definition.yaml"), "")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	resources, err := native.Process(t.Context(), nil)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+	replicas, found, err := unstructured.NestedInt64(deployment.Object, "spec", "replicas")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(replicas).To(Equal(int64(1)))
+
+	g.Expect(findResource(t, resources, "Service", "synthetic-service")).NotTo(BeZero())
+}
+
+// TestNewHelmCoLocatedChart proves a definition that omits the helm
+// block constructs a renderer over the chart co-located with the
+// definition file: the entry defaults to the definition file's own
+// directory, and the chart loader carries the definition file as
+// inert chart content.
+func TestNewHelmCoLocatedChart(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeCoLocatedChartFixture(t, root, coLocatedDefinitionYAML)
+
+	native, err := New(loadDefinitionFile(t, root, "module.yaml"), filepath.Join(root, "module.yaml"), "")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	resources, err := native.Process(t.Context(), nil)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+	replicas, found, err := unstructured.NestedInt64(deployment.Object, "spec", "replicas")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(replicas).To(Equal(int64(1)))
+}
+
+// TestNewHelmDefinitionValues proves authored literal values merge
+// over the chart defaults with operator-identical precedence — chart
+// default 1, definition value 2 — through the native renderer's own
+// lazy values function.
+func TestNewHelmDefinitionValues(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeCoLocatedChartFixture(t, root, definitionWithValuesYAML)
+
+	native, err := New(loadDefinitionFile(t, root, "module.yaml"), filepath.Join(root, "module.yaml"), "")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	resources, err := native.Process(t.Context(), nil)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+	replicas, found, err := unstructured.NestedInt64(deployment.Object, "spec", "replicas")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(replicas).To(Equal(int64(2)))
+}
+
+// TestNewHelmRejectsInvalidValuesAgainstSchema proves the strict
+// native configuration: values must satisfy the chart's
+// values.schema.json, validated offline at Process time.
+func TestNewHelmRejectsInvalidValuesAgainstSchema(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeChartFixture(t, root)
+	writeModuleFile(t, root, "manifests/chart/values.yaml", "replicas: 0\n")
+
+	native, err := New(loadDefinition(t, root), filepath.Join(root, "definition.yaml"), "")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	resources, err := native.Process(t.Context(), nil)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(resources).To(BeNil())
+}
+
+// TestNewHelmStrictMissingKey proves the constructor keeps the old
+// framework action's strict template mode: a template referencing an
+// undefined value fails the render.
+func TestNewHelmStrictMissingKey(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+	writeModuleFile(t, root, "definition.yaml", definitionYAML)
+	writeModuleFile(t, root, "manifests/chart/Chart.yaml", chartYAML)
+	writeModuleFile(t, root, "manifests/chart/values.yaml", valuesYAML)
+	writeModuleFile(t, root, "manifests/chart/templates/configmap.yaml", strictMissingKeyTemplateYAML)
+
+	native, err := New(loadDefinition(t, root), filepath.Join(root, "definition.yaml"), "")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	resources, err := native.Process(t.Context(), nil)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(resources).To(BeNil())
+}
+
+// TestNewHelmAddsNoRendererMetadata proves the explicit
+// ContentHash=false and SourceAnnotations=false construction flags
+// preserve the old framework action's effective output: neither chart
+// templates nor bundled chart CRDs gain a content hash or source
+// annotation.
+func TestNewHelmAddsNoRendererMetadata(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -655,7 +454,10 @@ func TestRenderHelmAddsNoRendererMetadata(t *testing.T) {
 	writeModuleFile(t, root, "manifests/chart/templates/deployment.yaml", templateYAML)
 	writeModuleFile(t, root, "manifests/chart/crds/syntheticmodules.yaml", crdFileYAML)
 
-	resources, err := Render(t.Context(), loadDefinition(t, root), filepath.Join(root, "definition.yaml"))
+	native, err := New(loadDefinition(t, root), filepath.Join(root, "definition.yaml"), "")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	resources, err := native.Process(t.Context(), nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// The bundled CRD is part of the rendered output.
@@ -665,180 +467,58 @@ func TestRenderHelmAddsNoRendererMetadata(t *testing.T) {
 	assertNoRendererMetadata(t, resources)
 }
 
-// TestRenderHelmDefinitionValueKinds proves authored values of every
-// JSON kind survive loading and lazy decoding into the render —
-// including a null entry, whose apiextensions JSON representation has
-// empty Raw and must decode as JSON null rather than fail with EOF.
-func TestRenderHelmDefinitionValueKinds(t *testing.T) {
+// TestDecodeHelmValues proves authored literal chart values decode to
+// the map the Helm renderer consumes: every JSON kind survives,
+// including a null entry whose apiextensions JSON representation has
+// empty Raw, and placeholder-looking text stays literal.
+func TestDecodeHelmValues(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	root := t.TempDir()
-	writeModuleFile(t, root, "Chart.yaml", chartYAML)
-	writeModuleFile(t, root, "templates/configmap.yaml", valuesKindsTemplateYAML)
-	writeModuleFile(t, root, "module.yaml", valuesKindsDefinitionYAML)
+	values := map[string]apiextensionsv1.JSON{
+		"scalar":      {Raw: []byte("2")},
+		"string":      {Raw: []byte(`"literal"`)},
+		"nested":      {Raw: []byte(`{"tag":"v1.0.0"}`)},
+		"list":        {Raw: []byte(`["a","b"]`)},
+		"boolean":     {Raw: []byte("true")},
+		"nullValue":   {}, // apiextensions JSON represents null with empty Raw.
+		"placeholder": {Raw: []byte(`"{{RELATED_IMAGE_EXAMPLE_CONTROLLER}}"`)},
+	}
 
-	resources, err := Render(t.Context(), loadDefinitionFile(t, root, "module.yaml"), filepath.Join(root, "module.yaml"))
+	decoded, err := decodeHelmValues(values)
 	g.Expect(err).NotTo(HaveOccurred())
-
-	configMap := findResource(t, resources, "ConfigMap", "values-cm")
-	data, found, err := unstructured.NestedStringMap(configMap.Object, "data")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(found).To(BeTrue())
-	g.Expect(data).To(SatisfyAll(
-		HaveKeyWithValue("scalar", "2"),
-		HaveKeyWithValue("nested", `{"tag":"v1.0.0"}`),
-		HaveKeyWithValue("list", `["a","b"]`),
-		HaveKeyWithValue("flag", "true"),
+	g.Expect(decoded).To(SatisfyAll(
+		HaveKeyWithValue("scalar", float64(2)),
+		HaveKeyWithValue("string", "literal"),
+		HaveKeyWithValue("nested", map[string]any{"tag": "v1.0.0"}),
+		HaveKeyWithValue("list", []any{"a", "b"}),
+		HaveKeyWithValue("boolean", true),
+		// Empty Raw is JSON null, not malformed content: it decodes
+		// as a nil value instead of failing with EOF.
+		HaveKeyWithValue("nullValue", BeNil()),
 		// Placeholder-looking text stays literal.
-		HaveKeyWithValue("placeholder", `"{{RELATED_IMAGE_EXAMPLE_CONTROLLER}}"`),
+		HaveKeyWithValue("placeholder", "{{RELATED_IMAGE_EXAMPLE_CONTROLLER}}"),
 	))
+
+	// The source values are not mutated.
+	g.Expect(values["nullValue"].Raw).To(BeEmpty())
+	g.Expect(values["scalar"].Raw).To(Equal([]byte("2")))
 }
 
-// TestRenderHelmStrictMissingKey proves the renderer keeps the old
-// framework action's strict template mode: a template referencing an
-// undefined value fails the render.
-func TestRenderHelmStrictMissingKey(t *testing.T) {
+// TestDecodeHelmValuesRejectsMalformedEntry proves a malformed
+// authored entry is reported rather than dropped.
+func TestDecodeHelmValuesRejectsMalformedEntry(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	root := t.TempDir()
-	writeModuleFile(t, root, "definition.yaml", definitionYAML)
-	writeModuleFile(t, root, "manifests/chart/Chart.yaml", chartYAML)
-	writeModuleFile(t, root, "manifests/chart/values.yaml", valuesYAML)
-	writeModuleFile(t, root, "manifests/chart/templates/configmap.yaml", strictMissingKeyTemplateYAML)
+	values := map[string]apiextensionsv1.JSON{
+		"malformed": {Raw: []byte(`{"tag":`)},
+	}
 
-	resources, err := Render(t.Context(), loadDefinition(t, root), filepath.Join(root, "definition.yaml"))
+	decoded, err := decodeHelmValues(values)
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(resources).To(BeNil())
-	g.Expect(err.Error()).To(ContainSubstring("helm render for module synthetic"))
-}
-
-// TestRenderHelmAppliesOrderBeforeCallerPostRenderers proves the
-// shared engine registers the library apply-order post-renderer
-// before caller-supplied post-renderers, exactly once: separate Helm
-// templates containing same-named ConfigMaps across namespaces arrive
-// at the sentinel callback in the same order the old framework
-// produced — apply-order sorted — and the sentinel sees the whole
-// batch once.
-func TestRenderHelmAppliesOrderBeforeCallerPostRenderers(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	root := t.TempDir()
-	writeModuleFile(t, root, "definition.yaml", definitionYAML)
-	writeModuleFile(t, root, "manifests/chart/Chart.yaml", chartYAML)
-	writeModuleFile(t, root, "manifests/chart/values.yaml", valuesYAML)
-	writeModuleFile(t, root, "manifests/chart/templates/cm-beta.yaml", sharedBetaConfigMapYAML)
-	writeModuleFile(t, root, "manifests/chart/templates/cm-alpha.yaml", sharedAlphaConfigMapYAML)
-	writeModuleFile(t, root, "manifests/chart/templates/deployment.yaml", templateYAML)
-
-	calls := 0
-	var order []string
-
-	sentinel := func(_ context.Context, objects []unstructured.Unstructured) ([]unstructured.Unstructured, error) {
-		calls++
-
-		for i := range objects {
-			order = append(order, objects[i].GetNamespace()+"/"+objects[i].GetName())
-		}
-
-		return objects, nil
-	}
-
-	resources, err := RenderWithOptions(t.Context(), loadDefinition(t, root), filepath.Join(root, "definition.yaml"), renderer.Options{
-		PostRenderers: []enginetypes.PostRenderer{sentinel},
-	})
-	g.Expect(err).NotTo(HaveOccurred())
-
-	// The sentinel ran exactly once, after the apply-order
-	// post-renderer: the ConfigMaps arrive namespace-sorted ahead of
-	// the Deployment, the order the old framework returned.
-	g.Expect(calls).To(Equal(1))
-	g.Expect(order).To(Equal([]string{"alpha/shared", "beta/shared", "/synthetic-controller"}))
-	g.Expect(resources).To(HaveLen(3))
-}
-
-// TestRenderHelmCancellationBetweenProcessors proves an expired
-// context stops the engine chain between processors: a caller
-// post-renderer that cancels the context prevents every later
-// processor from running, and the render never returns successful
-// output. The synchronous chart build itself is not interrupted —
-// only the chain around it is cooperative.
-func TestRenderHelmCancellationBetweenProcessors(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	root := t.TempDir()
-	writeChartFixture(t, root)
-
-	ctx, cancel := context.WithCancel(t.Context())
-	t.Cleanup(cancel)
-
-	secondRan := false
-
-	cancelNow := func(_ context.Context, objects []unstructured.Unstructured) ([]unstructured.Unstructured, error) {
-		cancel()
-
-		return objects, nil
-	}
-
-	never := func(_ context.Context, objects []unstructured.Unstructured) ([]unstructured.Unstructured, error) {
-		secondRan = true
-
-		return objects, nil
-	}
-
-	resources, err := RenderWithOptions(ctx, loadDefinition(t, root), filepath.Join(root, "definition.yaml"), renderer.Options{
-		PostRenderers: []enginetypes.PostRenderer{cancelNow, never},
-	})
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
-	g.Expect(secondRan).To(BeFalse())
-	g.Expect(resources).To(BeNil())
-}
-
-// TestRenderHelmCoLocatedExample renders the repository's own
-// co-located Helm example through the direct renderer and the shared
-// engine, proving the documented layout keeps working after the
-// engine migration.
-func TestRenderHelmCoLocatedExample(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	definitionFile := filepath.Join("..", "..", "..", "..", "examples", "helm", "chart", "module.yaml")
-
-	definition, err := loader.LoadFromPath(t.Context(), definitionFile)
-	g.Expect(err).NotTo(HaveOccurred())
-
-	resources, err := Render(t.Context(), definition, definitionFile)
-	g.Expect(err).NotTo(HaveOccurred())
-
-	// The example renders its full controller package in apply order:
-	// CRD, ServiceAccount, Role, RoleBinding, then the Deployment.
-	g.Expect(resourceKinds(resources)).To(Equal([]string{
-		"CustomResourceDefinition",
-		"ServiceAccount",
-		"Role",
-		"RoleBinding",
-		"Deployment",
-	}))
-
-	assertNoRendererMetadata(t, resources)
-}
-
-// resourceKinds returns the rendered objects' kinds in order.
-func resourceKinds(resources []unstructured.Unstructured) []string {
-	kinds := make([]string, 0, len(resources))
-
-	for i := range resources {
-		kinds = append(kinds, resources[i].GetKind())
-	}
-
-	return kinds
+	g.Expect(err.Error()).To(ContainSubstring(`helm value "malformed"`))
+	g.Expect(decoded).To(BeNil())
 }

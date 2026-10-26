@@ -20,7 +20,7 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/deployments"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/types"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/helm"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
 
 func TestLintChainHelmValidModule(t *testing.T) {
@@ -227,7 +227,7 @@ func TestLintChainPreservesDescriptorIsolation(t *testing.T) {
 	g.Expect(definition.Spec.Controller.Deployment.Container.Image).
 		To(Equal("quay.io/example/controller:v1"))
 
-	resources, err := helm.Render(t.Context(), definition,
+	resources, err := renderer.Render(t.Context(), definition,
 		filepath.Join(root, "definition.yaml"))
 	g.Expect(err).NotTo(HaveOccurred())
 

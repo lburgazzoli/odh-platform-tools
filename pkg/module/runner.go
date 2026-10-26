@@ -20,17 +20,16 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/helm"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/kustomize"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/deploy"
 )
 
 // NewRunner returns the Cobra-free staged module run action wired
-// with the concrete reusable services: the loader, both
-// manifest backend renderers, the standard cluster connection, and
-// the framework payload apply; the definition owner preparation is
+// with the concrete reusable services: the loader, the centralized
+// rendering service, the standard cluster connection, and the
+// framework payload apply; the definition owner preparation is
 // the runner's own step over that connection. Callers pass a plain
 // runner.Options struct, the standard getter, and stage contexts;
 // the action itself performs no flag parsing, printing, or
@@ -40,8 +39,7 @@ func NewRunner(options runner.Options, getter genericclioptions.RESTClientGetter
 		options,
 		getter,
 		loader.LoadFromPath,
-		helm.RenderWithOptions,
-		kustomize.RenderWithOptions,
+		renderer.Render,
 		cluster.Connect,
 		deploy.Apply,
 	)

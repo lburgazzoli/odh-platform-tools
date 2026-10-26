@@ -64,11 +64,6 @@ func (opts RenderOptions) ApplyTo(target *RenderOptions) {
 // defaults; a nil option is ignored.
 type RenderOption = option.Option[RenderOptions]
 
-// Options is the transitional name for RenderOptions, retained while
-// backend and caller signatures still spell it. It is removed together
-// with the centralized rendering service.
-type Options = RenderOptions
-
 // WithNamespace sets the installation namespace a run renders into,
 // replacing any earlier namespace option. An empty namespace leaves
 // rendering untouched, matching offline lint output exactly.
