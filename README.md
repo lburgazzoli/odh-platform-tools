@@ -249,6 +249,21 @@ on the target fails the render instead of being repaired, unknown
 fields on an adapted target may be dropped, and unrelated resources —
 including foreign or malformed Deployments — are never converted.
 
+The typed mutations themselves live in `pkg/k8s/deployment`:
+`Customize` applies named `WithContainerImage`,
+`WithInitContainerImage`, and `WithContainerEnv` options, erroring when
+a named container is missing. The injector owns the policy around that
+mechanics — which Deployment to select, which names and images to
+resolve, and the module-specific skips (a missing main container skips
+the whole target; an absent or empty init container list skips init
+injection). The split is deliberate and one-way: the helper never
+decides targets, the injector never mutates typed containers.
+`Customize` reports only an error, so a matched target whose main
+container is found is always converted back after a successful pass —
+even when the image and env values were already correct or nothing
+resolved — while the skip and passthrough paths keep the original
+rendered maps untouched.
+
 **Platform config.** The run creates or merges the
 `odh-<module>-config` ConfigMap carrying the `--platform-version`. An
 existing match is selected by the exact core/v1 ConfigMap
@@ -508,7 +523,11 @@ and ApplyOrder. It is deliberately not the operator:
 - Typed controller adaptation: the controller Deployment is mutated
   through a typed round-trip, so a malformed typed field on the target
   fails the render instead of being repaired and unknown fields may be
-  dropped. Conversion checks representability, not admission validity.
+  dropped. A successfully customized target is always reserialized,
+  even when its image and env values were already correct; only
+  skipped objects — a missing main container, a foreign or
+  non-matching Deployment — keep their rendered maps byte-for-byte.
+  Conversion checks representability, not admission validity.
 - Platform config matching is the exact core/v1 ConfigMap
   group/version/kind plus name — namespace-insensitive, last match
   wins — not the operator's kind-only index.
