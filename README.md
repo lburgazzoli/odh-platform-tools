@@ -241,6 +241,23 @@ vars, removing their `valueFrom`; the platform identity
 `MONITORING_NAMESPACE` are injected the same way. Images are applied
 exactly as resolved: no digest hashing or mutation.
 
+Injection targets the controller Deployment only after an exact
+apps/v1 Deployment group/version/kind and name match — the configured
+deployment name, or the module name fallback. The matched target is
+adapted through a typed Deployment round-trip: a malformed typed field
+on the target fails the render instead of being repaired, unknown
+fields on an adapted target may be dropped, and unrelated resources —
+including foreign or malformed Deployments — are never converted.
+
+**Platform config.** The run creates or merges the
+`odh-<module>-config` ConfigMap carrying the `--platform-version`. An
+existing match is selected by the exact core/v1 ConfigMap
+group/version/kind plus name — namespace-insensitive, with the last
+exact match winning — and keeps its namespace, its module-owned data
+keys, and its `binaryData`; the platform version is enforced and stale
+cert-manager keys are removed. A missing config is appended in the
+applications namespace.
+
 **Default success means apply completion.** Without `--wait`, a
 successful run means the payload apply returned success — nothing
 more. A pending, absent, or never-converging workload causes no
@@ -488,6 +505,13 @@ and ApplyOrder. It is deliberately not the operator:
 - Helm literal definition values are supported; Viper/runtime-derived
   values and `NamespaceValueKey` are not.
 - No module CR creation, status handshake, or operand reconciliation.
+- Typed controller adaptation: the controller Deployment is mutated
+  through a typed round-trip, so a malformed typed field on the target
+  fails the render instead of being repaired and unknown fields may be
+  dropped. Conversion checks representability, not admission validity.
+- Platform config matching is the exact core/v1 ConfigMap
+  group/version/kind plus name — namespace-insensitive, last match
+  wins — not the operator's kind-only index.
 
 Movement on the framework `main` revision requires a parity review
 before upgrading.
