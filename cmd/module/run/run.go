@@ -96,7 +96,7 @@ const (
 // classify maps one run execution error to its failure category and
 // exit code. Cancellation and deadline always win; usage, local
 // definition, and image-file failures are usage failures; every
-// other execution error — render, connection, publication, apply,
+// other execution error — render, connection, owner preparation, apply,
 // and wait failures included — is a runtime failure.
 func classify(err error) (string, int) {
 	var imageSourceErr *images.ImageSourceError

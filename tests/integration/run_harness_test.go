@@ -5,10 +5,10 @@
 // Real boundaries: the strict loader over real files, Viper image
 // resolution over a real dotenv file and the process environment,
 // both shared manifest engines with the library apply-order
-// post-renderer and both struct injectors, the real owner
-// publication, the real framework deploy action with its default
-// enriched sort, and the real public Deployment status viewer behind
-// the requested wait. The composed chain is the production
+// post-renderer and both struct injectors, the real runner-internal
+// owner preparation, the real framework deploy action with its
+// default enriched sort, and the real public Deployment status viewer
+// behind the requested wait. The composed chain is the production
 // runner.New wiring with exactly one seam substituted: the cluster
 // connection is a controller-runtime fake client wrapped in the
 // connection's public NewWithClient test constructor, reached
@@ -17,7 +17,7 @@
 // Simulated boundaries — and only these: API identity assignment
 // (deterministic server UIDs stamped into applies and creates so
 // re-applies and read-backs keep one identity, exactly as a server
-// assigns), CRD establishment status on creation (so the owner's
+// assigns), CRD establishment status on creation (so the runner's
 // real CRD wait observes a served definition API), and scripted
 // Deployment status responses for the requested wait (live rollout
 // states a real cluster would report). Everything else — SSA request
@@ -103,8 +103,12 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/deploy"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/owner"
 )
+
+// runCRDEstablishedStatusJSON is the status a served CRD carries:
+// established with its names accepted.
+const runCRDEstablishedStatusJSON = `{"conditions":[{"type":"Established","status":"True"},{"type":"NamesAccepted","status":"True"}]}
+`
 
 // runFrame is one scripted GET reaction for a waited Deployment: an
 // error, or a live object map returned as the observation. The last
@@ -134,7 +138,7 @@ type runHarness struct {
 	failApply map[string]error
 
 	// crdNeverEstablished suppresses the establishment status the
-	// simulated server stamps onto a created CRD, so the owner's
+	// simulated server stamps onto an applied CRD, so the owner's
 	// real CRD wait polls until the invocation expires.
 	crdNeverEstablished bool
 
@@ -236,9 +240,14 @@ func newRunHarness(t *testing.T) *runHarness {
 			t.Fatal(err)
 		}
 
-		// So does the stored copy, through an unrecorded server-side
-		// write — the identity assignment a real server performs
-		// inside the apply itself.
+		// So does the stored copy, through unrecorded server-side
+		// writes — the identity assignment a real server performs
+		// inside the apply itself. Kinds the fake client treats with
+		// a status subresource, like the definition CRD, need the
+		// status written through the status subresource: a plain
+		// update would drop it. The status write runs first and
+		// refreshes the resource version, so the identity update
+		// stays conflict-free.
 		stored := &unstructured.Unstructured{}
 		if err := json.Unmarshal(encoded, stored); err != nil {
 			t.Fatal(err)
@@ -246,6 +255,12 @@ func newRunHarness(t *testing.T) *runHarness {
 
 		harness.quiet = true
 		defer func() { harness.quiet = false }()
+
+		if merged.GetKind() == "CustomResourceDefinition" && merged.Object["status"] != nil {
+			if err := c.Status().Update(context.Background(), stored); err != nil {
+				t.Fatal(err)
+			}
+		}
 
 		if err := c.Update(context.Background(), stored); err != nil {
 			t.Fatal(err)
@@ -289,6 +304,19 @@ func newRunHarness(t *testing.T) *runHarness {
 				merged.SetGroupVersionKind(probe.GroupVersionKind())
 			}
 
+			// A served CRD is reported established with its names
+			// accepted — the status a real server maintains — unless
+			// the harness suppresses it to hold the owner's real
+			// wait.
+			if merged.GetKind() == "CustomResourceDefinition" && !harness.crdNeverEstablished {
+				var crdStatus map[string]any
+				if err := json.Unmarshal([]byte(runCRDEstablishedStatusJSON), &crdStatus); err != nil {
+					t.Fatal(err)
+				}
+
+				merged.Object["status"] = crdStatus
+			}
+
 			stampUID(c, obj, id, merged)
 
 			return nil
@@ -300,17 +328,6 @@ func newRunHarness(t *testing.T) *runHarness {
 			opts ...crclient.CreateOption,
 		) error {
 			harness.writes = append(harness.writes, "create "+objectIdentity(obj))
-
-			// A created CRD is reported established with its names
-			// accepted — the status a served definition API carries —
-			// unless the harness suppresses it to hold the owner's
-			// real wait.
-			if crd, ok := obj.(*apiextensionsv1.CustomResourceDefinition); ok && !harness.crdNeverEstablished {
-				crd.Status.Conditions = []apiextensionsv1.CustomResourceDefinitionCondition{
-					{Type: apiextensionsv1.Established, Status: apiextensionsv1.ConditionTrue},
-					{Type: apiextensionsv1.NamesAccepted, Status: apiextensionsv1.ConditionTrue},
-				}
-			}
 
 			if obj.GetUID() == "" {
 				obj.SetUID(types.UID(runServerUID(objectIdentity(obj))))
@@ -405,8 +422,9 @@ func (h *runHarness) connect(_ context.Context, _ genericclioptions.RESTClientGe
 }
 
 // run composes the production runner wiring — the real loader, both
-// real renderers, the real owner publication, and the real framework
-// deploy action — over the harness connection, and runs it once.
+// real renderers, and the real framework deploy action, with the
+// runner's own owner preparation — over the harness connection, and
+// runs it once.
 func (h *runHarness) run(ctx context.Context, options runner.Options) (runner.Result, error) {
 	composed := runner.New(
 		options,
@@ -415,7 +433,6 @@ func (h *runHarness) run(ctx context.Context, options runner.Options) (runner.Re
 		helm.RenderWithOptions,
 		kustomize.RenderWithOptions,
 		h.connect,
-		owner.Ensure,
 		deploy.Apply,
 	)
 

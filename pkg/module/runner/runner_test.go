@@ -35,8 +35,6 @@ import (
 
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
 
-	moduleowner "github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/owner"
-
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
@@ -201,61 +199,48 @@ func testDefinition() v1alpha1.PlatformModuleDefinition {
 	}
 }
 
-// testConnection is a non-nil connection placeholder the stubs pass
-// around; no request is ever issued through it.
-func testConnection() *cluster.Connection {
-	return cluster.NewWithClient(nil)
-}
-
 // stubRunner wires a Runner whose service seams are recording fakes
 // around one fixed loaded definition. Every seam appends its name to
-// the shared call log; nil function fields keep the default recorded
-// success behavior.
+// the shared call log; the connection is the prepareCluster fake, so
+// Deploy's owner preparation runs for real against recorded applies.
 type stubRunner struct {
 	runner *Runner
 	calls  *[]string
 
 	definition v1alpha1.PlatformModuleDefinition
 
+	// cluster is the fake-client connection the connect stub returns;
+	// the owner preparation and the rollout wait both run through it.
+	cluster *prepareCluster
+
 	// renderOptions captures the shared options Render passed.
 	renderOptions *renderer.Options
 
-	// loadError, renderError, connectError, ensureOwner, ensureError,
-	// and applyError drive the stub behavior; appliedOwner,
-	// appliedRelease, and appliedResources capture what apply
-	// received.
+	// loadError, renderError, connectError, and applyError drive the
+	// stub behavior; appliedOwner, appliedRelease, and
+	// appliedResources capture what apply received.
 	loadError        error
 	renderError      error
 	connectError     error
-	ensureOwner      *v1alpha1.PlatformModuleDefinition
-	ensureError      error
 	applyError       error
 	appliedOwner     *v1alpha1.PlatformModuleDefinition
 	appliedRelease   api.Release
 	appliedResources []unstructured.Unstructured
 
-	// renderCtx, connectCtx, and ensureCtx capture the invocation
-	// contexts the stages passed to the seams.
+	// renderCtx and connectCtx capture the invocation contexts the
+	// stages passed to the seams.
 	renderCtx  context.Context
 	connectCtx context.Context
-	ensureCtx  context.Context
 
 	// renderResult, when set, replaces the render stub's default
 	// payload; the wait tests select targets out of it.
 	renderResult []unstructured.Unstructured
 
-	// connection, when set, replaces the connect stub's placeholder
-	// connection; the wait tests drive polling through a fake
-	// client.
-	connection *cluster.Connection
-
-	// renderHook, connectHook, and ensureHook, when set, run inside
-	// the matching stub with the invocation context before it
-	// returns; the run tests use them to cancel the invocation at
-	// controlled points.
+	// renderHook and connectHook, when set, run inside the matching
+	// stub with the invocation context before it returns; the run
+	// tests use them to cancel the invocation at controlled points.
 	renderHook  func(ctx context.Context)
 	connectHook func(ctx context.Context)
-	ensureHook  func(ctx context.Context)
 }
 
 // newStubRunner returns the stub harness with the test definition.
@@ -263,9 +248,9 @@ func newStubRunner(t *testing.T, options Options) *stubRunner {
 	t.Helper()
 
 	stub := &stubRunner{
-		calls:       &[]string{},
-		definition:  testDefinition(),
-		ensureOwner: &v1alpha1.PlatformModuleDefinition{},
+		calls:      &[]string{},
+		definition: testDefinition(),
+		cluster:    newPrepareCluster(t),
 	}
 
 	stub.runner = New(
@@ -275,7 +260,6 @@ func newStubRunner(t *testing.T, options Options) *stubRunner {
 		stub.render,
 		stub.render,
 		stub.connect,
-		stub.ensure,
 		stub.apply,
 	)
 
@@ -342,34 +326,7 @@ func (s *stubRunner) connect(
 		s.connectHook(ctx)
 	}
 
-	if s.connection != nil {
-		return s.connection, nil
-	}
-
-	return testConnection(), s.connectError
-}
-
-// ensure is the owner publication stub. It mirrors the real
-// service's contract: an error is always accompanied by a nil owner,
-// with any still-confirmed identity carried inside the typed error.
-func (s *stubRunner) ensure(
-	ctx context.Context,
-	_ *cluster.Connection,
-	_ v1alpha1.PlatformModuleDefinition,
-) (*v1alpha1.PlatformModuleDefinition, error) {
-	s.record("ensure")
-
-	s.ensureCtx = ctx
-
-	if s.ensureHook != nil {
-		s.ensureHook(ctx)
-	}
-
-	if s.ensureError != nil {
-		return nil, s.ensureError
-	}
-
-	return s.ensureOwner, nil
+	return s.cluster.connection, s.connectError
 }
 
 // apply is the payload apply stub.
@@ -546,7 +503,7 @@ func TestStageSequence(t *testing.T) {
 	// A successful invocation accepts no further stage.
 	g.Expect(errors.Is(stub.runner.Deploy(t.Context()), ErrStageSequence)).To(BeTrue())
 	g.Expect(errors.Is(stub.runner.Load(t.Context()), ErrStageSequence)).To(BeTrue())
-	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect", "ensure", "apply"}))
+	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect", "apply"}))
 }
 
 // TestFailedStageIsTerminal proves a stage failure makes the
@@ -663,101 +620,97 @@ func TestRenderWiresInjectors(t *testing.T) {
 	))
 }
 
-// TestDeploySequencesConnectEnsureApply proves Deploy runs the three
-// remote steps in order — connect, owner publication, payload apply —
-// and the apply receives the confirmed owner, the same release the
-// injector used, and the whole rendered payload.
-func TestDeploySequencesConnectEnsureApply(t *testing.T) {
+// TestDeploySequencesConnectPrepareApply proves Deploy runs its remote
+// steps in order — connect, owner preparation, payload apply — with the
+// preparation performing exactly the CRD and definition applies, and
+// the payload apply receiving the server-confirmed owner, the same
+// release the injector used, and the whole rendered payload.
+func TestDeploySequencesConnectPrepareApply(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	confirmed := &v1alpha1.PlatformModuleDefinition{
-		TypeMeta:   metav1.TypeMeta{APIVersion: v1alpha1.APIVersion, Kind: v1alpha1.Kind},
-		ObjectMeta: metav1.ObjectMeta{Name: "synthetic", UID: "definition-uid"},
-	}
-
 	stub := newStubRunner(t, testOptions())
-	stub.ensureOwner = confirmed
 
 	g.Expect(stub.runner.Load(t.Context())).To(Succeed())
 	g.Expect(stub.runner.Render(t.Context())).To(Succeed())
 	g.Expect(stub.runner.Deploy(t.Context())).To(Succeed())
 
-	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect", "ensure", "apply"}))
+	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect", "apply"}))
 	g.Expect(stub.runner.stage).To(Equal(stageDeployed))
 	g.Expect(stub.runner.applied).To(BeTrue())
-	g.Expect(stub.appliedOwner).To(BeIdenticalTo(confirmed))
+
+	// The preparation applied the embedded CRD, then the definition.
+	crdApplies, crdFirst := stub.cluster.applyIndex(prepareCRDWrite)
+	definitionApplies, definitionFirst := stub.cluster.applyIndex(prepareDefinitionWrite)
+	g.Expect(crdApplies).To(Equal(1))
+	g.Expect(definitionApplies).To(Equal(1))
+	g.Expect(definitionFirst).To(BeNumerically(">", crdFirst))
+
+	// The payload apply and the runner hold the server-confirmed
+	// owner: the same object, carrying the assigned identity.
+	g.Expect(stub.appliedOwner).NotTo(BeNil())
+	g.Expect(stub.runner.owner).To(BeIdenticalTo(stub.appliedOwner))
+	g.Expect(stub.appliedOwner.Name).To(Equal("synthetic"))
+	g.Expect(string(stub.appliedOwner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
 	g.Expect(stub.appliedRelease.Version.String()).To(Equal("2.19.0"))
 	g.Expect(stub.appliedRelease.Name).To(Equal(api.Platform(api.ReleasePlatform)))
-	g.Expect(stub.runner.owner).To(BeIdenticalTo(confirmed))
-	g.Expect(stub.runner.publication).To(Equal(moduleowner.OutcomeConfirmed))
 }
 
-// TestDeployRetainsOwnerOnEnsureFailure proves an owner-publication
-// failure stops before any payload write while keeping whatever
-// identity and publication outcome it still confirmed: a nil owner
-// with an unknown outcome asserts an ambiguous write, not that none
-// occurred.
-func TestDeployRetainsOwnerOnEnsureFailure(t *testing.T) {
+// TestDeployPreparationFailureStopsBeforePayload proves a preparation
+// failure — the CRD apply or the definition apply refusing — stops
+// Deploy before any payload write, reports no owner, and stays
+// terminal. A nil owner never claims that no write occurred.
+func TestDeployPreparationFailureStopsBeforePayload(t *testing.T) {
 	t.Parallel()
 
-	g := NewWithT(t)
+	t.Run("crd apply failure", func(t *testing.T) {
+		t.Parallel()
 
-	confirmed := &v1alpha1.PlatformModuleDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: "synthetic", UID: "definition-uid"},
-	}
+		g := NewWithT(t)
 
-	stub := newStubRunner(t, testOptions())
-	stub.ensureError = &moduleowner.Error{
-		Outcome: moduleowner.OutcomeUnknown,
-		Owner:   confirmed,
-	}
+		stub := newStubRunner(t, testOptions())
+		stub.cluster.failApply[prepareCRDWrite] = errors.New("crd refusal")
 
-	g.Expect(stub.runner.Load(t.Context())).To(Succeed())
-	g.Expect(stub.runner.Render(t.Context())).To(Succeed())
+		g.Expect(stub.runner.Load(t.Context())).To(Succeed())
+		g.Expect(stub.runner.Render(t.Context())).To(Succeed())
 
-	err := stub.runner.Deploy(t.Context())
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, ErrStageSequence)).To(BeFalse())
+		err := stub.runner.Deploy(t.Context())
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(errors.Is(err, ErrStageSequence)).To(BeFalse())
 
-	// No payload apply ran.
-	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect", "ensure"}))
-	g.Expect(stub.appliedOwner).To(BeNil())
+		// No payload apply ran, and no owner is confirmed.
+		g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect"}))
+		g.Expect(stub.appliedOwner).To(BeNil())
+		g.Expect(stub.runner.owner).To(BeNil())
+		g.Expect(stub.runner.applied).To(BeFalse())
 
-	// The confirmed identity and ambiguous outcome survive.
-	g.Expect(stub.runner.owner).To(BeIdenticalTo(confirmed))
-	g.Expect(stub.runner.publication).To(Equal(moduleowner.OutcomeUnknown))
-	g.Expect(stub.runner.applied).To(BeFalse())
+		// The failed invocation is terminal.
+		g.Expect(errors.Is(stub.runner.Deploy(t.Context()), ErrStageSequence)).To(BeTrue())
+	})
 
-	// The failed invocation is terminal.
-	g.Expect(errors.Is(stub.runner.Deploy(t.Context()), ErrStageSequence)).To(BeTrue())
-}
+	t.Run("definition apply failure", func(t *testing.T) {
+		t.Parallel()
 
-// TestDeployRetainsNilOwnerOnUnknownOutcome proves a lost owner
-// publication with no confirmed identity is retained as exactly
-// that: no owner, an unknown outcome, and no payload write.
-func TestDeployRetainsNilOwnerOnUnknownOutcome(t *testing.T) {
-	t.Parallel()
+		g := NewWithT(t)
 
-	g := NewWithT(t)
+		stub := newStubRunner(t, testOptions())
+		stub.cluster.failApply[prepareDefinitionWrite] = errors.New("definition refusal")
 
-	stub := newStubRunner(t, testOptions())
-	stub.ensureOwner = nil
-	stub.ensureError = &moduleowner.Error{Outcome: moduleowner.OutcomeUnknown}
+		g.Expect(stub.runner.Load(t.Context())).To(Succeed())
+		g.Expect(stub.runner.Render(t.Context())).To(Succeed())
 
-	g.Expect(stub.runner.Load(t.Context())).To(Succeed())
-	g.Expect(stub.runner.Render(t.Context())).To(Succeed())
+		g.Expect(stub.runner.Deploy(t.Context())).To(HaveOccurred())
 
-	g.Expect(stub.runner.Deploy(t.Context())).To(HaveOccurred())
-
-	g.Expect(stub.runner.owner).To(BeNil())
-	g.Expect(stub.runner.publication).To(Equal(moduleowner.OutcomeUnknown))
-	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect", "ensure"}))
+		g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect"}))
+		g.Expect(stub.appliedOwner).To(BeNil())
+		g.Expect(stub.runner.owner).To(BeNil())
+		g.Expect(stub.runner.applied).To(BeFalse())
+	})
 }
 
 // TestDeployConnectFailureIsTerminal proves a connection failure
-// stops the stage before any publication or write.
+// stops the stage before any preparation or write.
 func TestDeployConnectFailureIsTerminal(t *testing.T) {
 	t.Parallel()
 
@@ -771,23 +724,19 @@ func TestDeployConnectFailureIsTerminal(t *testing.T) {
 
 	g.Expect(stub.runner.Deploy(t.Context())).To(HaveOccurred())
 	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect"}))
+	g.Expect(stub.cluster.applies).To(BeEmpty())
 	g.Expect(stub.runner.owner).To(BeNil())
 }
 
 // TestDeployApplyFailureRetainsOwner proves a payload apply failure
-// keeps the published owner and confirmed publication while marking
-// the apply incomplete.
+// keeps the server-confirmed owner while marking the apply
+// incomplete.
 func TestDeployApplyFailureRetainsOwner(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	confirmed := &v1alpha1.PlatformModuleDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: "synthetic", UID: "definition-uid"},
-	}
-
 	stub := newStubRunner(t, testOptions())
-	stub.ensureOwner = confirmed
 	stub.applyError = errors.New("apply failure")
 
 	g.Expect(stub.runner.Load(t.Context())).To(Succeed())
@@ -795,8 +744,9 @@ func TestDeployApplyFailureRetainsOwner(t *testing.T) {
 
 	g.Expect(stub.runner.Deploy(t.Context())).To(HaveOccurred())
 
-	g.Expect(stub.runner.owner).To(BeIdenticalTo(confirmed))
-	g.Expect(stub.runner.publication).To(Equal(moduleowner.OutcomeConfirmed))
+	g.Expect(stub.runner.owner).NotTo(BeNil())
+	g.Expect(stub.runner.owner.Name).To(Equal("synthetic"))
+	g.Expect(string(stub.runner.owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
 	g.Expect(stub.runner.applied).To(BeFalse())
 }
 
@@ -832,8 +782,10 @@ func findResource(resources []unstructured.Unstructured, kind, name string) *uns
 // into the applications namespace with the injectors applied — the
 // resolved controller image, the related images, and the platform
 // config ConfigMap with the canonical version — and nothing connects
-// until Deploy, whose stubbed remote seams then receive exactly that
-// payload with the confirmed owner and the shared release.
+// until Deploy, whose stubbed connection then runs the real owner
+// preparation over the fake cluster before the payload apply receives
+// exactly that payload with the server-confirmed owner and the shared
+// release.
 func TestLoadRenderComposeRealServicesOffline(t *testing.T) {
 	g := NewWithT(t)
 
@@ -852,12 +804,8 @@ func TestLoadRenderComposeRealServicesOffline(t *testing.T) {
 	stub := &stubRunner{
 		calls:      &[]string{},
 		definition: testDefinition(),
+		cluster:    newPrepareCluster(t),
 	}
-
-	confirmed := &v1alpha1.PlatformModuleDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: "synthetic", UID: "definition-uid"},
-	}
-	stub.ensureOwner = confirmed
 
 	composed := New(
 		options,
@@ -866,7 +814,6 @@ func TestLoadRenderComposeRealServicesOffline(t *testing.T) {
 		helm.RenderWithOptions,
 		kustomize.RenderWithOptions,
 		stub.connect,
-		stub.ensure,
 		stub.apply,
 	)
 
@@ -901,13 +848,24 @@ func TestLoadRenderComposeRealServicesOffline(t *testing.T) {
 		jq.Match(`.data.platformVersion == "2.19.0"`),
 	))
 
-	// Deploy drives exactly the stubbed remote seams, in order, with
-	// the confirmed owner, the shared release, and the whole rendered
-	// payload.
+	// Deploy drives the stubbed connection, runs the real owner
+	// preparation over the fake cluster, then hands the payload apply
+	// the server-confirmed owner, the shared release, and the whole
+	// rendered payload.
 	g.Expect(composed.Deploy(t.Context())).To(Succeed())
 
-	g.Expect(*stub.calls).To(Equal([]string{"connect", "ensure", "apply"}))
-	g.Expect(stub.appliedOwner).To(BeIdenticalTo(confirmed))
+	g.Expect(*stub.calls).To(Equal([]string{"connect", "apply"}))
+
+	// The real preparation ran over the fake cluster: the embedded
+	// CRD, then the definition.
+	g.Expect(stub.cluster.applies).To(HaveLen(2))
+	_, crdFirst := stub.cluster.applyIndex(prepareCRDWrite)
+	_, definitionFirst := stub.cluster.applyIndex(prepareDefinitionWrite)
+	g.Expect(definitionFirst).To(BeNumerically(">", crdFirst))
+
+	g.Expect(stub.appliedOwner).NotTo(BeNil())
+	g.Expect(stub.appliedOwner.Name).To(Equal("synthetic"))
+	g.Expect(string(stub.appliedOwner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
 	g.Expect(stub.appliedRelease.Name).To(Equal(api.Platform(api.ReleasePlatform)))
 	g.Expect(stub.appliedRelease.Version.String()).To(Equal("2.19.0"))
 	g.Expect(stub.appliedResources).To(HaveLen(2))

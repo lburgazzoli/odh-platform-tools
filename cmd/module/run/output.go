@@ -8,7 +8,6 @@ import (
 	jsonv2 "encoding/json/v2"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner"
-	moduleowner "github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/owner"
 )
 
 // Report formatting below is the stable wire and text form of one
@@ -24,15 +23,14 @@ const (
 )
 
 // Report is the stable wire form of one executed run invocation: the
-// definition it ran against, the confirmed owner identity and
-// publication outcome, how far the stages ran, apply completion, the
-// wait state when one was requested, and the classified failure when
-// execution did not complete.
+// definition it ran against, the confirmed owner identity, how far
+// the stages ran, apply completion, the wait state when one was
+// requested, and the classified failure when execution did not
+// complete.
 type Report struct {
 	Definition     string     `json:"definition"`
 	Status         string     `json:"status"`
 	Owner          *Owner     `json:"owner,omitzero"`
-	Publication    string     `json:"publication"`
 	Attempted      string     `json:"attemptedStage,omitzero"`
 	Completed      string     `json:"completedStage,omitzero"`
 	ApplyCompleted bool       `json:"applyCompleted"`
@@ -96,12 +94,6 @@ func newReport(definition string, result runner.Result, failure *Failure) Report
 		}
 	}
 
-	publication := result.Publication
-	if publication == "" {
-		publication = moduleowner.OutcomeNotAttempted
-	}
-	report.Publication = string(publication)
-
 	report.Attempted = string(result.Attempted)
 	report.Completed = string(result.Completed)
 
@@ -163,8 +155,6 @@ func writeTextReport(w io.Writer, report Report) error {
 			fmt.Fprintf(&builder, "owner: %s\n", report.Owner.Name)
 		}
 	}
-
-	fmt.Fprintf(&builder, "publication: %s\n", report.Publication)
 
 	if report.Completed != "" {
 		fmt.Fprintf(&builder, "stages: %s completed\n", report.Completed)

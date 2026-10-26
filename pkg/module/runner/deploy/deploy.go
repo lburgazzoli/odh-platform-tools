@@ -30,8 +30,8 @@ import (
 // partition or CRD establishment wait exists here: a bundled custom
 // resource whose CRD was just created may fail on the first run and
 // succeed on a re-run, exactly as the operator behaves. CRD
-// establishment waiting stays only in owner.Ensure's definition-CRD
-// bootstrap. Rendered Namespaces follow normal framework create/update
+// establishment waiting stays only in the runner's definition-CRD
+// preparation. Rendered Namespaces follow normal framework create/update
 // behavior and stay unowned; a payload referencing an API the server
 // does not serve fails through the action's own error after earlier
 // writes, reported as partial state, and there is no rollback.

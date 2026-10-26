@@ -67,8 +67,8 @@ const defaultWaitPollInterval = time.Second
 // kubectl judges them — no extra readiness, paused, or
 // ReplicaFailure policy exists here.
 //
-// A wait failure is a runtime error: the published owner, the
-// confirmed publication, and apply completion are retained, and the
+// A wait failure is a runtime error: the published owner and apply
+// completion are retained, and the
 // report never claims readiness. Wait failures are safe typed errors:
 // their text names the operation and the target identity — namespace
 // and name, already safe report identity — and never the API's or the

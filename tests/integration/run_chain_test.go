@@ -20,7 +20,6 @@ import (
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/images"
-	moduleowner "github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/owner"
 )
 
 // runDefinitionWrite is the persisted definition's write identity
@@ -37,13 +36,13 @@ const runControllerObservation = "apps/v1, Kind=Deployment run-namespace/synthet
 
 // TestRunChainHelmComposesStages runs the complete Helm chain —
 // loader, Viper file images, the shared Helm engine with the library
-// apply-order post-renderer ahead of both struct injectors, the real
-// owner publication, and the real framework deploy action — and
-// proves the cross-service contract: the literal controller image is
-// shared by main and init containers, the env injection lands on the
-// main container alone, the platform ConfigMap participates in the
-// framework's enriched sort, authored values reach templates, and
-// the write order is the pre-migration apply order.
+// apply-order post-renderer ahead of both struct injectors, the
+// runner-internal owner preparation, and the real framework deploy
+// action — and proves the cross-service contract: the literal
+// controller image is shared by main and init containers, the env
+// injection lands on the main container alone, the platform ConfigMap
+// participates in the framework's enriched sort, authored values reach
+// templates, and the write order is the pre-migration apply order.
 func TestRunChainHelmComposesStages(t *testing.T) {
 	t.Parallel()
 
@@ -64,7 +63,6 @@ func TestRunChainHelmComposesStages(t *testing.T) {
 	// simulated server identity.
 	g.Expect(result.Completed).To(Equal(runner.StageDeploy))
 	g.Expect(result.ApplyCompleted).To(BeTrue())
-	g.Expect(result.Publication).To(Equal(moduleowner.OutcomeConfirmed))
 	g.Expect(result.Owner).NotTo(BeNil())
 	g.Expect(result.Owner.Name).To(Equal("synthetic"))
 	g.Expect(result.Owner.UID).NotTo(BeEmpty())
@@ -119,12 +117,11 @@ func TestRunChainHelmComposesStages(t *testing.T) {
 	g.Expect(harness.stored(t, runConfigMapGVK, "beta", "shared").Object).
 		To(jq.Match(`.metadata.namespace == "beta"`))
 
-	// Write order: the definition CRD bootstrap precedes the owner
-	// publication, which precedes every payload write; the payload
-	// itself is applied in the engine's apply order — the
-	// pre-migration winner ordering keeps alpha/shared ahead of
-	// beta/shared, and every payload write before the first
-	// Deployment write.
+	// Write order: the definition CRD apply precedes the definition
+	// apply, which precedes every payload write; the payload itself
+	// is applied in the engine's apply order — the pre-migration
+	// winner ordering keeps alpha/shared ahead of beta/shared, and
+	// every payload write before the first Deployment write.
 	_, crdWrite := harness.writeIndex("Kind=CustomResourceDefinition")
 	_, definitionWrite := harness.writeIndex(runDefinitionWrite)
 	_, alphaWrite := harness.writeIndex("alpha/shared")
@@ -169,7 +166,6 @@ func TestRunChainKustomizeComposesStages(t *testing.T) {
 
 	g.Expect(result.Completed).To(Equal(runner.StageDeploy))
 	g.Expect(result.ApplyCompleted).To(BeTrue())
-	g.Expect(result.Publication).To(Equal(moduleowner.OutcomeConfirmed))
 
 	// The namespace plugin placed the controller package.
 	controller := harness.stored(t, runDeploymentGVK, "run-namespace", "synthetic-controller")
@@ -318,7 +314,7 @@ func TestRunChainMissingImagesFileFailsBeforeCluster(t *testing.T) {
 	g.Expect(errors.As(err, &imageErr)).To(BeTrue())
 
 	g.Expect(result.Attempted).To(Equal(runner.StageLoad))
-	g.Expect(result.Publication).To(Equal(moduleowner.OutcomeNotAttempted))
+	g.Expect(result.Owner).To(BeNil())
 	g.Expect(harness.connected).To(BeFalse())
 	g.Expect(harness.writes).To(BeEmpty())
 	g.Expect(harness.gets).To(BeEmpty())
@@ -345,7 +341,7 @@ func TestRunChainLocalFailuresStopBeforeClientOperations(t *testing.T) {
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
 
-		g.Expect(result.Publication).To(Equal(moduleowner.OutcomeNotAttempted))
+		g.Expect(result.Owner).To(BeNil())
 		g.Expect(harness.connected).To(BeFalse())
 		g.Expect(harness.writes).To(BeEmpty())
 	})
@@ -368,7 +364,7 @@ func TestRunChainLocalFailuresStopBeforeClientOperations(t *testing.T) {
 
 		g.Expect(result.Attempted).To(Equal(runner.StageRender))
 		g.Expect(result.Completed).To(Equal(runner.StageLoad))
-		g.Expect(result.Publication).To(Equal(moduleowner.OutcomeNotAttempted))
+		g.Expect(result.Owner).To(BeNil())
 		g.Expect(harness.connected).To(BeFalse())
 		g.Expect(harness.writes).To(BeEmpty())
 	})
@@ -390,48 +386,21 @@ func TestRunChainLocalFailuresStopBeforeClientOperations(t *testing.T) {
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
 
-		g.Expect(result.Publication).To(Equal(moduleowner.OutcomeNotAttempted))
+		g.Expect(result.Owner).To(BeNil())
 		g.Expect(harness.writes).To(BeEmpty())
 	})
 }
 
-// TestRunChainPublicationOutcomes proves the publication outcome
-// contract through the real owner service: an unreported apply is
-// unknown with an unconfirmed identity, a server refusal is rejected,
-// a definition CRD that never serves stops the run before any
-// publication attempt, and a failed payload apply keeps the confirmed
-// owner.
-func TestRunChainPublicationOutcomes(t *testing.T) {
+// TestRunChainPreparationFailures proves the preparation contract
+// through the real runner chain: a failed definition apply stops the
+// run with safe public text, the raw cause preserved under Unwrap, no
+// owner, and no payload write; a definition CRD that never serves
+// stops the run the same way; and a failed payload apply keeps the
+// confirmed owner.
+func TestRunChainPreparationFailures(t *testing.T) {
 	t.Parallel()
 
-	t.Run("unreported apply is unknown", func(t *testing.T) {
-		t.Parallel()
-
-		g := NewWithT(t)
-
-		root := t.TempDir()
-		writeRunHelmModule(t, root)
-
-		harness := newRunHarness(t)
-		harness.failApply[runDefinitionWrite] = errors.New("connection refused")
-
-		result, err := harness.run(t.Context(), runOptions(root))
-		g.Expect(err).To(HaveOccurred())
-
-		g.Expect(result.Attempted).To(Equal(runner.StageDeploy))
-		g.Expect(result.Completed).To(Equal(runner.StageRender))
-		g.Expect(result.Publication).To(Equal(moduleowner.OutcomeUnknown))
-		g.Expect(result.Owner).To(BeNil())
-		g.Expect(result.ApplyCompleted).To(BeFalse())
-
-		// The definition apply was attempted; no payload write was.
-		_, definitionWrite := harness.writeIndex(runDefinitionWrite)
-		g.Expect(definitionWrite).To(BeNumerically(">=", 0))
-		deploymentWrites, _ := harness.writeIndex("Kind=Deployment")
-		g.Expect(deploymentWrites).To(Equal(0))
-	})
-
-	t.Run("server refusal is rejected", func(t *testing.T) {
+	t.Run("definition apply failure is safe and cause-preserving", func(t *testing.T) {
 		t.Parallel()
 
 		g := NewWithT(t)
@@ -442,17 +411,33 @@ func TestRunChainPublicationOutcomes(t *testing.T) {
 		harness := newRunHarness(t)
 		harness.failApply[runDefinitionWrite] = apierrors.NewForbidden(
 			schema.GroupResource{Group: "config.opendatahub.io", Resource: "platformmoduledefinitions"},
-			"synthetic", errors.New("not allowed"))
+			"synthetic", errors.New("CHAIN-MARKER-refused"))
 
 		result, err := harness.run(t.Context(), runOptions(root))
 		g.Expect(err).To(HaveOccurred())
 
-		g.Expect(result.Publication).To(Equal(moduleowner.OutcomeRejected))
+		g.Expect(result.Attempted).To(Equal(runner.StageDeploy))
+		g.Expect(result.Completed).To(Equal(runner.StageRender))
 		g.Expect(result.Owner).To(BeNil())
 		g.Expect(result.ApplyCompleted).To(BeFalse())
+
+		// The safe public text names the failed operation without
+		// echoing the server's own message; the cause identity stays
+		// reachable through Unwrap.
+		g.Expect(err.Error()).To(SatisfyAll(
+			ContainSubstring("applying the module definition"),
+			Not(ContainSubstring("CHAIN-MARKER-refused")),
+		))
+		g.Expect(apierrors.IsForbidden(err)).To(BeTrue())
+
+		// The definition apply was attempted; no payload write was.
+		_, definitionWrite := harness.writeIndex(runDefinitionWrite)
+		g.Expect(definitionWrite).To(BeNumerically(">=", 0))
+		deploymentWrites, _ := harness.writeIndex("Kind=Deployment")
+		g.Expect(deploymentWrites).To(Equal(0))
 	})
 
-	t.Run("never-serving CRD stops before publication", func(t *testing.T) {
+	t.Run("never-serving CRD stops before the definition", func(t *testing.T) {
 		t.Parallel()
 
 		g := NewWithT(t)
@@ -470,7 +455,6 @@ func TestRunChainPublicationOutcomes(t *testing.T) {
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
 
-		g.Expect(result.Publication).To(Equal(moduleowner.OutcomeNotAttempted))
 		g.Expect(result.Owner).To(BeNil())
 		g.Expect(result.ApplyCompleted).To(BeFalse())
 		g.Expect(harness.writes).To(HaveLen(1))
@@ -496,7 +480,6 @@ func TestRunChainPublicationOutcomes(t *testing.T) {
 
 		g.Expect(result.Attempted).To(Equal(runner.StageDeploy))
 		g.Expect(result.Completed).To(Equal(runner.StageRender))
-		g.Expect(result.Publication).To(Equal(moduleowner.OutcomeConfirmed))
 		g.Expect(result.Owner).NotTo(BeNil())
 		g.Expect(result.Owner.Name).To(Equal("synthetic"))
 		g.Expect(result.ApplyCompleted).To(BeFalse())
@@ -571,7 +554,7 @@ func TestRunChainWaitCompletion(t *testing.T) {
 
 // TestRunChainWaitShortBudgetTimesOut proves an expiring wait budget
 // fails as a runtime deadline error while the report retains the
-// confirmed owner, publication, and apply completion.
+// confirmed owner and apply completion.
 func TestRunChainWaitShortBudgetTimesOut(t *testing.T) {
 	t.Parallel()
 
@@ -598,7 +581,6 @@ func TestRunChainWaitShortBudgetTimesOut(t *testing.T) {
 
 	g.Expect(result.Attempted).To(Equal(runner.StageDeploy))
 	g.Expect(result.Completed).To(Equal(runner.StageDeploy))
-	g.Expect(result.Publication).To(Equal(moduleowner.OutcomeConfirmed))
 	g.Expect(result.Owner).NotTo(BeNil())
 	g.Expect(result.ApplyCompleted).To(BeTrue())
 	g.Expect(result.WaitRequested).To(BeTrue())
@@ -646,7 +628,8 @@ func TestRunChainWaitOverallDeadlineWins(t *testing.T) {
 
 // TestRunChainIdempotentRerun proves a second run over the same
 // server reuses the persisted identity: the owner UID is stable, the
-// CRD is not rewritten, and every stage completes again.
+// definition CRD takes the same server-side-apply path on both runs,
+// and every stage completes again.
 func TestRunChainIdempotentRerun(t *testing.T) {
 	t.Parallel()
 
@@ -667,14 +650,12 @@ func TestRunChainIdempotentRerun(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(second.Owner.UID).To(Equal(first.Owner.UID))
-	g.Expect(second.Publication).To(Equal(moduleowner.OutcomeConfirmed))
 	g.Expect(second.ApplyCompleted).To(BeTrue())
 
-	// The definition CRD was bootstrapped exactly once across both
-	// runs — the payload's own CRD reapplies, the definition's does
-	// not.
+	// The definition CRD is applied on every run — create-or-update
+	// is the same path — and the payload's own CRD reapplies too.
 	crdWrites, _ := harness.writeIndex("Kind=CustomResourceDefinition platformmoduledefinitions.config.opendatahub.io")
-	g.Expect(crdWrites).To(Equal(1))
+	g.Expect(crdWrites).To(Equal(2))
 }
 
 // TestRunChainHelmFallbackDeploymentName proves the empty configured

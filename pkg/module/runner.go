@@ -25,15 +25,15 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/deploy"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/owner"
 )
 
 // NewRunner returns the Cobra-free staged module run action wired
 // with the concrete reusable services: the strict loader, both
-// manifest backend renderers, the standard cluster connection, the
-// owner publication, and the framework payload apply. Callers pass a
-// plain runner.Options struct, the standard getter, and stage
-// contexts; the action itself performs no flag parsing, printing, or
+// manifest backend renderers, the standard cluster connection, and
+// the framework payload apply; the definition owner preparation is
+// the runner's own step over that connection. Callers pass a plain
+// runner.Options struct, the standard getter, and stage contexts;
+// the action itself performs no flag parsing, printing, or
 // environment resolution.
 func NewRunner(options runner.Options, getter genericclioptions.RESTClientGetter) *runner.Runner {
 	return runner.New(
@@ -43,7 +43,6 @@ func NewRunner(options runner.Options, getter genericclioptions.RESTClientGetter
 		helm.RenderWithOptions,
 		kustomize.RenderWithOptions,
 		cluster.Connect,
-		owner.Ensure,
 		deploy.Apply,
 	)
 }

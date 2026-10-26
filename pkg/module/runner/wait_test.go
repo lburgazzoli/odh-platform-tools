@@ -30,15 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	crclient "sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
-
-	moduleowner "github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/owner"
-
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 )
 
 // waitTargetKey is the wait's single target identity: the test
@@ -46,10 +37,11 @@ import (
 const waitTargetKey = "run-namespace/synthetic-controller"
 
 // stageOverheadSlack bounds the time the stub load/render/deploy
-// stages take between the run's start and the wait budget's start;
-// real boundaries are proven against budget magnitudes far larger
-// than this slack.
-const stageOverheadSlack = 100 * time.Millisecond
+// stages take between the run's start and the wait budget's start —
+// including the real owner preparation's two fake-client applies of
+// the large embedded CRD; real boundaries are proven against budget
+// magnitudes far larger than this slack.
+const stageOverheadSlack = 2 * time.Second
 
 // waitDeployment builds one controller Deployment observation. The
 // default is rolled out: observed generation, updated, and available
@@ -112,93 +104,20 @@ func renderedPayloadConfigMap(name string) unstructured.Unstructured {
 	}}
 }
 
-// waitFrame is one scripted GET reaction: either an error, or a live
-// object map returned as the observation.
-type waitFrame struct {
-	err  error
-	live map[string]any
-}
-
-// waitCluster is the fake-client connection the wait polls through:
-// every GET is recorded with its context, and scripted frames replace
-// the live lookup — the last frame of a sequence repeats. Fake-client
-// results exercise the wait's selection, polling, and identity rules
-// against the real public status helper, not real API semantics.
-type waitCluster struct {
-	connection *cluster.Connection
-	gets       []string
-	getCtxs    []context.Context
-	frames     map[string][]waitFrame
-}
-
-// newWaitCluster builds the intercepted connection.
-func newWaitCluster(t *testing.T) *waitCluster {
-	t.Helper()
-
-	fixture := &waitCluster{frames: map[string][]waitFrame{}}
-
-	scheme := runtime.NewScheme()
-	if err := clientgoscheme.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	if err := v1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-
-	funcs := interceptor.Funcs{
-		Get: func(
-			ctx context.Context,
-			c crclient.WithWatch,
-			key crclient.ObjectKey,
-			obj crclient.Object,
-			opts ...crclient.GetOption,
-		) error {
-			fixture.gets = append(fixture.gets, key.String())
-			fixture.getCtxs = append(fixture.getCtxs, ctx)
-
-			frames := fixture.frames[key.String()]
-			if len(frames) == 0 {
-				return c.Get(ctx, key, obj, opts...)
-			}
-
-			frame := frames[0]
-			if len(frames) > 1 {
-				fixture.frames[key.String()] = frames[1:]
-			}
-
-			if frame.err != nil {
-				return frame.err
-			}
-
-			obj.(*unstructured.Unstructured).Object = frame.live
-
-			return nil
-		},
-	}
-
-	fixture.connection = cluster.NewWithClient(
-		fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithInterceptorFuncs(funcs).
-			Build(),
-	)
-
-	return fixture
-}
-
 // newWaitStub wires the stub harness for a wait: polling goes through
-// the intercepted connection, the render payload is the given
-// resources, and the poll interval is instant.
+// the intercepted prepareCluster connection, the render payload is
+// the given resources, and the poll interval is instant. Deploy's
+// owner preparation runs for real over the same fixture.
 func newWaitStub(
 	t *testing.T,
 	options Options,
-	fixture *waitCluster,
+	fixture *prepareCluster,
 	rendered []unstructured.Unstructured,
 ) *stubRunner {
 	t.Helper()
 
 	stub := newStubRunner(t, options)
-	stub.connection = fixture.connection
+	stub.cluster = fixture
 	stub.renderResult = rendered
 	stub.runner.waitPollInterval = time.Millisecond
 
@@ -240,16 +159,16 @@ func TestWaitRequiresSuccessfulDeploy(t *testing.T) {
 
 	g := NewWithT(t)
 
-	freshFixture := newWaitCluster(t)
+	freshFixture := newPrepareCluster(t)
 	fresh := newWaitStub(t, waitOptions(), freshFixture, nil)
 	g.Expect(errors.Is(fresh.runner.Wait(t.Context()), ErrStageSequence)).To(BeTrue())
 
-	local := newWaitStub(t, waitOptions(), newWaitCluster(t), nil)
+	local := newWaitStub(t, waitOptions(), newPrepareCluster(t), nil)
 	g.Expect(local.runner.Load(t.Context())).To(Succeed())
 	g.Expect(local.runner.Render(t.Context())).To(Succeed())
 	g.Expect(errors.Is(local.runner.Wait(t.Context()), ErrStageSequence)).To(BeTrue())
 
-	failed := newWaitStub(t, waitOptions(), newWaitCluster(t), nil)
+	failed := newWaitStub(t, waitOptions(), newPrepareCluster(t), nil)
 	failed.loadError = errors.New("definition failure")
 	g.Expect(failed.runner.Load(t.Context())).To(HaveOccurred())
 	g.Expect(errors.Is(failed.runner.Wait(t.Context()), ErrStageSequence)).To(BeTrue())
@@ -263,7 +182,7 @@ func TestWaitRunsOnce(t *testing.T) {
 
 	g := NewWithT(t)
 
-	fixture := newWaitCluster(t)
+	fixture := newPrepareCluster(t)
 	fixture.frames[waitTargetKey] = []waitFrame{
 		{live: waitLive(t, waitDeployment(nil))},
 	}
@@ -285,7 +204,7 @@ func TestRunDefaultMakesNoWaitGet(t *testing.T) {
 
 	g := NewWithT(t)
 
-	fixture := newWaitCluster(t)
+	fixture := newPrepareCluster(t)
 	fixture.frames[waitTargetKey] = []waitFrame{
 		{live: waitLive(t, waitDeployment(nil))},
 	}
@@ -313,9 +232,7 @@ func TestRunRequestedWaitReportsCompletion(t *testing.T) {
 
 	g := NewWithT(t)
 
-	confirmed := confirmedOwner()
-
-	fixture := newWaitCluster(t)
+	fixture := newPrepareCluster(t)
 	fixture.frames[waitTargetKey] = []waitFrame{
 		{live: waitLive(t, waitDeployment(nil))},
 	}
@@ -323,21 +240,21 @@ func TestRunRequestedWaitReportsCompletion(t *testing.T) {
 	stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
 		renderedDeployment("run-namespace", "synthetic-controller"),
 	})
-	stub.ensureOwner = confirmed
 
 	result, err := stub.runner.Run(t.Context())
 	g.Expect(err).NotTo(HaveOccurred())
 
-	g.Expect(result).To(Equal(Result{
-		Attempted:      StageDeploy,
-		Completed:      StageDeploy,
-		Owner:          confirmed,
-		Publication:    moduleowner.OutcomeConfirmed,
-		ApplyCompleted: true,
-		WaitRequested:  true,
-		WaitCompleted:  true,
-		WaitTargets:    []Target{{Namespace: "run-namespace", Name: "synthetic-controller"}},
-	}))
+	g.Expect(result).To(SatisfyAll(
+		HaveField("Attempted", StageDeploy),
+		HaveField("Completed", StageDeploy),
+		HaveField("Owner", Not(BeNil())),
+		HaveField("ApplyCompleted", BeTrue()),
+		HaveField("WaitRequested", BeTrue()),
+		HaveField("WaitCompleted", BeTrue()),
+		HaveField("WaitTargets", Equal([]Target{{Namespace: "run-namespace", Name: "synthetic-controller"}})),
+	))
+	g.Expect(result.Owner.Name).To(Equal("synthetic"))
+	g.Expect(string(result.Owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
 
 	g.Expect(fixture.gets).To(ContainElement(waitTargetKey))
 }
@@ -352,7 +269,7 @@ func TestWaitTargetSelectionAndDedup(t *testing.T) {
 
 	g := NewWithT(t)
 
-	fixture := newWaitCluster(t)
+	fixture := newPrepareCluster(t)
 	fixture.frames["ns-a/synthetic-controller"] = []waitFrame{
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.Namespace = "ns-a"
@@ -402,7 +319,7 @@ func TestWaitConfiguredNameFallback(t *testing.T) {
 
 	g := NewWithT(t)
 
-	fixture := newWaitCluster(t)
+	fixture := newPrepareCluster(t)
 	fixture.frames["run-namespace/synthetic"] = []waitFrame{
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.Name = "synthetic"
@@ -430,28 +347,26 @@ func TestWaitMissingTargetFailsAfterApply(t *testing.T) {
 
 	g := NewWithT(t)
 
-	confirmed := confirmedOwner()
-
-	fixture := newWaitCluster(t)
+	fixture := newPrepareCluster(t)
 
 	stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
 		renderedDeployment("run-namespace", "other-controller"),
 	})
-	stub.ensureOwner = confirmed
 
 	result, err := stub.runner.Run(t.Context())
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, ErrWaitTargetMissing)).To(BeTrue())
 
-	g.Expect(result).To(Equal(Result{
-		Attempted:      StageDeploy,
-		Completed:      StageDeploy,
-		Owner:          confirmed,
-		Publication:    moduleowner.OutcomeConfirmed,
-		ApplyCompleted: true,
-		WaitRequested:  true,
-		WaitCompleted:  false,
-	}))
+	g.Expect(result).To(SatisfyAll(
+		HaveField("Attempted", StageDeploy),
+		HaveField("Completed", StageDeploy),
+		HaveField("Owner", Not(BeNil())),
+		HaveField("ApplyCompleted", BeTrue()),
+		HaveField("WaitRequested", BeTrue()),
+		HaveField("WaitCompleted", BeFalse()),
+	))
+	g.Expect(result.Owner.Name).To(Equal("synthetic"))
+	g.Expect(string(result.Owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
 
 	g.Expect(fixture.gets).To(BeEmpty())
 }
@@ -464,7 +379,7 @@ func TestWaitInitialNotFoundMayWait(t *testing.T) {
 
 	g := NewWithT(t)
 
-	fixture := newWaitCluster(t)
+	fixture := newPrepareCluster(t)
 	fixture.frames[waitTargetKey] = []waitFrame{
 		{err: apierrors.NewNotFound(schema.GroupResource{Group: "apps", Resource: "deployments"}, "synthetic-controller")},
 		{live: waitLive(t, waitDeployment(nil))},
@@ -489,7 +404,7 @@ func TestWaitRejectsTerminatingFirstGet(t *testing.T) {
 
 	now := metav1.Now()
 
-	fixture := newWaitCluster(t)
+	fixture := newPrepareCluster(t)
 	fixture.frames[waitTargetKey] = []waitFrame{
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.DeletionTimestamp = &now
@@ -515,7 +430,7 @@ func TestWaitRejectsUIDReplacement(t *testing.T) {
 
 	g := NewWithT(t)
 
-	fixture := newWaitCluster(t)
+	fixture := newPrepareCluster(t)
 	fixture.frames[waitTargetKey] = []waitFrame{
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.UID = "deployment-uid-1"
@@ -545,7 +460,7 @@ func TestWaitRejectsDisappearance(t *testing.T) {
 
 	g := NewWithT(t)
 
-	fixture := newWaitCluster(t)
+	fixture := newPrepareCluster(t)
 	fixture.frames[waitTargetKey] = []waitFrame{
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.Status.UpdatedReplicas = 0
@@ -570,7 +485,7 @@ func TestWaitProgressDeadlineFails(t *testing.T) {
 
 	g := NewWithT(t)
 
-	fixture := newWaitCluster(t)
+	fixture := newPrepareCluster(t)
 	fixture.frames[waitTargetKey] = []waitFrame{
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.Status.Conditions = []appsv1.DeploymentCondition{{
@@ -680,7 +595,7 @@ func TestWaitPollsUntilRolledOut(t *testing.T) {
 
 			g := NewWithT(t)
 
-			fixture := newWaitCluster(t)
+			fixture := newPrepareCluster(t)
 			fixture.frames[waitTargetKey] = testCase.frames
 
 			stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
@@ -709,7 +624,7 @@ func TestWaitBudgetBoundaries(t *testing.T) {
 		options.Wait = true
 		options.WaitTimeout = 400 * time.Millisecond
 
-		fixture := newWaitCluster(t)
+		fixture := newPrepareCluster(t)
 		fixture.frames[waitTargetKey] = []waitFrame{
 			{live: waitLive(t, waitDeployment(nil))},
 		}
@@ -741,7 +656,7 @@ func TestWaitBudgetBoundaries(t *testing.T) {
 		options.Wait = true
 		options.WaitTimeout = 30 * time.Second
 
-		fixture := newWaitCluster(t)
+		fixture := newPrepareCluster(t)
 		fixture.frames[waitTargetKey] = []waitFrame{
 			{live: waitLive(t, waitDeployment(nil))},
 		}
@@ -772,13 +687,11 @@ func TestWaitTimeoutIsRuntimeError(t *testing.T) {
 
 	g := NewWithT(t)
 
-	confirmed := confirmedOwner()
-
 	options := testOptions()
 	options.Wait = true
 	options.WaitTimeout = 40 * time.Millisecond
 
-	fixture := newWaitCluster(t)
+	fixture := newPrepareCluster(t)
 	fixture.frames[waitTargetKey] = []waitFrame{
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.Status.UpdatedReplicas = 0
@@ -788,22 +701,22 @@ func TestWaitTimeoutIsRuntimeError(t *testing.T) {
 	stub := newWaitStub(t, options, fixture, []unstructured.Unstructured{
 		renderedDeployment("run-namespace", "synthetic-controller"),
 	})
-	stub.ensureOwner = confirmed
 
 	result, err := stub.runner.Run(t.Context())
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
 
-	g.Expect(result).To(Equal(Result{
-		Attempted:      StageDeploy,
-		Completed:      StageDeploy,
-		Owner:          confirmed,
-		Publication:    moduleowner.OutcomeConfirmed,
-		ApplyCompleted: true,
-		WaitRequested:  true,
-		WaitCompleted:  false,
-		WaitTargets:    []Target{{Namespace: "run-namespace", Name: "synthetic-controller"}},
-	}))
+	g.Expect(result).To(SatisfyAll(
+		HaveField("Attempted", StageDeploy),
+		HaveField("Completed", StageDeploy),
+		HaveField("Owner", Not(BeNil())),
+		HaveField("ApplyCompleted", BeTrue()),
+		HaveField("WaitRequested", BeTrue()),
+		HaveField("WaitCompleted", BeFalse()),
+		HaveField("WaitTargets", Equal([]Target{{Namespace: "run-namespace", Name: "synthetic-controller"}})),
+	))
+	g.Expect(result.Owner.Name).To(Equal("synthetic"))
+	g.Expect(string(result.Owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
 
 	// The shared budget was spent polling the one target until it
 	// expired — never reset, never abandoned.
@@ -820,7 +733,7 @@ func TestWaitAPIErrorFails(t *testing.T) {
 
 	cause := errors.New("api failure")
 
-	fixture := newWaitCluster(t)
+	fixture := newPrepareCluster(t)
 	fixture.frames[waitTargetKey] = []waitFrame{
 		{err: apierrors.NewInternalError(cause)},
 	}
@@ -837,8 +750,9 @@ func TestWaitAPIErrorFails(t *testing.T) {
 	g.Expect(apierrors.IsInternalError(err)).To(BeTrue())
 
 	g.Expect(stub.runner.applied).To(BeTrue())
-	g.Expect(stub.runner.owner).To(BeIdenticalTo(stub.ensureOwner))
-	g.Expect(stub.runner.publication).To(Equal(moduleowner.OutcomeConfirmed))
+	g.Expect(stub.runner.owner).NotTo(BeNil())
+	g.Expect(stub.runner.owner.Name).To(Equal("synthetic"))
+	g.Expect(string(stub.runner.owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
 }
 
 // TestWaitErrorIsSafeText proves the wait failure never echoes
@@ -852,7 +766,7 @@ func TestWaitErrorIsSafeText(t *testing.T) {
 
 	const marker = "WAIT-MARKER-8f3d91"
 
-	fixture := newWaitCluster(t)
+	fixture := newPrepareCluster(t)
 	fixture.frames[waitTargetKey] = []waitFrame{
 		{err: apierrors.NewInternalError(errors.New(marker))},
 	}
@@ -893,8 +807,6 @@ func TestRunRejectsNegativeWaitTimeout(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, ErrInvalidOptions)).To(BeTrue())
 
-	g.Expect(result).To(Equal(Result{
-		Publication: moduleowner.OutcomeNotAttempted,
-	}))
+	g.Expect(result).To(Equal(Result{}))
 	g.Expect(*stub.calls).To(BeEmpty())
 }

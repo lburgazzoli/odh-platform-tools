@@ -63,7 +63,6 @@ func TestRunLiveHelmAppliesAndOwns(t *testing.T) {
 	g.Expect(report.Status).To(Equal(runcli.StatusApplied))
 	g.Expect(report.ApplyCompleted).To(BeTrue())
 	g.Expect(report.Wait).To(BeNil())
-	g.Expect(report.Publication).To(Equal("confirmed"))
 	g.Expect(report.Owner).NotTo(BeNil())
 	g.Expect(report.Owner.Name).To(Equal(s.name))
 	g.Expect(report.Owner.Kind).To(Equal("PlatformModuleDefinition"))
@@ -356,7 +355,6 @@ func TestRunLiveReservedPayloadRejectedAtRender(t *testing.T) {
 	g.Expect(report.Attempted).To(Equal("render"))
 	g.Expect(report.Completed).To(Equal("load"))
 	g.Expect(report.Owner).To(BeNil())
-	g.Expect(report.Publication).To(Equal("not_attempted"))
 
 	// Nothing was written.
 	found := &unstructured.Unstructured{}
@@ -390,7 +388,6 @@ func TestRunLiveInvalidPayloadRetainsOwner(t *testing.T) {
 	g.Expect(report.Attempted).To(Equal("deploy"))
 	g.Expect(report.Completed).To(Equal("render"))
 	g.Expect(report.Owner).NotTo(BeNil())
-	g.Expect(report.Publication).To(Equal("confirmed"))
 	g.Expect(report.ApplyCompleted).To(BeFalse())
 
 	// The confirmed owner is retained on the server.

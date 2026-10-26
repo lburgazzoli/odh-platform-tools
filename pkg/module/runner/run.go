@@ -19,8 +19,6 @@ package runner
 import (
 	"context"
 	"fmt"
-
-	moduleowner "github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/owner"
 )
 
 // Run is the default apply-only orchestration: Load, then Render,
@@ -41,12 +39,11 @@ import (
 //
 // The returned Result reports what the invocation confirmed — the
 // attempted and last-successful stages, the confirmed owner identity,
-// the publication outcome, and apply completion — and the returned
-// error preserves its cause chain through Unwrap for callers that
-// classify failures. Neither ever echoes authored definition,
-// dotenv, or API-returned values; the framework action's own logging
-// is already discarded by the deploy service, and this orchestration
-// adds no logging of its own.
+// and apply completion — and the returned error preserves its cause
+// chain through Unwrap for callers that classify failures. Neither
+// ever echoes authored definition, dotenv, or API-returned values;
+// the framework action's own logging is already discarded by the
+// deploy service, and this orchestration adds no logging of its own.
 //
 // An explicitly requested controller wait is layered after Deploy
 // through Options.Wait; the default run performs and reports apply
@@ -96,8 +93,7 @@ func (r *Runner) Run(ctx context.Context) (Result, error) {
 
 // report snapshots the runner's confirmed state as the run result
 // beside the stage error. The last-successful stage is the attempted
-// one on success and the stage preceding it on failure; an unset
-// publication normalizes to not attempted.
+// one on success and the stage preceding it on failure.
 func (r *Runner) report(attempted Stage, err error) (Result, error) {
 	completed := attempted
 	if err != nil {
@@ -112,16 +108,10 @@ func (r *Runner) report(attempted Stage, err error) (Result, error) {
 // preceding-stage rule; a wait failure passes deploy for both — the
 // apply already completed, and only the wait failed.
 func (r *Runner) reportCompleted(attempted, completed Stage, err error) (Result, error) {
-	publication := r.publication
-	if publication == "" {
-		publication = moduleowner.OutcomeNotAttempted
-	}
-
 	return Result{
 		Attempted:      attempted,
 		Completed:      completed,
 		Owner:          r.owner,
-		Publication:    publication,
 		ApplyCompleted: r.applied,
 		WaitRequested:  r.options.Wait,
 		WaitCompleted:  r.waitCompleted,
@@ -130,9 +120,7 @@ func (r *Runner) reportCompleted(attempted, completed Stage, err error) (Result,
 }
 
 // rejectedResult is the report of an invocation rejected before any
-// stage ran: nothing was attempted, nothing was published.
+// stage ran: nothing was attempted, nothing was written.
 func rejectedResult() Result {
-	return Result{
-		Publication: moduleowner.OutcomeNotAttempted,
-	}
+	return Result{}
 }

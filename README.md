@@ -190,7 +190,7 @@ module run --config <definition.yaml> --platform-version <version> \
 | Exit code | Meaning |
 | --- | --- |
 | 0 | The run applied successfully (apply completion; with `--wait`, the wait also completed). |
-| 1 | Classified runtime failure — render, connection, publication, apply, or wait — or cancellation. |
+| 1 | Classified runtime failure — render, connection, owner preparation, apply, or wait — or cancellation. |
 | 2 | Usage, invalid options, definition configuration errors, or an unreadable related-images file. |
 
 ## Run semantics
@@ -264,7 +264,6 @@ explicit, not part of Deploy.
     "apiVersion": "config.opendatahub.io/v1alpha1",
     "kind": "PlatformModuleDefinition"
   },
-  "publication": "confirmed",
   "attemptedStage": "deploy",
   "completedStage": "deploy",
   "applyCompleted": true,
@@ -276,12 +275,10 @@ explicit, not part of Deploy.
 }
 ```
 
-`status` is `applied` or `failed`. `publication` classifies the owner
-publication as `not_attempted`, `confirmed`, `rejected`, or
-`unknown`. `owner` is the confirmed owner identity — its absence
-means the identity is unconfirmed, never that no write occurred: an
-ambiguous write is never claimed absent. `wait` appears only when the
-wait was requested.
+`status` is `applied` or `failed`. `owner` is the confirmed owner
+identity — its absence means the identity is unconfirmed, never that
+no write occurred: an ambiguous write is never claimed absent. `wait`
+appears only when the wait was requested.
 
 ## The owner lifecycle
 
@@ -290,21 +287,23 @@ generated `config.opendatahub.io/v1alpha1`
 `PlatformModuleDefinition` CRD, cluster-scoped, carried in the CLI's
 embedded CRD set.
 
-- **Bootstrap and privileges.** The run creates the definition CRD
-  only when the server does not have it, and waits for its
-  establishment before publishing. It needs no namespace
-  prechecks: a payload-supplied `Namespace` that does not exist is
-  created by the framework apply before the namespaced resources;
-  any other missing namespace fails through normal API behavior.
-  Applying CRDs and cluster-scoped resources requires the
+- **Preparation and privileges.** Every run applies the embedded
+  definition CRD — create-or-update server-side apply, the same path
+  whether the server holds it or not, so an existing shared CRD is
+  updated — waits for its establishment, then applies the definition
+  itself the same way and uses the server-returned identity. It needs
+  no namespace prechecks: a payload-supplied `Namespace` that does not
+  exist is created by the framework apply before the namespaced
+  resources; any other missing namespace fails through normal API
+  behavior. Applying CRDs and cluster-scoped resources requires the
   invoking identity to hold those privileges.
-- **Publication.** The authored definition is persisted with
+- **Persistence.** The authored definition is persisted with
   standard object metadata and its authored literal-value spec —
   normalized placement defaults applied, references unexpanded: the
   stored spec keeps `{{VARIABLE}}` image references and literal Helm
   values as authored, never rendered output or source snapshots.
-  Re-running with an updated definition updates the stored spec
-  under the same identity.
+  Re-running with an updated definition updates the stored spec under
+  the same identity.
 - **Ownership.** Payload objects (except Namespaces, CRDs, and the
   cluster-scoped definition itself) receive an owner reference to
   the persisted definition. CRDs and Namespaces in the payload are
@@ -423,7 +422,7 @@ execution error instead of reporting a finding.
                              │                               │ → Deploy → optional Wait)
         ┌────────────────────▼───────────────┐  ┌────────────▼─────────────────────┐
         │ pkg/module/loader                  │  │ pkg/module/runner                │
-        │ strict YAML → typed definition,    │  │ owner publication, connection,   │
+        │ strict YAML → typed definition,    │  │ owner preparation, connection,   │
         │ placement defaults                 │  │ deploy, images, wait             │
         └────────────────────────────────────┘  └────────────┬─────────────────────┘
                                                                 │ shared renderers
@@ -446,7 +445,7 @@ execution error instead of reporting a finding.
   generated deepcopy. The persisted owner type is the generated
   v1alpha1 definition with its embedded CRD.
 - **Services stay reusable.** The loader and both renderer wrappers
-  remain independently callable; the runner's owner publication,
+  remain independently callable; the runner's owner preparation,
   connection, deploy, image, and wait stages compose behind one
   action.
 - **Engine-faithful rendering.** The framework actions render the

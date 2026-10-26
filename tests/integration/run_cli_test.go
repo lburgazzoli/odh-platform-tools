@@ -154,7 +154,6 @@ func TestCLIRunLocalDefinitionFailure(t *testing.T) {
 	g.Expect(report.Status).To(Equal(run.StatusFailed))
 	g.Expect(report.Failure).NotTo(BeNil())
 	g.Expect(report.Failure.Category).To(Equal(run.FailureDefinition))
-	g.Expect(report.Publication).To(Equal("not_attempted"))
 	g.Expect(report.Owner).To(BeNil())
 }
 

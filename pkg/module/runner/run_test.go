@@ -19,53 +19,41 @@ package runner
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	. "github.com/onsi/gomega"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	moduleowner "github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/owner"
-
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
-
-// confirmedOwner returns a server-backed owner identity fixture.
-func confirmedOwner() *v1alpha1.PlatformModuleDefinition {
-	return &v1alpha1.PlatformModuleDefinition{
-		TypeMeta:   metav1.TypeMeta{APIVersion: v1alpha1.APIVersion, Kind: v1alpha1.Kind},
-		ObjectMeta: metav1.ObjectMeta{Name: "synthetic", UID: "definition-uid"},
-	}
-}
 
 // TestRunAppliesOnlyOrchestration proves Run sequences Load → Render
 // → Deploy over one invocation context derived from the caller's
 // context and the options' timeout, and its Result reports exactly
-// the apply-only facts: the confirmed owner, the confirmed
-// publication, and apply completion — with no readiness claim.
+// the apply-only facts: the server-confirmed owner and apply
+// completion — with no readiness claim.
 func TestRunAppliesOnlyOrchestration(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	confirmed := confirmedOwner()
-
 	stub := newStubRunner(t, testOptions())
-	stub.ensureOwner = confirmed
 
 	result, err := stub.runner.Run(t.Context())
 	g.Expect(err).NotTo(HaveOccurred())
 
-	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect", "ensure", "apply"}))
+	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect", "apply"}))
 
-	g.Expect(result).To(Equal(Result{
-		Attempted:      StageDeploy,
-		Completed:      StageDeploy,
-		Owner:          confirmed,
-		Publication:    moduleowner.OutcomeConfirmed,
-		ApplyCompleted: true,
-	}))
+	g.Expect(result).To(SatisfyAll(
+		HaveField("Attempted", StageDeploy),
+		HaveField("Completed", StageDeploy),
+		HaveField("Owner", Not(BeNil())),
+		HaveField("ApplyCompleted", BeTrue()),
+	))
+
+	// The confirmed owner is the server-backed identity the
+	// preparation's definition apply returned.
+	g.Expect(result.Owner.Name).To(Equal("synthetic"))
+	g.Expect(string(result.Owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
 
 	// The invocation context the seams saw is the bounded one: it
 	// carries a deadline no later than the options' timeout from the
@@ -74,7 +62,6 @@ func TestRunAppliesOnlyOrchestration(t *testing.T) {
 	g.Expect(ok).To(BeTrue())
 	g.Expect(deadline).To(BeTemporally("<=", time.Now().Add(testOptions().Timeout)))
 	g.Expect(stub.connectCtx).To(Equal(stub.renderCtx))
-	g.Expect(stub.ensureCtx).To(Equal(stub.renderCtx))
 }
 
 // TestRunRejectsInvalidOptionsBeforeTimer proves a nonpositive
@@ -95,9 +82,7 @@ func TestRunRejectsInvalidOptionsBeforeTimer(t *testing.T) {
 	g.Expect(errors.Is(err, ErrInvalidOptions)).To(BeTrue())
 	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeFalse())
 
-	g.Expect(result).To(Equal(Result{
-		Publication: moduleowner.OutcomeNotAttempted,
-	}))
+	g.Expect(result).To(Equal(Result{}))
 	g.Expect(*stub.calls).To(BeEmpty())
 }
 
@@ -118,9 +103,7 @@ func TestRunHonorsCallerCancellation(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
 
-	g.Expect(result).To(Equal(Result{
-		Publication: moduleowner.OutcomeNotAttempted,
-	}))
+	g.Expect(result).To(Equal(Result{}))
 	g.Expect(*stub.calls).To(BeEmpty())
 }
 
@@ -136,7 +119,7 @@ func TestRunRequiresFreshRunner(t *testing.T) {
 
 	result, err := stub.runner.Run(t.Context())
 	g.Expect(errors.Is(err, ErrStageSequence)).To(BeTrue())
-	g.Expect(result.Publication).To(Equal(moduleowner.OutcomeNotAttempted))
+	g.Expect(result).To(Equal(Result{}))
 	g.Expect(*stub.calls).To(Equal([]string{"load"}))
 
 	fresh := newStubRunner(t, testOptions())
@@ -145,11 +128,11 @@ func TestRunRequiresFreshRunner(t *testing.T) {
 
 	_, err = fresh.runner.Run(t.Context())
 	g.Expect(errors.Is(err, ErrStageSequence)).To(BeTrue())
-	g.Expect(*fresh.calls).To(Equal([]string{"load", "render", "connect", "ensure", "apply"}))
+	g.Expect(*fresh.calls).To(Equal([]string{"load", "render", "connect", "apply"}))
 }
 
 // TestRunLoadFailureReports proves a Load failure reports the
-// attempted stage, no completed stage, and nothing published.
+// attempted stage, no completed stage, and nothing confirmed.
 func TestRunLoadFailureReports(t *testing.T) {
 	t.Parallel()
 
@@ -162,8 +145,7 @@ func TestRunLoadFailureReports(t *testing.T) {
 	g.Expect(err).To(MatchError(stub.loadError))
 
 	g.Expect(result).To(Equal(Result{
-		Attempted:   StageLoad,
-		Publication: moduleowner.OutcomeNotAttempted,
+		Attempted: StageLoad,
 	}))
 	g.Expect(*stub.calls).To(Equal([]string{"load"}))
 }
@@ -182,9 +164,8 @@ func TestRunRenderFailureReports(t *testing.T) {
 	g.Expect(err).To(MatchError(stub.renderError))
 
 	g.Expect(result).To(Equal(Result{
-		Attempted:   StageRender,
-		Completed:   StageLoad,
-		Publication: moduleowner.OutcomeNotAttempted,
+		Attempted: StageRender,
+		Completed: StageLoad,
 	}))
 	g.Expect(*stub.calls).To(Equal([]string{"load", "render"}))
 }
@@ -212,9 +193,8 @@ func TestRunCancellationDuringRenderRejectsLateOutput(t *testing.T) {
 	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
 
 	g.Expect(result).To(Equal(Result{
-		Attempted:   StageRender,
-		Completed:   StageLoad,
-		Publication: moduleowner.OutcomeNotAttempted,
+		Attempted: StageRender,
+		Completed: StageLoad,
 	}))
 	g.Expect(*stub.calls).To(Equal([]string{"load", "render"}))
 	g.Expect(stub.runner.resources).To(BeNil())
@@ -224,11 +204,11 @@ func TestRunCancellationDuringRenderRejectsLateOutput(t *testing.T) {
 	g.Expect(*stub.calls).To(Equal([]string{"load", "render"}))
 }
 
-// TestRunCancellationBeforePublication proves the invocation checks
-// the context after connecting and before any publication or write:
-// cancelling there stops the run with nothing published and no
+// TestRunCancellationBeforePreparation proves the invocation checks
+// the context after connecting and before any preparation or write:
+// cancelling there stops the run with nothing confirmed and no
 // payload write.
-func TestRunCancellationBeforePublication(t *testing.T) {
+func TestRunCancellationBeforePreparation(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -245,119 +225,102 @@ func TestRunCancellationBeforePublication(t *testing.T) {
 	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
 
 	g.Expect(result).To(Equal(Result{
-		Attempted:   StageDeploy,
-		Completed:   StageRender,
-		Publication: moduleowner.OutcomeNotAttempted,
+		Attempted: StageDeploy,
+		Completed: StageRender,
 	}))
 	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect"}))
+	g.Expect(stub.cluster.applies).To(BeEmpty())
 }
 
 // TestRunCancellationBeforeApply proves the invocation checks the
-// context after publication and before the payload write: the
-// confirmed owner and publication survive, the apply never runs, and
-// apply completion stays false.
+// context after the owner preparation and before the payload write:
+// the confirmed owner survives, the apply never runs, and apply
+// completion stays false.
 func TestRunCancellationBeforeApply(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	confirmed := confirmedOwner()
-
 	stub := newStubRunner(t, testOptions())
-	stub.ensureOwner = confirmed
 
 	ctx, cancel := context.WithCancel(t.Context())
-	stub.ensureHook = func(context.Context) {
-		cancel()
+	stub.cluster.applyHook = func(_ context.Context, id string) {
+		// Cancel once the definition apply — the preparation's last
+		// write — has landed, ahead of the payload apply.
+		if strings.Contains(id, prepareDefinitionWrite) {
+			cancel()
+		}
 	}
 
 	result, err := stub.runner.Run(ctx)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
 
-	g.Expect(result).To(Equal(Result{
-		Attempted:   StageDeploy,
-		Completed:   StageRender,
-		Owner:       confirmed,
-		Publication: moduleowner.OutcomeConfirmed,
-	}))
-	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect", "ensure"}))
+	g.Expect(result).To(SatisfyAll(
+		HaveField("Attempted", StageDeploy),
+		HaveField("Completed", StageRender),
+		HaveField("Owner", Not(BeNil())),
+		HaveField("ApplyCompleted", BeFalse()),
+	))
+	g.Expect(result.Owner.Name).To(Equal("synthetic"))
+	g.Expect(string(result.Owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
+	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect"}))
 	g.Expect(stub.appliedOwner).To(BeNil())
 }
 
-// TestRunEnsureFailureRetainsUncertainOwner proves a lost
-// publication response is not reported as if no write occurred: the
-// still-confirmed identity and the unknown outcome survive in the
-// Result, and the payload apply never runs.
-func TestRunEnsureFailureRetainsUncertainOwner(t *testing.T) {
+// TestRunPreparationFailureReportsNilOwner proves a preparation
+// failure reports no owner — which never claims that no write
+// occurred — with the payload apply never running and the raw cause
+// preserved under the safe public text.
+func TestRunPreparationFailureReportsNilOwner(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	confirmed := confirmedOwner()
+	cause := &markerError{marker: "RUN-MARKER-preparation"}
 
 	stub := newStubRunner(t, testOptions())
-	stub.ensureError = &moduleowner.Error{
-		Outcome: moduleowner.OutcomeUnknown,
-		Owner:   confirmed,
-	}
+	stub.cluster.failApply[prepareDefinitionWrite] = cause
 
 	result, err := stub.runner.Run(t.Context())
 	g.Expect(err).To(HaveOccurred())
 
 	g.Expect(result).To(Equal(Result{
-		Attempted:   StageDeploy,
-		Completed:   StageRender,
-		Owner:       confirmed,
-		Publication: moduleowner.OutcomeUnknown,
+		Attempted: StageDeploy,
+		Completed: StageRender,
 	}))
-	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect", "ensure"}))
+	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect"}))
 	g.Expect(stub.appliedOwner).To(BeNil())
-}
 
-// TestRunEnsureRejectionReportsNilOwner proves a definitive server
-// refusal publishes nothing and confirms no identity.
-func TestRunEnsureRejectionReportsNilOwner(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	stub := newStubRunner(t, testOptions())
-	stub.ensureError = &moduleowner.Error{Outcome: moduleowner.OutcomeRejected}
-
-	result, err := stub.runner.Run(t.Context())
-	g.Expect(err).To(HaveOccurred())
-
-	g.Expect(result).To(Equal(Result{
-		Attempted:   StageDeploy,
-		Completed:   StageRender,
-		Publication: moduleowner.OutcomeRejected,
-	}))
-	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect", "ensure"}))
+	// The safe text names the failed operation; the raw cause stays
+	// reachable through Unwrap.
+	g.Expect(err.Error()).To(SatisfyAll(
+		ContainSubstring("applying the module definition"),
+		Not(ContainSubstring("RUN-MARKER-preparation")),
+	))
+	g.Expect(errors.As(err, &cause)).To(BeTrue())
 }
 
 // TestRunApplyFailureReports proves an apply failure keeps the
-// confirmed owner and publication while reporting apply completion
-// as false.
+// server-confirmed owner while reporting apply completion as false.
 func TestRunApplyFailureReports(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	confirmed := confirmedOwner()
-
 	stub := newStubRunner(t, testOptions())
-	stub.ensureOwner = confirmed
 	stub.applyError = errors.New("apply failure")
 
 	result, err := stub.runner.Run(t.Context())
 	g.Expect(err).To(MatchError(stub.applyError))
 
-	g.Expect(result).To(Equal(Result{
-		Attempted:   StageDeploy,
-		Completed:   StageRender,
-		Owner:       confirmed,
-		Publication: moduleowner.OutcomeConfirmed,
-	}))
-	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect", "ensure", "apply"}))
+	g.Expect(result).To(SatisfyAll(
+		HaveField("Attempted", StageDeploy),
+		HaveField("Completed", StageRender),
+		HaveField("Owner", Not(BeNil())),
+		HaveField("ApplyCompleted", BeFalse()),
+	))
+	g.Expect(result.Owner.Name).To(Equal("synthetic"))
+	g.Expect(string(result.Owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
+	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect", "apply"}))
 }

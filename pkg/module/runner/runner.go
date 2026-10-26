@@ -23,12 +23,12 @@ limitations under the License.
 // run in order — Load, Render, Deploy — and every out-of-order,
 // repeated, or post-failure call is rejected without input or output.
 // A failed stage is terminal: later stages never run, and the state a
-// failure still confirms — the server-backed owner identity and its
-// publication outcome — is retained rather than discarded.
+// failure still confirms — the server-backed owner identity — is
+// retained rather than discarded.
 //
 // Load and Render are client-free local preparation. Only Deploy
 // connects: the lazy cluster connection, the definition owner
-// publication, and the single framework payload apply all happen
+// preparation, and the single framework payload apply all happen
 // there, in that order. No stage prechecks namespaces — rendered
 // Namespaces follow framework create/update behavior — and no stage
 // lints, creates the module CR, or waits for workload convergence.
@@ -36,7 +36,6 @@ package runner
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -56,7 +55,6 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/adapt"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 	images "github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/images"
-	moduleowner "github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/owner"
 )
 
 // DefinitionLoad loads and normalizes one definition file. The strict
@@ -76,14 +74,6 @@ type ManifestRender func(
 // Connect builds the invocation-scoped cluster connection. The
 // cluster service is the concrete implementation.
 type Connect func(ctx context.Context, getter genericclioptions.RESTClientGetter) (*cluster.Connection, error)
-
-// EnsureOwner publishes the definition owner. The owner service is
-// the concrete implementation.
-type EnsureOwner func(
-	ctx context.Context,
-	connection *cluster.Connection,
-	definition v1alpha1.PlatformModuleDefinition,
-) (*v1alpha1.PlatformModuleDefinition, error)
 
 // ApplyPayload applies the rendered payload through the framework
 // deploy action. The deploy service is the concrete implementation.
@@ -119,7 +109,6 @@ type Runner struct {
 	renderHelm      ManifestRender
 	renderKustomize ManifestRender
 	connect         Connect
-	ensure          EnsureOwner
 	apply           ApplyPayload
 
 	stage stage
@@ -134,9 +123,8 @@ type Runner struct {
 	resources  []unstructured.Unstructured
 	connection *cluster.Connection
 
-	owner       *v1alpha1.PlatformModuleDefinition
-	publication moduleowner.Outcome
-	applied     bool
+	owner   *v1alpha1.PlatformModuleDefinition
+	applied bool
 
 	waited           bool
 	waitCompleted    bool
@@ -147,8 +135,9 @@ type Runner struct {
 // New wires the runner with its service boundaries: the standard
 // getter the invocation resolves namespace and connection from, and
 // the narrow I/O seams — loader, both backend renderers, connection,
-// owner publication, and payload apply. The root module facade passes
-// the concrete reusable services; tests inject fakes.
+// and payload apply. The owner preparation is the runner's own step
+// over the connection. The root module facade passes the concrete
+// reusable services; tests inject fakes.
 func New(
 	options Options,
 	getter genericclioptions.RESTClientGetter,
@@ -156,7 +145,6 @@ func New(
 	renderHelm ManifestRender,
 	renderKustomize ManifestRender,
 	connect Connect,
-	ensure EnsureOwner,
 	apply ApplyPayload,
 ) *Runner {
 	return &Runner{
@@ -166,7 +154,6 @@ func New(
 		renderHelm:      renderHelm,
 		renderKustomize: renderKustomize,
 		connect:         connect,
-		ensure:          ensure,
 		apply:           apply,
 		stage:           stageNew,
 
@@ -313,22 +300,22 @@ func (r *Runner) Render(ctx context.Context) error {
 	return nil
 }
 
-// Deploy is the deployment stage: connect lazily, publish the
-// definition owner, then apply the whole rendered payload through the
-// framework deploy action with the confirmed owner and the same
-// release the injector used.
+// Deploy is the deployment stage: connect lazily, prepare the
+// definition owner — apply the embedded definition CRD, await its
+// establishment, apply the definition itself — then apply the whole
+// rendered payload through the framework deploy action with the
+// confirmed owner and the same release the injector used.
 //
-// Only a successful owner.Ensure permits the payload apply. An Ensure
-// failure retains whatever identity and publication outcome it still
-// confirmed — a nil owner does not prove that no write occurred — and
-// stops before any payload write; an apply failure keeps the
-// published owner, and writes that preceded the framework's first
-// error report stand as partial state. No API write happens after
-// the invocation expired: the context is checked after connecting
-// and after publication, ahead of the services' own entry checks. No
-// namespace is prechecked: rendered Namespaces follow framework
-// create/update behavior, and other missing namespaces fail through
-// the API.
+// Only a successful preparation permits the payload apply. A
+// preparation failure stops before any payload write and reports no
+// owner — a nil owner does not prove that no write occurred; an apply
+// failure keeps the confirmed owner, and writes that preceded the
+// framework's first error report stand as partial state. No API write
+// happens after the invocation expired: the context is checked after
+// connecting and after the preparation, ahead of the services' own
+// entry checks. No namespace is prechecked: rendered Namespaces
+// follow framework create/update behavior, and other missing
+// namespaces fail through the API.
 func (r *Runner) Deploy(ctx context.Context) error {
 	if err := r.begin(stageDeployed); err != nil {
 		return err
@@ -346,22 +333,20 @@ func (r *Runner) Deploy(ctx context.Context) error {
 	}
 	r.connection = connection
 
-	// No API write happens after the invocation expired: publication
-	// and the payload apply are both checked here, ahead of the
-	// services' own entry checks.
+	// No API write happens after the invocation expired: the owner
+	// preparation and the payload apply are both checked here, ahead
+	// of the services' own entry checks.
 	if err := ctx.Err(); err != nil {
 		r.fail()
 		return err
 	}
 
-	owner, err := r.ensure(ctx, connection, *r.definition)
+	owner, err := prepareOwner(ctx, connection, *r.definition)
 	if err != nil {
-		r.retainOwner(owner, err)
 		r.fail()
 		return err
 	}
 	r.owner = owner
-	r.publication = moduleowner.OutcomeConfirmed
 
 	if err := ctx.Err(); err != nil {
 		r.fail()
@@ -394,25 +379,9 @@ func (r *Runner) begin(next stage) error {
 }
 
 // fail marks the invocation terminal. Confirmed state — the owner
-// identity and publication outcome — stays readable after it.
+// identity — stays readable after it.
 func (r *Runner) fail() {
 	r.stage = stageFailed
-}
-
-// retainOwner records the owner state a failed Ensure still
-// confirms: the best-known identity — the return value or the typed
-// error's — and the publication outcome. A nil owner means the
-// identity is unconfirmed, never that no write occurred.
-func (r *Runner) retainOwner(owner *v1alpha1.PlatformModuleDefinition, err error) {
-	var typed *moduleowner.Error
-	if errors.As(err, &typed) {
-		if owner == nil {
-			owner = typed.Owner
-		}
-		r.publication = typed.Outcome
-	}
-
-	r.owner = owner
 }
 
 // backendFor selects the rendering service for the loaded

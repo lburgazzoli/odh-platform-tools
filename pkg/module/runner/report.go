@@ -18,7 +18,6 @@ package runner
 
 import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
-	moduleowner "github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/owner"
 )
 
 // Stage names one Runner stage in a run report. The empty Stage means
@@ -64,14 +63,13 @@ type Target struct {
 // reports what the invocation confirmed — never readiness, never
 // source values, never fabricated counts.
 //
-// Owner identity and desired-spec publication are distinct facts: a
-// non-nil Owner with Publication unknown means a write may have
-// landed, and a nil Owner means the identity is unconfirmed, never
-// that no write occurred. ApplyCompleted reports that the single
-// framework payload apply returned success and nothing more: a
-// pending, absent, or nonconverged Deployment causes no failure and
-// no monitoring call, and apply completion is never a readiness
-// claim.
+// Owner identity is a confirmed fact only: a non-nil Owner means a
+// successful definition apply returned a server-backed identity, and
+// a nil Owner means the identity is unconfirmed, never that no write
+// occurred. ApplyCompleted reports that the single framework payload
+// apply returned success and nothing more: a pending, absent, or
+// nonconverged Deployment causes no failure and no monitoring call,
+// and apply completion is never a readiness claim.
 type Result struct {
 	// Attempted is the last stage the run attempted, in Load →
 	// Render → Deploy order. It is empty when the run rejected the
@@ -84,15 +82,9 @@ type Result struct {
 
 	// Owner is the confirmed server-backed identity of the
 	// definition owner, when the invocation confirmed one — from a
-	// successful publication or from a failure that still carried
-	// identity. A nil value asserts an unconfirmed identity only.
+	// successful preparation, retained through a later payload or
+	// wait failure. A nil value asserts an unconfirmed identity only.
 	Owner *v1alpha1.PlatformModuleDefinition
-
-	// Publication classifies the desired-spec publication of the
-	// definition owner: not attempted, confirmed, rejected, or
-	// unknown. Only observed publication success or an
-	// already-matching server state confirms the desired spec.
-	Publication moduleowner.Outcome
 
 	// ApplyCompleted reports whether the framework payload apply
 	// finished without error. Writes that preceded the framework's

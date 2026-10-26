@@ -16,7 +16,6 @@ import (
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/images"
-	moduleowner "github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/owner"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
@@ -254,7 +253,6 @@ func TestRunCommandTextReportGolden(t *testing.T) {
 			Attempted:      runner.StageDeploy,
 			Completed:      runner.StageDeploy,
 			Owner:          confirmedOwner(),
-			Publication:    moduleowner.OutcomeConfirmed,
 			ApplyCompleted: true,
 		}}
 
@@ -263,7 +261,6 @@ func TestRunCommandTextReportGolden(t *testing.T) {
 
 		g.Expect(stdout).To(Equal(`module run definition.yaml: applied
 owner: synthetic (uid definition-uid)
-publication: confirmed
 stages: deploy completed
 apply: completed
 `))
@@ -279,7 +276,6 @@ apply: completed
 			Attempted:      runner.StageDeploy,
 			Completed:      runner.StageDeploy,
 			Owner:          confirmedOwner(),
-			Publication:    moduleowner.OutcomeConfirmed,
 			ApplyCompleted: true,
 			WaitRequested:  true,
 			WaitCompleted:  true,
@@ -294,7 +290,6 @@ apply: completed
 
 		g.Expect(stdout).To(Equal(`module run definition.yaml: applied
 owner: synthetic (uid definition-uid)
-publication: confirmed
 stages: deploy completed
 apply: completed
 wait: completed (run-namespace/synthetic-controller)
@@ -311,7 +306,6 @@ wait: completed (run-namespace/synthetic-controller)
 				Attempted:      runner.StageDeploy,
 				Completed:      runner.StageDeploy,
 				Owner:          confirmedOwner(),
-				Publication:    moduleowner.OutcomeConfirmed,
 				ApplyCompleted: true,
 				WaitRequested:  true,
 				WaitCompleted:  false,
@@ -329,7 +323,6 @@ wait: completed (run-namespace/synthetic-controller)
 
 		g.Expect(stdout).To(Equal(`module run definition.yaml: failed
 owner: synthetic (uid definition-uid)
-publication: confirmed
 stages: deploy completed
 apply: completed
 wait: incomplete
@@ -338,18 +331,17 @@ cancelled: waiting for module synthetic controller rollout: context deadline exc
 		g.Expect(stderr).To(ContainSubstring("module run definition.yaml: cancelled:"))
 	})
 
-	t.Run("unconfirmed owner does not claim no write", func(t *testing.T) {
+	t.Run("failure without confirmed owner claims no write", func(t *testing.T) {
 		t.Parallel()
 
 		g := NewWithT(t)
 
 		recorder := &recordingRun{
 			result: runner.Result{
-				Attempted:   runner.StageDeploy,
-				Completed:   runner.StageRender,
-				Publication: moduleowner.OutcomeUnknown,
+				Attempted: runner.StageDeploy,
+				Completed: runner.StageRender,
 			},
-			err: errors.New("publication failure"),
+			err: errors.New("owner preparation failure"),
 		}
 
 		stdout, _, err := executeRun(t.Context(), t, recorder.run, runFlags...)
@@ -358,9 +350,8 @@ cancelled: waiting for module synthetic controller rollout: context deadline exc
 		// No owner line at all: the identity is unconfirmed, which is
 		// not a claim that no write occurred.
 		g.Expect(stdout).To(Equal(`module run definition.yaml: failed
-publication: unknown
 stages: render completed
-runtime: publication failure
+runtime: owner preparation failure
 `))
 	})
 }
@@ -377,7 +368,6 @@ func TestRunCommandJSONReportGolden(t *testing.T) {
 			Attempted:      runner.StageDeploy,
 			Completed:      runner.StageDeploy,
 			Owner:          confirmedOwner(),
-			Publication:    moduleowner.OutcomeConfirmed,
 			ApplyCompleted: true,
 		}}
 
@@ -394,7 +384,6 @@ func TestRunCommandJSONReportGolden(t *testing.T) {
 				"apiVersion": "config.opendatahub.io/v1alpha1",
 				"kind": "PlatformModuleDefinition"
 			},
-			"publication": "confirmed",
 			"attemptedStage": "deploy",
 			"completedStage": "deploy",
 			"applyCompleted": true
@@ -410,7 +399,6 @@ func TestRunCommandJSONReportGolden(t *testing.T) {
 			Attempted:      runner.StageDeploy,
 			Completed:      runner.StageDeploy,
 			Owner:          confirmedOwner(),
-			Publication:    moduleowner.OutcomeConfirmed,
 			ApplyCompleted: true,
 			WaitRequested:  true,
 			WaitCompleted:  true,
@@ -432,7 +420,6 @@ func TestRunCommandJSONReportGolden(t *testing.T) {
 				"apiVersion": "config.opendatahub.io/v1alpha1",
 				"kind": "PlatformModuleDefinition"
 			},
-			"publication": "confirmed",
 			"attemptedStage": "deploy",
 			"completedStage": "deploy",
 			"applyCompleted": true,
@@ -456,7 +443,6 @@ func TestRunCommandJSONReportGolden(t *testing.T) {
 				Attempted:      runner.StageDeploy,
 				Completed:      runner.StageDeploy,
 				Owner:          confirmedOwner(),
-				Publication:    moduleowner.OutcomeConfirmed,
 				ApplyCompleted: true,
 				WaitRequested:  true,
 				WaitCompleted:  false,
@@ -477,7 +463,6 @@ func TestRunCommandJSONReportGolden(t *testing.T) {
 				"apiVersion": "config.opendatahub.io/v1alpha1",
 				"kind": "PlatformModuleDefinition"
 			},
-			"publication": "confirmed",
 			"attemptedStage": "deploy",
 			"completedStage": "deploy",
 			"applyCompleted": true,
