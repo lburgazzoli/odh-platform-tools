@@ -25,6 +25,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	"github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/util/option"
 )
 
@@ -58,7 +59,7 @@ func container(
 ) corev1.Container {
 	t.Helper()
 
-	idx, ok := findContainer(containers, name)
+	idx, ok := k8s.FindContainer(containers, name)
 	if !ok {
 		t.Fatalf("container %q not found", name)
 	}

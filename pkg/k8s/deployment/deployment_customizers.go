@@ -21,6 +21,8 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+
+	"github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
 )
 
 // customizationRequest is one ordered Deployment mutation, deferred
@@ -34,7 +36,7 @@ type customizationRequest func(d *appsv1.Deployment) error
 // first regular container with the exact name.
 func containerImage(name string, image string) customizationRequest {
 	return func(d *appsv1.Deployment) error {
-		idx, ok := findContainer(d.Spec.Template.Spec.Containers, name)
+		idx, ok := k8s.FindContainer(d.Spec.Template.Spec.Containers, name)
 		if !ok {
 			return fmt.Errorf("container %q not found in Deployment %s", name, d.Name)
 		}
@@ -49,7 +51,7 @@ func containerImage(name string, image string) customizationRequest {
 // the first init container with the exact name.
 func initContainerImage(name string, image string) customizationRequest {
 	return func(d *appsv1.Deployment) error {
-		idx, ok := findContainer(d.Spec.Template.Spec.InitContainers, name)
+		idx, ok := k8s.FindContainer(d.Spec.Template.Spec.InitContainers, name)
 		if !ok {
 			return fmt.Errorf("init container %q not found in Deployment %s", name, d.Name)
 		}
@@ -65,7 +67,7 @@ func initContainerImage(name string, image string) customizationRequest {
 // for an empty env list.
 func containerEnv(name string, envs []corev1.EnvVar) customizationRequest {
 	return func(d *appsv1.Deployment) error {
-		idx, ok := findContainer(d.Spec.Template.Spec.Containers, name)
+		idx, ok := k8s.FindContainer(d.Spec.Template.Spec.Containers, name)
 		if !ok {
 			return fmt.Errorf("container %q not found in Deployment %s", name, d.Name)
 		}
@@ -73,38 +75,9 @@ func containerEnv(name string, envs []corev1.EnvVar) customizationRequest {
 		container := &d.Spec.Template.Spec.Containers[idx]
 
 		for _, env := range envs {
-			mergeEnv(container, *env.DeepCopy())
+			container.Env = k8s.MergeEnv(container.Env, *env.DeepCopy())
 		}
 
 		return nil
 	}
-}
-
-// findContainer returns the index of the first container carrying the
-// exact name.
-func findContainer(containers []corev1.Container, name string) (int, bool) {
-	for i := range containers {
-		if containers[i].Name == name {
-			return i, true
-		}
-	}
-
-	return 0, false
-}
-
-// mergeEnv sets env into the container's list: the first entry with
-// the same name is replaced in place by the full incoming EnvVar — a
-// literal override clears an old valueFrom, an incoming source
-// replaces an old literal — and a new name is appended. Unrelated
-// entries and later pre-existing duplicates keep their order.
-func mergeEnv(container *corev1.Container, env corev1.EnvVar) {
-	for i := range container.Env {
-		if container.Env[i].Name == env.Name {
-			container.Env[i] = env
-
-			return
-		}
-	}
-
-	container.Env = append(container.Env, env)
 }
