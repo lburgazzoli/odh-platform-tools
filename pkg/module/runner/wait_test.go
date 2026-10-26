@@ -841,6 +841,40 @@ func TestWaitAPIErrorFails(t *testing.T) {
 	g.Expect(stub.runner.publication).To(Equal(moduleowner.OutcomeConfirmed))
 }
 
+// TestWaitErrorIsSafeText proves the wait failure never echoes
+// API-returned text into its public message: a distinctive marker the
+// server error carries appears nowhere in err.Error(), while the raw
+// cause stays reachable through Unwrap for errors.Is and errors.As.
+func TestWaitErrorIsSafeText(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	const marker = "WAIT-MARKER-8f3d91"
+
+	fixture := newWaitCluster(t)
+	fixture.frames[waitTargetKey] = []waitFrame{
+		{err: apierrors.NewInternalError(errors.New(marker))},
+	}
+
+	stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
+		renderedDeployment("run-namespace", "synthetic-controller"),
+	})
+	deployed(t, stub)
+
+	err := stub.runner.Wait(t.Context())
+	g.Expect(err).To(HaveOccurred())
+
+	g.Expect(err.Error()).NotTo(ContainSubstring(marker))
+	g.Expect(err.Error()).To(ContainSubstring("run-namespace/synthetic-controller"))
+	g.Expect(err.Error()).To(ContainSubstring("errors.Is"))
+
+	var status *apierrors.StatusError
+	g.Expect(errors.As(err, &status)).To(BeTrue())
+	g.Expect(apierrors.IsInternalError(err)).To(BeTrue())
+	g.Expect(status.Error()).To(ContainSubstring(marker))
+}
+
 // TestRunRejectsNegativeWaitTimeout proves a negative wait budget on
 // a requested wait is an options error before any stage or service
 // runs.

@@ -69,9 +69,11 @@ const defaultWaitPollInterval = time.Second
 //
 // A wait failure is a runtime error: the published owner, the
 // confirmed publication, and apply completion are retained, and the
-// report never claims readiness. Underlying errors and the helper's
-// progress text are never echoed into public output; causes stay
-// reachable through Unwrap.
+// report never claims readiness. Wait failures are safe typed errors:
+// their text names the operation and the target identity — namespace
+// and name, already safe report identity — and never the API's or the
+// status helper's own text; underlying causes stay reachable only
+// through Unwrap for errors.Is and errors.As.
 func (r *Runner) Wait(ctx context.Context) error {
 	if r.stage != stageDeployed {
 		return fmt.Errorf("%w: Wait requires a successful Deploy", ErrStageSequence)
@@ -165,7 +167,9 @@ func (r *Runner) selectWaitTargets() []Target {
 // observeUntilRolledOut polls the live targets until the public
 // status helper reports every one rolled out. Each round GETs every
 // target fresh, applies the termination and identity rules, and asks
-// the helper; the shared context bounds the whole loop.
+// the helper; the shared context bounds the whole loop. Every failure
+// is a safe typed waitError whose cause carries the raw API or
+// helper error.
 func (r *Runner) observeUntilRolledOut(ctx context.Context, targets []Target) error {
 	viewer := &polymorphichelpers.DeploymentStatusViewer{}
 	pinned := make(map[Target]types.UID, len(targets))
@@ -189,30 +193,26 @@ func (r *Runner) observeUntilRolledOut(ctx context.Context, targets []Target) er
 					// An initial NotFound may keep waiting; a target
 					// that was live and then vanished fails.
 					if _, wasLive := pinned[target]; wasLive {
-						return fmt.Errorf("waiting for deployment %s/%s: the deployment disappeared: %w",
-							target.Namespace, target.Name, err)
+						return waitTargetFailure(target, "the deployment disappeared", err)
 					}
 
 					rolledOut = false
 					continue
 				}
 
-				return fmt.Errorf("waiting for deployment %s/%s: %w",
-					target.Namespace, target.Name, err)
+				return waitTargetFailure(target, "the observation failed", err)
 			}
 
 			// A terminating target fails on every observation,
 			// including the first, whatever its replica counts say.
 			if live.GetDeletionTimestamp() != nil {
-				return fmt.Errorf("waiting for deployment %s/%s: the deployment is terminating",
-					target.Namespace, target.Name)
+				return waitTargetFailure(target, "the deployment is terminating", nil)
 			}
 
 			// The first live UID is pinned; a replacement fails.
 			if uid, wasLive := pinned[target]; wasLive {
 				if live.GetUID() != uid {
-					return fmt.Errorf("waiting for deployment %s/%s: the deployment was replaced",
-						target.Namespace, target.Name)
+					return waitTargetFailure(target, "the deployment was replaced", nil)
 				}
 			} else {
 				pinned[target] = live.GetUID()
@@ -222,8 +222,7 @@ func (r *Runner) observeUntilRolledOut(ctx context.Context, targets []Target) er
 			// object, no revision constraint, no extra policy.
 			_, done, err := viewer.Status(live, 0)
 			if err != nil {
-				return fmt.Errorf("waiting for deployment %s/%s: %w",
-					target.Namespace, target.Name, err)
+				return waitTargetFailure(target, "the rollout status check failed", err)
 			}
 
 			if !done {
@@ -237,8 +236,46 @@ func (r *Runner) observeUntilRolledOut(ctx context.Context, targets []Target) er
 
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("waiting for module %s controller rollout: %w", r.definition.Name, ctx.Err())
+			return &waitError{
+				message: fmt.Sprintf("waiting for module %s controller rollout failed: the wait was cancelled or its budget expired", r.definition.Name),
+				cause:   ctx.Err(),
+			}
 		case <-ticker.C:
 		}
 	}
+}
+
+// waitError is the safe typed error the wait returns. Its text names
+// the operation and, where one exists, the target identity —
+// namespace and name, already safe report identity — never the API's
+// or the status helper's own text, which may echo server-returned
+// detail. The raw cause stays reachable through Unwrap for errors.Is
+// and errors.As.
+type waitError struct {
+	message string
+	cause   error
+}
+
+// Error returns the safe wait message.
+func (e *waitError) Error() string {
+	return e.message
+}
+
+// Unwrap returns the raw cause — the API or status-helper error — so
+// callers can classify the underlying failure.
+func (e *waitError) Unwrap() error {
+	return e.cause
+}
+
+// waitTargetFailure builds the safe failure for one waited target:
+// safe identity and the failure's own words in the text, the raw
+// cause only under Unwrap.
+func waitTargetFailure(target Target, detail string, cause error) error {
+	message := fmt.Sprintf("waiting for deployment %s/%s failed: %s", target.Namespace, target.Name, detail)
+
+	if cause != nil {
+		message += "; the raw cause remains reachable through errors.Is and errors.As"
+	}
+
+	return &waitError{message: message, cause: cause}
 }
