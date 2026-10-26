@@ -9,6 +9,7 @@ import (
 	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
 
 	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
+	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/k8s"
 
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
@@ -340,34 +341,36 @@ func TestEnvInjector(t *testing.T) {
 
 	g := NewWithT(t)
 
-	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
 	g.Expect(err).To(Succeed())
 
 	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(deployment.Object).To(SatisfyAll(
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .image == "quay.io/example/controller:v1"`),
-		jq.Match(`[.spec.template.spec.containers[] | select(.name == "manager") | .env[].name]
-			== ["CHART_ENV","RELATED_IMAGE_OPERAND","LOG_LEVEL","APPLICATIONS_NAMESPACE","MONITORING_NAMESPACE","ODH_MODULE_OPERATOR_PLATFORM_TYPE"]`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "RELATED_IMAGE_OPERAND") | .value == "quay.io/example/operand:v1"`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "LOG_LEVEL") | .value == "debug"`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "APPLICATIONS_NAMESPACE") | .value == "opendatahub"`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "MONITORING_NAMESPACE") | .value == "opendatahub-monitoring"`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "ODH_MODULE_OPERATOR_PLATFORM_TYPE") | .value == "self-managed"`),
-		jq.Match(`.spec.template.spec.initContainers[] | select(.name == "copy-manifests")
-			| .image == "quay.io/example/controller:v1"`),
-		jq.Match(`[.spec.template.spec.initContainers[] | select(.name == "copy-manifests") | .env[].name]
-			== ["RELATED_IMAGE_OPERAND","LOG_LEVEL","APPLICATIONS_NAMESPACE","MONITORING_NAMESPACE","ODH_MODULE_OPERATOR_PLATFORM_TYPE"]`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "sidecar")
-			| .image == "registry.example/chart-sidecar:v0"`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "sidecar") | has("env") | not`),
+		WithTransform(k8s.Container("manager"), SatisfyAll(
+			HaveField("Image", "quay.io/example/controller:v1"),
+			WithTransform(envVarNames, Equal([]string{
+				"CHART_ENV", "RELATED_IMAGE_OPERAND", "LOG_LEVEL", "APPLICATIONS_NAMESPACE",
+				"MONITORING_NAMESPACE", "ODH_MODULE_OPERATOR_PLATFORM_TYPE",
+			})),
+			WithTransform(k8s.EnvVar("RELATED_IMAGE_OPERAND"), HaveField("Value", "quay.io/example/operand:v1")),
+			WithTransform(k8s.EnvVar("LOG_LEVEL"), HaveField("Value", "debug")),
+			WithTransform(k8s.EnvVar("APPLICATIONS_NAMESPACE"), HaveField("Value", "opendatahub")),
+			WithTransform(k8s.EnvVar("MONITORING_NAMESPACE"), HaveField("Value", "opendatahub-monitoring")),
+			WithTransform(k8s.EnvVar("ODH_MODULE_OPERATOR_PLATFORM_TYPE"), HaveField("Value", "self-managed")),
+		)),
+		WithTransform(initContainer(), SatisfyAll(
+			HaveField("Image", "quay.io/example/controller:v1"),
+			WithTransform(envVarNames, Equal([]string{
+				"RELATED_IMAGE_OPERAND", "LOG_LEVEL", "APPLICATIONS_NAMESPACE",
+				"MONITORING_NAMESPACE", "ODH_MODULE_OPERATOR_PLATFORM_TYPE",
+			})),
+		)),
+		WithTransform(k8s.Container("sidecar"), SatisfyAll(
+			HaveField("Image", "registry.example/chart-sidecar:v0"),
+			HaveField("Env", BeNil()),
+		)),
 	))
 }
 
@@ -384,18 +387,16 @@ func TestEnvInjectorLiteralImage(t *testing.T) {
 	definition := newDefinition()
 	definition.Spec.Controller.Deployment.Container.Image = "quay.io/example/controller:v9"
 
-	var render enginetypes.PostRenderer = (&EnvInjector{Definition: &definition}).Run
+	var render enginetypes.PostRenderer = (&EnvInjector{Definition: definition}).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
 	g.Expect(err).To(Succeed())
 
 	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-	g.Expect(deployment.Object).To(SatisfyAll(
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .image == "quay.io/example/controller:v9"`),
-		jq.Match(`[.spec.template.spec.containers[] | select(.name == "manager") | .env[].name]
-			== ["CHART_ENV","LOG_LEVEL"]`),
-	))
+	g.Expect(deployment.Object).To(WithTransform(k8s.Container("manager"), SatisfyAll(
+		HaveField("Image", "quay.io/example/controller:v9"),
+		WithTransform(envVarNames, Equal([]string{"CHART_ENV", "LOG_LEVEL"})),
+	)))
 }
 
 // TestEnvInjectorUnresolvedImages pins the unresolved-image policy: a
@@ -413,7 +414,7 @@ func TestEnvInjectorUnresolvedImages(t *testing.T) {
 
 		g := NewWithT(t)
 
-		var render enginetypes.PostRenderer = (&EnvInjector{Definition: newDefinitionPointer()}).Run
+		var render enginetypes.PostRenderer = (&EnvInjector{Definition: newDefinition()}).Run
 
 		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
 		g.Expect(err).To(HaveOccurred())
@@ -430,7 +431,7 @@ func TestEnvInjectorUnresolvedImages(t *testing.T) {
 		definition.Spec.Controller.Deployment.InitContainer = nil
 		definition.Spec.Controller.Deployment.Container.Image = ""
 
-		var render enginetypes.PostRenderer = (&EnvInjector{Definition: &definition}).Run
+		var render enginetypes.PostRenderer = (&EnvInjector{Definition: definition}).Run
 
 		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
 		g.Expect(err).To(HaveOccurred())
@@ -453,20 +454,22 @@ func TestEnvInjectorOverridesExistingEnvAndRemovesValueFrom(t *testing.T) {
 	definition := newDefinition()
 	definition.Spec.Controller.Deployment.InitContainer = nil
 
-	var render enginetypes.PostRenderer = newEnvInjector(&definition).Run
+	var render enginetypes.PostRenderer = newEnvInjector(definition).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentValueFromYAML)})
 	g.Expect(err).To(Succeed())
 
 	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-	g.Expect(deployment.Object).To(SatisfyAll(
-		jq.Match(`[.spec.template.spec.containers[] | select(.name == "manager") | .env[].name]
-			== ["RELATED_IMAGE_OPERAND","LOG_LEVEL","APPLICATIONS_NAMESPACE","MONITORING_NAMESPACE","ODH_MODULE_OPERATOR_PLATFORM_TYPE"]`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "RELATED_IMAGE_OPERAND") | .value == "quay.io/example/operand:v1"`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "RELATED_IMAGE_OPERAND") | has("valueFrom") | not`),
-	))
+	g.Expect(deployment.Object).To(WithTransform(k8s.Container("manager"), SatisfyAll(
+		WithTransform(envVarNames, Equal([]string{
+			"RELATED_IMAGE_OPERAND", "LOG_LEVEL", "APPLICATIONS_NAMESPACE",
+			"MONITORING_NAMESPACE", "ODH_MODULE_OPERATOR_PLATFORM_TYPE",
+		})),
+		WithTransform(k8s.EnvVar("RELATED_IMAGE_OPERAND"), SatisfyAll(
+			HaveField("Value", "quay.io/example/operand:v1"),
+			HaveField("ValueFrom", BeNil()),
+		)),
+	)))
 }
 
 // TestEnvInjectorPrecedence pins the operator's semantic precedence
@@ -489,7 +492,7 @@ func TestEnvInjectorPrecedence(t *testing.T) {
 	}
 
 	var render enginetypes.PostRenderer = (&EnvInjector{
-		Definition:            &definition,
+		Definition:            definition,
 		Images:                newResolvedImages(),
 		ApplicationsNamespace: "opendatahub",
 	}).Run
@@ -498,12 +501,10 @@ func TestEnvInjectorPrecedence(t *testing.T) {
 	g.Expect(err).To(Succeed())
 
 	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-	g.Expect(deployment.Object).To(SatisfyAll(
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "RELATED_IMAGE_OPERAND") | .value == "extra-wins"`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "APPLICATIONS_NAMESPACE") | .value == "opendatahub"`),
-	))
+	g.Expect(deployment.Object).To(WithTransform(k8s.Container("manager"), SatisfyAll(
+		WithTransform(k8s.EnvVar("RELATED_IMAGE_OPERAND"), HaveField("Value", "extra-wins")),
+		WithTransform(k8s.EnvVar("APPLICATIONS_NAMESPACE"), HaveField("Value", "opendatahub")),
+	)))
 }
 
 // TestEnvInjectorExtraEnvListMapSemantics pins the list-to-map
@@ -527,22 +528,20 @@ func TestEnvInjectorExtraEnvListMapSemantics(t *testing.T) {
 		{Name: "BRAVO"},
 	}
 
-	var render enginetypes.PostRenderer = (&EnvInjector{Definition: &definition}).Run
+	var render enginetypes.PostRenderer = (&EnvInjector{Definition: definition}).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
 	g.Expect(err).To(Succeed())
 
 	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-	g.Expect(deployment.Object).To(SatisfyAll(
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "ZETA") | .value == "one"`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "ALPHA") | .value == "two"`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "BRAVO") | (.value // "") == ""`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "BRAVO") | has("valueFrom") | not`),
-	))
+	g.Expect(deployment.Object).To(WithTransform(k8s.Container("manager"), SatisfyAll(
+		WithTransform(k8s.EnvVar("ZETA"), HaveField("Value", "one")),
+		WithTransform(k8s.EnvVar("ALPHA"), HaveField("Value", "two")),
+		WithTransform(k8s.EnvVar("BRAVO"), SatisfyAll(
+			HaveField("Value", ""),
+			HaveField("ValueFrom", BeNil()),
+		)),
+	)))
 }
 
 // TestEnvInjectorPlaceholderValueStaysLiteral pins that an extra-env
@@ -563,14 +562,14 @@ func TestEnvInjectorPlaceholderValueStaysLiteral(t *testing.T) {
 		{Name: "LOG_LEVEL", Value: new("{{LOG_LEVEL}}")},
 	}
 
-	var render enginetypes.PostRenderer = (&EnvInjector{Definition: &definition}).Run
+	var render enginetypes.PostRenderer = (&EnvInjector{Definition: definition}).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
 	g.Expect(err).To(Succeed())
 
 	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-	g.Expect(deployment.Object).To(jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-		| .env[] | select(.name == "LOG_LEVEL") | .value == "{{LOG_LEVEL}}"`))
+	g.Expect(deployment.Object).To(WithTransform(k8s.Container("manager"),
+		WithTransform(k8s.EnvVar("LOG_LEVEL"), HaveField("Value", "{{LOG_LEVEL}}"))))
 }
 
 // TestEnvInjectorSortedExtraEnv pins that map-derived extra env
@@ -592,14 +591,14 @@ func TestEnvInjectorSortedExtraEnv(t *testing.T) {
 		{Name: "ALPHA", Value: new("a")},
 	}
 
-	var render enginetypes.PostRenderer = (&EnvInjector{Definition: &definition}).Run
+	var render enginetypes.PostRenderer = (&EnvInjector{Definition: definition}).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
 	g.Expect(err).To(Succeed())
 
 	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-	g.Expect(deployment.Object).To(jq.Match(`[.spec.template.spec.containers[] | select(.name == "manager") | .env[].name]
-		== ["CHART_ENV","ALPHA","ZETA"]`))
+	g.Expect(deployment.Object).To(WithTransform(k8s.Container("manager"),
+		WithTransform(envVarNames, Equal([]string{"CHART_ENV", "ALPHA", "ZETA"}))))
 }
 
 // TestEnvInjectorDeploymentNameFallback pins that an empty deployment
@@ -618,7 +617,7 @@ func TestEnvInjectorDeploymentNameFallback(t *testing.T) {
 	definition.Spec.Controller.Deployment.Name = ""
 
 	var render enginetypes.PostRenderer = (&EnvInjector{
-		Definition: &definition,
+		Definition: definition,
 		Images:     newResolvedImages(),
 	}).Run
 
@@ -626,8 +625,8 @@ func TestEnvInjectorDeploymentNameFallback(t *testing.T) {
 	g.Expect(err).To(Succeed())
 
 	deployment := findResource(t, resources, "Deployment", "synthetic")
-	g.Expect(deployment.Object).To(jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-		| .image == "quay.io/example/controller:v1"`))
+	g.Expect(deployment.Object).To(WithTransform(k8s.Container("manager"),
+		HaveField("Image", "quay.io/example/controller:v1")))
 }
 
 // TestEnvInjectorSkipsOtherDeployments pins that a foreign Deployment
@@ -641,7 +640,7 @@ func TestEnvInjectorSkipsOtherDeployments(t *testing.T) {
 
 	g := NewWithT(t)
 
-	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{
 		resource(t, controllerDeploymentYAML),
@@ -650,15 +649,14 @@ func TestEnvInjectorSkipsOtherDeployments(t *testing.T) {
 	g.Expect(err).To(Succeed())
 
 	other := findResource(t, resources, "Deployment", "other-controller")
-	g.Expect(other.Object).To(SatisfyAll(
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .image == "registry.example/other:v0"`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager") | has("env") | not`),
-	))
+	g.Expect(other.Object).To(WithTransform(k8s.Container("manager"), SatisfyAll(
+		HaveField("Image", "registry.example/other:v0"),
+		HaveField("Env", BeNil()),
+	)))
 
 	own := findResource(t, resources, "Deployment", "synthetic-controller")
-	g.Expect(own.Object).To(jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-		| .image == "quay.io/example/controller:v1"`))
+	g.Expect(own.Object).To(WithTransform(k8s.Container("manager"),
+		HaveField("Image", "quay.io/example/controller:v1")))
 }
 
 // TestEnvInjectorForeignMalformedDeploymentsPassThrough pins that
@@ -671,7 +669,7 @@ func TestEnvInjectorForeignMalformedDeploymentsPassThrough(t *testing.T) {
 
 	g := NewWithT(t)
 
-	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{
 		resource(t, controllerDeploymentYAML),
@@ -686,8 +684,8 @@ func TestEnvInjectorForeignMalformedDeploymentsPassThrough(t *testing.T) {
 	g.Expect(resources[3]).To(Equal(resource(t, foreignMalformedEnvYAML)))
 
 	own := findResource(t, resources, "Deployment", "synthetic-controller")
-	g.Expect(own.Object).To(jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-		| .image == "quay.io/example/controller:v1"`))
+	g.Expect(own.Object).To(WithTransform(k8s.Container("manager"),
+		HaveField("Image", "quay.io/example/controller:v1")))
 }
 
 // TestEnvInjectorTargetWithoutContainersErrors pins that the module's
@@ -701,7 +699,7 @@ func TestEnvInjectorTargetWithoutContainersErrors(t *testing.T) {
 
 		g := NewWithT(t)
 
-		var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+		var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
 		resources, err := render(t.Context(), []unstructured.Unstructured{
 			resource(t, deploymentTargetWithoutContainersYAML),
@@ -716,7 +714,7 @@ func TestEnvInjectorTargetWithoutContainersErrors(t *testing.T) {
 
 		g := NewWithT(t)
 
-		var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+		var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
 		resources, err := render(t.Context(), []unstructured.Unstructured{
 			resource(t, deploymentTargetEmptyContainersYAML),
@@ -735,7 +733,7 @@ func TestEnvInjectorMalformedContainersErrors(t *testing.T) {
 
 	g := NewWithT(t)
 
-	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentMalformedContainersYAML)})
 	g.Expect(err).To(HaveOccurred())
@@ -751,7 +749,7 @@ func TestEnvInjectorMalformedEnvErrors(t *testing.T) {
 
 	g := NewWithT(t)
 
-	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentMalformedEnvYAML)})
 	g.Expect(err).To(HaveOccurred())
@@ -767,7 +765,7 @@ func TestEnvInjectorMalformedFieldOutsideContainersErrors(t *testing.T) {
 
 	g := NewWithT(t)
 
-	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentMalformedReplicasYAML)})
 	g.Expect(err).To(HaveOccurred())
@@ -783,7 +781,7 @@ func TestEnvInjectorMissingMainContainerErrors(t *testing.T) {
 
 	g := NewWithT(t)
 
-	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWrongMainContainerYAML)})
 	g.Expect(err).To(HaveOccurred())
@@ -803,7 +801,7 @@ func TestEnvInjectorDropsUnknownFieldsOnAdaptedTarget(t *testing.T) {
 	definition := newDefinition()
 	definition.Spec.Controller.Deployment.InitContainer = nil
 
-	var render enginetypes.PostRenderer = newEnvInjector(&definition).Run
+	var render enginetypes.PostRenderer = newEnvInjector(definition).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentUnknownFieldYAML)})
 	g.Expect(err).To(Succeed())
@@ -814,12 +812,11 @@ func TestEnvInjectorDropsUnknownFieldsOnAdaptedTarget(t *testing.T) {
 		jq.Match(`.metadata.labels.app == "synthetic"`),
 		jq.Match(`.spec.replicas == 2`),
 		jq.Match(`.spec.template.metadata.labels.app == "synthetic"`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .image == "quay.io/example/controller:v1"`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "CHART_ENV") | .value == "chart-value"`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "sidecar")
-			| .image == "registry.example/chart-sidecar:v0"`),
+		WithTransform(k8s.Container("manager"), SatisfyAll(
+			HaveField("Image", "quay.io/example/controller:v1"),
+			WithTransform(k8s.EnvVar("CHART_ENV"), HaveField("Value", "chart-value")),
+		)),
+		WithTransform(k8s.Container("sidecar"), HaveField("Image", "registry.example/chart-sidecar:v0")),
 	))
 }
 
@@ -840,7 +837,7 @@ func TestEnvInjectorNoContainerBlock(t *testing.T) {
 	}
 
 	var render enginetypes.PostRenderer = (&EnvInjector{
-		Definition:            &definition,
+		Definition:            definition,
 		Images:                newResolvedImages(),
 		ApplicationsNamespace: "opendatahub",
 	}).Run
@@ -860,7 +857,7 @@ func TestEnvInjectorIgnoresNonDeploymentResources(t *testing.T) {
 
 	g := NewWithT(t)
 
-	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{
 		resource(t, serviceYAML),
@@ -889,7 +886,7 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 
 		g := NewWithT(t)
 
-		var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+		var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
 		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
 		g.Expect(err).To(HaveOccurred())
@@ -902,7 +899,7 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 
 		g := NewWithT(t)
 
-		var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+		var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
 		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentEmptyInitYAML)})
 		g.Expect(err).To(HaveOccurred())
@@ -915,7 +912,7 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 
 		g := NewWithT(t)
 
-		var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+		var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
 		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentOtherInitYAML)})
 		g.Expect(err).To(HaveOccurred())
@@ -928,7 +925,7 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 
 		g := NewWithT(t)
 
-		var render enginetypes.PostRenderer = (&EnvInjector{Definition: newDefinitionPointer()}).Run
+		var render enginetypes.PostRenderer = (&EnvInjector{Definition: newDefinition()}).Run
 
 		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentOtherInitYAML)})
 		g.Expect(err).To(HaveOccurred())
@@ -944,17 +941,15 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		definition := newDefinition()
 		definition.Spec.Controller.Deployment.InitContainer.Image = "quay.io/example/init:v2"
 
-		var render enginetypes.PostRenderer = newEnvInjector(&definition).Run
+		var render enginetypes.PostRenderer = newEnvInjector(definition).Run
 
 		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
 		g.Expect(err).To(Succeed())
 
 		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 		g.Expect(deployment.Object).To(SatisfyAll(
-			jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-				| .image == "quay.io/example/controller:v1"`),
-			jq.Match(`.spec.template.spec.initContainers[] | select(.name == "copy-manifests")
-				| .image == "quay.io/example/init:v2"`),
+			WithTransform(k8s.Container("manager"), HaveField("Image", "quay.io/example/controller:v1")),
+			WithTransform(initContainer(), HaveField("Image", "quay.io/example/init:v2")),
 		))
 	})
 
@@ -970,7 +965,7 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		images["RELATED_IMAGE_INIT"] = "quay.io/example/init:v3"
 
 		var render enginetypes.PostRenderer = (&EnvInjector{
-			Definition: &definition,
+			Definition: definition,
 			Images:     images,
 		}).Run
 
@@ -979,10 +974,8 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 
 		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 		g.Expect(deployment.Object).To(SatisfyAll(
-			jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-				| .image == "quay.io/example/controller:v1"`),
-			jq.Match(`.spec.template.spec.initContainers[] | select(.name == "copy-manifests")
-				| .image == "quay.io/example/init:v3"`),
+			WithTransform(k8s.Container("manager"), HaveField("Image", "quay.io/example/controller:v1")),
+			WithTransform(initContainer(), HaveField("Image", "quay.io/example/init:v3")),
 		))
 	})
 
@@ -994,7 +987,7 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		definition := newDefinition()
 		definition.Spec.Controller.Deployment.InitContainer.Image = "{{RELATED_IMAGE_ABSENT}}"
 
-		var render enginetypes.PostRenderer = newEnvInjector(&definition).Run
+		var render enginetypes.PostRenderer = newEnvInjector(definition).Run
 
 		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
 		g.Expect(err).To(HaveOccurred())
@@ -1011,7 +1004,7 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		definition.Spec.Controller.Deployment.InitContainer = nil
 
 		var render enginetypes.PostRenderer = (&EnvInjector{
-			Definition: &definition,
+			Definition: definition,
 			Images:     newResolvedImages(),
 		}).Run
 
@@ -1019,8 +1012,8 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		g.Expect(err).To(Succeed())
 
 		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-		g.Expect(deployment.Object).To(jq.Match(`.spec.template.spec.initContainers[] | select(.name == "copy-manifests")
-			| .image == "registry.example/chart-init:v0"`))
+		g.Expect(deployment.Object).To(WithTransform(initContainer(),
+			HaveField("Image", "registry.example/chart-init:v0")))
 	})
 }
 
@@ -1040,7 +1033,7 @@ func TestEnvInjectorEmptyCustomizationStillRoundTrips(t *testing.T) {
 	definition.Spec.Controller.Deployment.Container.Image = "quay.io/example/controller:v1"
 	definition.Spec.Controller.Deployment.Container.Env = nil
 
-	var render enginetypes.PostRenderer = (&EnvInjector{Definition: &definition}).Run
+	var render enginetypes.PostRenderer = (&EnvInjector{Definition: definition}).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{
 		resource(t, controllerDeploymentUnknownFieldYAML),
@@ -1054,12 +1047,11 @@ func TestEnvInjectorEmptyCustomizationStillRoundTrips(t *testing.T) {
 	own := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(own.Object).To(SatisfyAll(
 		jq.Match(`.spec.template.spec | has("x-extension") | not`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .image == "quay.io/example/controller:v1"`),
-		jq.Match(`[.spec.template.spec.containers[] | select(.name == "manager") | .env[].name]
-			== ["CHART_ENV"]`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "CHART_ENV") | .value == "chart-value"`),
+		WithTransform(k8s.Container("manager"), SatisfyAll(
+			HaveField("Image", "quay.io/example/controller:v1"),
+			WithTransform(envVarNames, Equal([]string{"CHART_ENV"})),
+			WithTransform(k8s.EnvVar("CHART_ENV"), HaveField("Value", "chart-value")),
+		)),
 	))
 
 	// The passthrough path keeps its original map.
@@ -1075,7 +1067,7 @@ func TestEnvInjectorAlreadyCorrectValuesStillRoundTrips(t *testing.T) {
 
 	g := NewWithT(t)
 
-	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{
 		resource(t, controllerDeploymentAlreadyCorrectYAML),
@@ -1084,14 +1076,15 @@ func TestEnvInjectorAlreadyCorrectValuesStillRoundTrips(t *testing.T) {
 
 	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 	g.Expect(deployment.Object).To(SatisfyAll(
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .image == "quay.io/example/controller:v1"`),
-		jq.Match(`.spec.template.spec.initContainers[] | select(.name == "copy-manifests")
-			| .image == "quay.io/example/controller:v1"`),
-		jq.Match(`[.spec.template.spec.containers[] | select(.name == "manager") | .env[].name]
-			== ["LOG_LEVEL","RELATED_IMAGE_OPERAND","APPLICATIONS_NAMESPACE","MONITORING_NAMESPACE","ODH_MODULE_OPERATOR_PLATFORM_TYPE"]`),
-		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "LOG_LEVEL") | .value == "debug"`),
+		WithTransform(k8s.Container("manager"), SatisfyAll(
+			HaveField("Image", "quay.io/example/controller:v1"),
+			WithTransform(envVarNames, Equal([]string{
+				"LOG_LEVEL", "RELATED_IMAGE_OPERAND", "APPLICATIONS_NAMESPACE",
+				"MONITORING_NAMESPACE", "ODH_MODULE_OPERATOR_PLATFORM_TYPE",
+			})),
+			WithTransform(k8s.EnvVar("LOG_LEVEL"), HaveField("Value", "debug")),
+		)),
+		WithTransform(initContainer(), HaveField("Image", "quay.io/example/controller:v1")),
 	))
 }
 
@@ -1103,7 +1096,7 @@ func TestEnvInjectorDoesNotMutateInputs(t *testing.T) {
 
 	g := NewWithT(t)
 
-	definition := newDefinitionPointer()
+	definition := newDefinition()
 	injector := newEnvInjector(definition)
 
 	var render enginetypes.PostRenderer = injector.Run
@@ -1112,6 +1105,6 @@ func TestEnvInjectorDoesNotMutateInputs(t *testing.T) {
 	g.Expect(err).To(Succeed())
 	g.Expect(resources).To(HaveLen(1))
 
-	g.Expect(*definition).To(Equal(newDefinition()))
+	g.Expect(*definition).To(Equal(*newDefinition()))
 	g.Expect(injector.Images).To(Equal(newResolvedImages()))
 }

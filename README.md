@@ -271,14 +271,20 @@ converted back after a successful pass — even when the image and env
 values were already correct — while non-matching resources keep their
 original rendered maps untouched.
 
+The platform config ConfigMap follows the same split through
+`pkg/k8s/configmap`: `Customize` applies ordered `WithData` and
+`Remove` options to the data block, and the injector decides which
+keys those are.
+
 **Platform config.** The run creates or merges the
 `odh-<module>-config` ConfigMap carrying the `--platform-version`. An
-existing match is selected by the exact core/v1 ConfigMap
-group/version/kind plus name — namespace-insensitive, with the last
-exact match winning — and keeps its namespace, its module-owned data
-keys, and its `binaryData`; the platform version is enforced and stale
-cert-manager keys are removed. A missing config is appended in the
-applications namespace.
+existing match is selected by the full object identity — exact core/v1
+ConfigMap group/version/kind, namespace, and name, with the last exact
+match winning — and keeps its module-owned data
+keys and its `binaryData`; the platform version is enforced and stale
+cert-manager keys are removed. A chart that renders the name into a
+foreign namespace keeps its own ConfigMap untouched, and a missing
+config is appended in the applications namespace.
 
 **Default success means apply completion.** Without `--wait`, a
 successful run means the payload apply returned success — nothing

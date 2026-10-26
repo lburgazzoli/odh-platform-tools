@@ -9,7 +9,7 @@ require (
 	github.com/k8s-manifest-kit/engine v0.2.1-0.20260909120554-85414598bec8
 	github.com/k8s-manifest-kit/renderer-helm v0.4.0
 	github.com/k8s-manifest-kit/renderer-kustomize v0.1.1-0.20260909120749-5c7210e9322c
-	github.com/lburgazzoli/gomega-matchers v0.6.0
+	github.com/lburgazzoli/gomega-matchers v0.6.1-0.20261011111949-4f0dd51a8c1a
 	github.com/onsi/gomega v1.44.0
 	github.com/opendatahub-io/odh-platform-utilities/framework v0.2.1-0.20261021162150-201e66e4e90a
 	github.com/operator-framework/api v0.42.0
@@ -22,7 +22,7 @@ require (
 	k8s.io/cli-runtime v0.37.1
 	k8s.io/client-go v0.37.1
 	k8s.io/kubectl v0.37.1
-	sigs.k8s.io/controller-runtime v0.25.1
+	sigs.k8s.io/controller-runtime v0.25.2
 	sigs.k8s.io/kind v0.32.0
 	sigs.k8s.io/kustomize/api v0.21.1
 	sigs.k8s.io/kustomize/kyaml v0.21.1
@@ -111,13 +111,13 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xlab/treeprint v1.2.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/term v0.45.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/term v0.46.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect

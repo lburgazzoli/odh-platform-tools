@@ -5,14 +5,14 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
 	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
 	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 
-	gvk "github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/k8s/configmap"
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
@@ -53,21 +53,24 @@ var platformManagedCertManagerKeys = []string{
 // PlatformConfigInjector is the engine post-renderer that creates or
 // merges the per-module platform config ConfigMap: the
 // odh-<module>-config ConfigMap is created in the applications
-// namespace, or the platform-managed keys are merged into an existing
-// ConfigMap of the same name rendered by the module. Existing
-// module-owned data keys are preserved.
+// namespace, or the platform-managed keys are merged into the module's
+// own ConfigMap of that name co-located in the applications namespace.
+// Existing module-owned data keys are preserved.
 //
-// An existing ConfigMap matches on the exact core/v1 ConfigMap
-// group/version/kind plus name — namespace-insensitive, with the last
-// exact match winning. The runner supplies the canonical parsed
-// platform version string directly, so no release plumbing is carried.
+// An existing ConfigMap matches on the full object identity —
+// group/version/kind, namespace, and name, with the last exact match
+// winning — and is merged through a typed round-trip: a
+// malformed data block fails the render instead of being repaired,
+// and unknown fields may be dropped. The runner supplies the canonical
+// parsed platform version string directly, so no release plumbing is
+// carried.
 type PlatformConfigInjector struct {
 	// Definition is the loaded module definition. Its name forms the
 	// ConfigMap name; the runner owns the definition's lifetime.
 	Definition *toolApi.PlatformModuleDefinition
 
-	// ApplicationsNamespace is where a missing platform config
-	// ConfigMap is created.
+	// ApplicationsNamespace is where the platform config ConfigMap is
+	// created and where a module-rendered one is matched for merging.
 	ApplicationsNamespace string
 
 	// PlatformVersion is the canonical platform version string the
@@ -78,84 +81,64 @@ type PlatformConfigInjector struct {
 // The injector's Run method value is a real engine post-renderer.
 var _ enginetypes.PostRenderer = (*PlatformConfigInjector)(nil).Run
 
-// Run implements the engine post-renderer contract: an existing
-// matching ConfigMap is merged in place and the same slice returned;
-// otherwise the platform config ConfigMap is appended. On error no
+// Run implements the engine post-renderer contract: the platform
+// config ConfigMap is built fresh and a rendered ConfigMap of the same
+// identity — when one exists — is decoded over it, so the found one's
+// data wins; the platform keys are merged once and the result replaces
+// the match in place, or is appended when none matched. On error no
 // successful output is returned.
 func (inj *PlatformConfigInjector) Run(
-	ctx context.Context,
+	_ context.Context,
 	resources []unstructured.Unstructured,
 ) ([]unstructured.Unstructured, error) {
-	log := logf.FromContext(ctx)
-
 	name := inj.Definition.Name
-	cmName := platformConfigName(name)
 
-	// One reverse search: the last exact core/v1 ConfigMap of the name
-	// wins, regardless of namespace. Same-name lookalikes of another
-	// group/version are not candidates.
+	cm := &corev1.ConfigMap{}
+	cm.SetGroupVersionKind(k8s.ConfigMap)
+	cm.Name = platformConfigPrefix + name + platformConfigSuffix
+	cm.Namespace = inj.ApplicationsNamespace
+
+	// One reverse search: the last resource of the created ConfigMap's
+	// identity — k8s.Is compares group/version/kind, namespace, and
+	// name — wins. Same-name lookalikes of another group/version/kind
+	// or namespace are not candidates. The match is decoded over the
+	// created ConfigMap through the typed round-trip: the found one's
+	// identity and data replace the created one's, a malformed data
+	// block fails the render instead of being repaired, and unknown
+	// fields may be dropped.
+	match := -1
+
 	for i := len(resources) - 1; i >= 0; i-- {
-		if resources[i].GroupVersionKind() == gvk.ConfigMap && resources[i].GetName() == cmName {
-			log.V(1).Info("merging platform config into existing ConfigMap",
-				"module", name, "configmap", cmName)
-			mergePlatformKeys(&resources[i], inj.PlatformVersion)
-
-			return resources, nil
+		if k8s.Is(&resources[i], cm) {
+			match = i
+			break
 		}
 	}
 
-	log.V(1).Info("creating platform config ConfigMap",
-		"module", name, "configmap", cmName)
-
-	cm := buildPlatformConfigMap(cmName, inj.ApplicationsNamespace, inj.PlatformVersion)
-
-	u, err := fwresources.ToUnstructured(cm)
-	if err != nil {
-		return nil, fmt.Errorf("converting platform config ConfigMap for %s: %w", name, err)
+	if match >= 0 {
+		if err := fwresources.ObjectFromUnstructured(clientgoscheme.Scheme, &resources[match], cm); err != nil {
+			return nil, fmt.Errorf("converting platform config ConfigMap for %s: %w", name, err)
+		}
 	}
-	u.SetGroupVersionKind(gvk.ConfigMap)
 
-	resources = append(resources, *u)
+	if err := configmap.Customize(
+		cm,
+		configmap.Remove(platformManagedCertManagerKeys...),
+		configmap.WithData(platformVersionKey, inj.PlatformVersion),
+	); err != nil {
+		return nil, fmt.Errorf("customizing platform config ConfigMap for %s: %w", name, err)
+	}
+
+	u, err := fwresources.ObjectToUnstructured(clientgoscheme.Scheme, cm)
+
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("converting platform config ConfigMap for %s: %w", name, err)
+	case match == -1:
+		resources = append(resources, *u)
+	default:
+		resources[match] = *u
+	}
 
 	return resources, nil
-}
-
-// platformConfigName returns the well-known ConfigMap name for a
-// module, porting the operator's PlatformConfigName.
-func platformConfigName(moduleName string) string {
-	return platformConfigPrefix + moduleName + platformConfigSuffix
-}
-
-// buildPlatformConfigMap returns the platform config ConfigMap; the
-// caller stamps its group/version/kind from the shared facade.
-func buildPlatformConfigMap(name string, namespace string, platformVersion string) *corev1.ConfigMap {
-	return &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Data: map[string]string{
-			platformVersionKey: platformVersion,
-		},
-	}
-}
-
-// mergePlatformKeys ports the operator's mergePlatformKeys: existing
-// module-owned keys are preserved, stale platform-managed keys are
-// removed, and the platform version is enforced. A missing or
-// malformed (non-string) data block is replaced, exactly as upstream's
-// ignored error projects nil into a fresh map.
-func mergePlatformKeys(u *unstructured.Unstructured, platformVersion string) {
-	data, _, _ := unstructured.NestedStringMap(u.Object, "data")
-	if data == nil {
-		data = make(map[string]string)
-	}
-
-	for _, k := range platformManagedCertManagerKeys {
-		delete(data, k)
-	}
-
-	data[platformVersionKey] = platformVersion
-
-	_ = unstructured.SetNestedStringMap(u.Object, data, "data")
 }
