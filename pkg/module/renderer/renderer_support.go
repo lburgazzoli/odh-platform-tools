@@ -24,7 +24,7 @@ import (
 
 	fwgvk "github.com/opendatahub-io/odh-platform-utilities/framework/cluster/gvk"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // ErrReservedResource is the sentinel for rendered objects a module
@@ -44,7 +44,7 @@ var ErrReservedResource = errors.New("reserved rendered resource")
 // never silently dropped, so no caller can deploy it by accident.
 // All other rendered resources pass through unexamined.
 func CheckReserved(
-	definition v1alpha1.PlatformModuleDefinition,
+	definition toolApi.PlatformModuleDefinition,
 	resources []unstructured.Unstructured,
 ) error {
 	module := definition.Spec.Instance.Type
@@ -56,9 +56,9 @@ func CheckReserved(
 		switch {
 		case gvk.Group == module.Group && gvk.Kind == module.Kind:
 			return fmt.Errorf("%w: module instance %s %s", ErrReservedResource, gvk, res.GetName())
-		case gvk.Group == v1alpha1.GroupVersion.Group && gvk.Kind == v1alpha1.Kind:
+		case gvk.Group == toolApi.GroupVersion.Group && gvk.Kind == toolApi.Kind:
 			return fmt.Errorf("%w: definition object %s %s", ErrReservedResource, gvk, res.GetName())
-		case gvk == fwgvk.CustomResourceDefinition && res.GetName() == v1alpha1.CRDName:
+		case gvk == fwgvk.CustomResourceDefinition && res.GetName() == toolApi.CRDName:
 			return fmt.Errorf("%w: definition custom resource definition %s", ErrReservedResource, res.GetName())
 		}
 	}

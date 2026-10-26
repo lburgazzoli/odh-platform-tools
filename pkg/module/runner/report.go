@@ -17,7 +17,7 @@ limitations under the License.
 package runner
 
 import (
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // Stage names one Runner stage in a run report. The empty Stage means
@@ -84,7 +84,7 @@ type Result struct {
 	// definition owner, when the invocation confirmed one — from a
 	// successful preparation, retained through a later payload or
 	// wait failure. A nil value asserts an unconfirmed identity only.
-	Owner *v1alpha1.PlatformModuleDefinition
+	Owner *toolApi.PlatformModuleDefinition
 
 	// ApplyCompleted reports whether the framework payload apply
 	// finished without error. Writes that preceded the framework's

@@ -35,7 +35,7 @@ import (
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	kindcluster "sigs.k8s.io/kind/pkg/cluster"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // provider is the supervised Kind provider seam: exactly the
@@ -204,7 +204,7 @@ func (e *Kind) Setup(_ context.Context) error {
 		return fmt.Errorf("registering the apiextensions scheme: %w", err)
 	}
 
-	if err := v1alpha1.AddToScheme(scheme); err != nil {
+	if err := toolApi.AddToScheme(scheme); err != nil {
 		return fmt.Errorf("registering the module scheme: %w", err)
 	}
 

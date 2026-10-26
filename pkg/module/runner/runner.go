@@ -47,7 +47,7 @@ import (
 
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/adapt"
@@ -62,14 +62,14 @@ type DefinitionLoad func(
 	ctx context.Context,
 	path string,
 	opts ...loader.LoadOption,
-) (v1alpha1.PlatformModuleDefinition, error)
+) (toolApi.PlatformModuleDefinition, error)
 
 // ManifestRender renders the manifest backend selected by a loaded
 // definition with shared runtime options. The centralized rendering
 // service is the concrete implementation.
 type ManifestRender func(
 	ctx context.Context,
-	definition v1alpha1.PlatformModuleDefinition,
+	definition toolApi.PlatformModuleDefinition,
 	definitionFile string,
 	opts ...renderer.RenderOption,
 ) ([]unstructured.Unstructured, error)
@@ -83,7 +83,7 @@ type Connect func(ctx context.Context, getter genericclioptions.RESTClientGetter
 type ApplyPayload func(
 	ctx context.Context,
 	connection *cluster.Connection,
-	owner *v1alpha1.PlatformModuleDefinition,
+	owner *toolApi.PlatformModuleDefinition,
 	release api.Release,
 	resources []unstructured.Unstructured,
 ) error
@@ -115,7 +115,7 @@ type Runner struct {
 
 	stage stage
 
-	definition            *v1alpha1.PlatformModuleDefinition
+	definition            *toolApi.PlatformModuleDefinition
 	images                map[string]string
 	namespace             string
 	applicationsNamespace string
@@ -125,7 +125,7 @@ type Runner struct {
 	resources  []unstructured.Unstructured
 	connection *cluster.Connection
 
-	owner   *v1alpha1.PlatformModuleDefinition
+	owner   *toolApi.PlatformModuleDefinition
 	applied bool
 
 	waited           bool
@@ -383,7 +383,7 @@ func (r *Runner) fail() {
 // declared related images plus the main container image's whole-token
 // source key, when it is one, resolved from the selected file and the
 // process environment.
-func snapshotImages(path string, definition v1alpha1.PlatformModuleDefinition) (map[string]string, error) {
+func snapshotImages(path string, definition toolApi.PlatformModuleDefinition) (map[string]string, error) {
 	keys := make([]string, 0, len(definition.Spec.RelatedImages)+1)
 	keys = append(keys, definition.Spec.RelatedImages...)
 

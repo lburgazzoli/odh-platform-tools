@@ -12,7 +12,7 @@ import (
 	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
 	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // Platform config ConfigMap naming and data keys, mirroring the
@@ -68,7 +68,7 @@ var platformManagedCertManagerKeys = []string{
 type PlatformConfigInjector struct {
 	// Definition is the loaded module definition. Its name forms the
 	// ConfigMap name; the runner owns the definition's lifetime.
-	Definition *v1alpha1.PlatformModuleDefinition
+	Definition *toolApi.PlatformModuleDefinition
 
 	// ApplicationsNamespace is where a missing platform config
 	// ConfigMap is created.

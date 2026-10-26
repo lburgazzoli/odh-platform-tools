@@ -11,7 +11,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
@@ -22,14 +22,14 @@ type actionCalls struct {
 	sequence    []string
 	contexts    []context.Context
 	paths       []string
-	definitions []v1alpha1.PlatformModuleDefinition
+	definitions []toolApi.PlatformModuleDefinition
 	resources   [][]unstructured.Unstructured
 }
 
 // loader returns a fake definition loader returning definition and
 // err.
-func (r *actionCalls) loader(definition v1alpha1.PlatformModuleDefinition, err error) DefinitionLoad {
-	return func(ctx context.Context, path string, _ ...loader.LoadOption) (v1alpha1.PlatformModuleDefinition, error) {
+func (r *actionCalls) loader(definition toolApi.PlatformModuleDefinition, err error) DefinitionLoad {
+	return func(ctx context.Context, path string, _ ...loader.LoadOption) (toolApi.PlatformModuleDefinition, error) {
 		r.sequence = append(r.sequence, "load")
 		r.contexts = append(r.contexts, ctx)
 		r.paths = append(r.paths, path)
@@ -44,7 +44,7 @@ func (r *actionCalls) renderer(
 	resources []unstructured.Unstructured,
 	err error,
 ) ManifestRender {
-	return func(ctx context.Context, definition v1alpha1.PlatformModuleDefinition, definitionFile string, _ ...renderer.RenderOption) ([]unstructured.Unstructured, error) {
+	return func(ctx context.Context, definition toolApi.PlatformModuleDefinition, definitionFile string, _ ...renderer.RenderOption) ([]unstructured.Unstructured, error) {
 		r.sequence = append(r.sequence, "render")
 		r.contexts = append(r.contexts, ctx)
 		r.definitions = append(r.definitions, definition)
@@ -56,7 +56,7 @@ func (r *actionCalls) renderer(
 
 // validator returns a fake validation function returning diagnostics.
 func (r *actionCalls) validator(diagnostics ...Diagnostic) Validation {
-	return func(definition v1alpha1.PlatformModuleDefinition, resources []unstructured.Unstructured) ([]Diagnostic, error) {
+	return func(definition toolApi.PlatformModuleDefinition, resources []unstructured.Unstructured) ([]Diagnostic, error) {
 		r.sequence = append(r.sequence, "validate")
 		r.definitions = append(r.definitions, definition)
 		r.resources = append(r.resources, resources)
@@ -67,18 +67,18 @@ func (r *actionCalls) validator(diagnostics ...Diagnostic) Validation {
 
 // failingValidator returns a fake validation function returning err.
 func failingValidator(err error) Validation {
-	return func(v1alpha1.PlatformModuleDefinition, []unstructured.Unstructured) ([]Diagnostic, error) {
+	return func(toolApi.PlatformModuleDefinition, []unstructured.Unstructured) ([]Diagnostic, error) {
 		return nil, err
 	}
 }
 
 // testDefinition returns a minimal loaded definition for the action
 // tests.
-func testDefinition() v1alpha1.PlatformModuleDefinition {
-	return v1alpha1.PlatformModuleDefinition{
+func testDefinition() toolApi.PlatformModuleDefinition {
+	return toolApi.PlatformModuleDefinition{
 		ObjectMeta: metav1.ObjectMeta{Name: "synthetic"},
-		Spec: v1alpha1.PlatformModuleDefinitionSpec{
-			Instance: v1alpha1.Instance{Type: v1alpha1.ModuleType{
+		Spec: toolApi.PlatformModuleDefinitionSpec{
+			Instance: toolApi.Instance{Type: toolApi.ModuleType{
 				Group:   "components.platform.opendatahub.io",
 				Version: "v1alpha1",
 				Kind:    "SyntheticModule",
@@ -89,18 +89,18 @@ func testDefinition() v1alpha1.PlatformModuleDefinition {
 
 // helmDefinition returns a loaded definition selecting the Helm
 // backend.
-func helmDefinition() v1alpha1.PlatformModuleDefinition {
+func helmDefinition() toolApi.PlatformModuleDefinition {
 	definition := testDefinition()
-	definition.Spec.Manifests.Format = v1alpha1.FormatHelm
+	definition.Spec.Manifests.Format = toolApi.FormatHelm
 
 	return definition
 }
 
 // kustomizeDefinition returns a loaded definition selecting the
 // Kustomize backend.
-func kustomizeDefinition() v1alpha1.PlatformModuleDefinition {
+func kustomizeDefinition() toolApi.PlatformModuleDefinition {
 	definition := testDefinition()
-	definition.Spec.Manifests.Format = v1alpha1.FormatKustomize
+	definition.Spec.Manifests.Format = toolApi.FormatKustomize
 
 	return definition
 }
@@ -151,7 +151,7 @@ func TestActionRunStopsOnLoadError(t *testing.T) {
 	loadFailure := errors.New("load failure")
 
 	calls := &actionCalls{}
-	action := NewAction(calls.loader(v1alpha1.PlatformModuleDefinition{}, loadFailure),
+	action := NewAction(calls.loader(toolApi.PlatformModuleDefinition{}, loadFailure),
 		calls.renderer(nil, nil), calls.validator())
 
 	result, err := action.Run(t.Context(), Options{DefinitionFile: "definition.yaml"})
@@ -301,7 +301,7 @@ func TestActionRunForwardsErrorCategories(t *testing.T) {
 		definitionFailure := moduleerrors.NewDefinitionError(errors.New("bad spec"))
 
 		calls := &actionCalls{}
-		action := NewAction(calls.loader(v1alpha1.PlatformModuleDefinition{}, definitionFailure),
+		action := NewAction(calls.loader(toolApi.PlatformModuleDefinition{}, definitionFailure),
 			calls.renderer(nil, nil),
 			calls.validator())
 
@@ -314,7 +314,7 @@ func TestActionRunForwardsErrorCategories(t *testing.T) {
 		g := NewWithT(t)
 
 		calls := &actionCalls{}
-		action := NewAction(calls.loader(v1alpha1.PlatformModuleDefinition{}, context.Canceled),
+		action := NewAction(calls.loader(toolApi.PlatformModuleDefinition{}, context.Canceled),
 			calls.renderer(nil, nil),
 			calls.validator())
 

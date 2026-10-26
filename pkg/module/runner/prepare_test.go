@@ -41,7 +41,7 @@ import (
 
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 )
 
@@ -120,7 +120,7 @@ func newPrepareCluster(t *testing.T) *prepareCluster {
 	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	if err := v1alpha1.AddToScheme(scheme); err != nil {
+	if err := toolApi.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 
@@ -428,7 +428,7 @@ func TestPrepareOwnerSanitizesDefinitionApply(t *testing.T) {
 	definition.Finalizers = []string{"forged.example.com/finalizer"}
 	definition.Labels = map[string]string{"authored": "label"}
 	definition.Annotations = map[string]string{"authored": "annotation"}
-	definition.Status = v1alpha1.PlatformModuleDefinitionStatus{
+	definition.Status = toolApi.PlatformModuleDefinitionStatus{
 		Status: api.Status{Phase: "forged", ObservedGeneration: 7},
 	}
 
@@ -492,7 +492,7 @@ func TestPrepareOwnerFailuresAreSafeAndBounded(t *testing.T) {
 
 		cause := apierrors.NewForbidden(
 			schema.GroupResource{Group: "apiextensions.k8s.io", Resource: "customresourcedefinitions"},
-			v1alpha1.CRDName, &markerError{marker: "PREPARE-MARKER-crd"})
+			toolApi.CRDName, &markerError{marker: "PREPARE-MARKER-crd"})
 
 		fixture := newPrepareCluster(t)
 		fixture.failApply[prepareCRDWrite] = cause

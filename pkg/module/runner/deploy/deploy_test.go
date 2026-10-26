@@ -49,7 +49,7 @@ import (
 
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 )
 
@@ -136,17 +136,17 @@ var (
 // newDefinition returns the server-backed persisted owner: real
 // identity, real GVK, and the synthetic module type its controller
 // owns.
-func newDefinition() *v1alpha1.PlatformModuleDefinition {
-	return &v1alpha1.PlatformModuleDefinition{
-		TypeMeta: metav1.TypeMeta{APIVersion: v1alpha1.APIVersion, Kind: v1alpha1.Kind},
+func newDefinition() *toolApi.PlatformModuleDefinition {
+	return &toolApi.PlatformModuleDefinition{
+		TypeMeta: metav1.TypeMeta{APIVersion: toolApi.APIVersion, Kind: toolApi.Kind},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "synthetic",
 			UID:        types.UID(definitionUID),
 			Generation: 1,
 		},
-		Spec: v1alpha1.PlatformModuleDefinitionSpec{
-			Instance: v1alpha1.Instance{
-				Type: v1alpha1.ModuleType{
+		Spec: toolApi.PlatformModuleDefinitionSpec{
+			Instance: toolApi.Instance{
+				Type: toolApi.ModuleType{
 					Group:   "components.platform.opendatahub.io",
 					Version: "v1alpha1",
 					Kind:    "SyntheticModule",
@@ -198,7 +198,7 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	g.Expect(clientgoscheme.AddToScheme(scheme)).To(Succeed())
 	g.Expect(apiextensionsv1.AddToScheme(scheme)).To(Succeed())
-	g.Expect(v1alpha1.AddToScheme(scheme)).To(Succeed())
+	g.Expect(toolApi.AddToScheme(scheme)).To(Succeed())
 
 	return scheme
 }

@@ -7,7 +7,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
@@ -19,14 +19,14 @@ type DefinitionLoad func(
 	ctx context.Context,
 	path string,
 	opts ...loader.LoadOption,
-) (v1alpha1.PlatformModuleDefinition, error)
+) (toolApi.PlatformModuleDefinition, error)
 
 // ManifestRender renders the manifest backend selected by a loaded
 // definition and returns the rendered objects. The centralized
 // rendering service is the concrete implementation.
 type ManifestRender func(
 	ctx context.Context,
-	definition v1alpha1.PlatformModuleDefinition,
+	definition toolApi.PlatformModuleDefinition,
 	definitionFile string,
 	opts ...renderer.RenderOption,
 ) ([]unstructured.Unstructured, error)

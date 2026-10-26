@@ -37,7 +37,7 @@ import (
 	"k8s.io/client-go/rest"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // errNilGetter marks a missing standard configuration getter.
@@ -92,7 +92,7 @@ func Connect(ctx context.Context, getter genericclioptions.RESTClientGetter) (*C
 	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("registering apiextensions scheme types: %w", err)
 	}
-	if err := v1alpha1.AddToScheme(scheme); err != nil {
+	if err := toolApi.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("registering module definition scheme types: %w", err)
 	}
 

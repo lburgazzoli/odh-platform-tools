@@ -8,7 +8,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 )
 
@@ -23,11 +23,11 @@ func object(apiVersion string, kind string, name string) unstructured.Unstructur
 
 // testDefinition returns a minimal module definition: its type is the
 // SyntheticModule custom resource.
-func testDefinition() v1alpha1.PlatformModuleDefinition {
-	return v1alpha1.PlatformModuleDefinition{
+func testDefinition() toolApi.PlatformModuleDefinition {
+	return toolApi.PlatformModuleDefinition{
 		ObjectMeta: metav1.ObjectMeta{Name: "synthetic"},
-		Spec: v1alpha1.PlatformModuleDefinitionSpec{
-			Instance: v1alpha1.Instance{Type: v1alpha1.ModuleType{
+		Spec: toolApi.PlatformModuleDefinitionSpec{
+			Instance: toolApi.Instance{Type: toolApi.ModuleType{
 				Group:   "components.platform.opendatahub.io",
 				Version: "v1alpha1",
 				Kind:    "SyntheticModule",
@@ -38,9 +38,9 @@ func testDefinition() v1alpha1.PlatformModuleDefinition {
 
 // managerDefinition returns a definition selecting the default main
 // container name.
-func managerDefinition() v1alpha1.PlatformModuleDefinition {
+func managerDefinition() toolApi.PlatformModuleDefinition {
 	definition := testDefinition()
-	definition.Spec.Controller.Deployment.Container = &v1alpha1.ContainerDefinition{
+	definition.Spec.Controller.Deployment.Container = &toolApi.ContainerDefinition{
 		Name:  "manager",
 		Image: "quay.io/example/controller:v1",
 	}
@@ -50,9 +50,9 @@ func managerDefinition() v1alpha1.PlatformModuleDefinition {
 
 // initContainerDefinition returns a definition selecting the named
 // init container.
-func initContainerDefinition(name string) v1alpha1.PlatformModuleDefinition {
+func initContainerDefinition(name string) toolApi.PlatformModuleDefinition {
 	definition := testDefinition()
-	definition.Spec.Controller.Deployment.InitContainer = &v1alpha1.ContainerTarget{
+	definition.Spec.Controller.Deployment.InitContainer = &toolApi.ContainerTarget{
 		Name: name,
 	}
 

@@ -17,14 +17,14 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/images"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // confirmedOwner is the server-backed owner identity of the golden
 // reports.
-func confirmedOwner() *v1alpha1.PlatformModuleDefinition {
-	return &v1alpha1.PlatformModuleDefinition{
-		TypeMeta:   metav1.TypeMeta{APIVersion: v1alpha1.APIVersion, Kind: v1alpha1.Kind},
+func confirmedOwner() *toolApi.PlatformModuleDefinition {
+	return &toolApi.PlatformModuleDefinition{
+		TypeMeta:   metav1.TypeMeta{APIVersion: toolApi.APIVersion, Kind: toolApi.Kind},
 		ObjectMeta: metav1.ObjectMeta{Name: "synthetic", UID: "definition-uid"},
 	}
 }

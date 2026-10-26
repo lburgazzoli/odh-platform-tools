@@ -28,7 +28,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // External is the confirmed external-cluster engine: one explicit
@@ -126,7 +126,7 @@ func (e *External) Setup(_ context.Context) error {
 		return fmt.Errorf("registering the apiextensions scheme: %w", err)
 	}
 
-	if err := v1alpha1.AddToScheme(scheme); err != nil {
+	if err := toolApi.AddToScheme(scheme); err != nil {
 		return fmt.Errorf("registering the module scheme: %w", err)
 	}
 

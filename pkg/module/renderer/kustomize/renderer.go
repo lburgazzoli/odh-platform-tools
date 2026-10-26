@@ -18,7 +18,7 @@ import (
 	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
 	kustomize "github.com/k8s-manifest-kit/renderer-kustomize/pkg"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/source"
 )
 
@@ -41,7 +41,7 @@ import (
 // scope. An empty namespace registers no plugin at all, so the
 // offline lint path renders exactly like a plain build.
 func New(
-	definition v1alpha1.PlatformModuleDefinition,
+	definition toolApi.PlatformModuleDefinition,
 	definitionFile string,
 	namespace string,
 ) (enginetypes.Renderer, error) {

@@ -19,7 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // Severity classifies the impact of a diagnostic.
@@ -44,7 +44,7 @@ const (
 // error means a check failed to evaluate — it is an execution error,
 // never a finding about the manifests.
 type Validation func(
-	definition v1alpha1.PlatformModuleDefinition,
+	definition toolApi.PlatformModuleDefinition,
 	resources []unstructured.Unstructured,
 ) ([]Diagnostic, error)
 

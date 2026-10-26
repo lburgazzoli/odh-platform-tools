@@ -14,7 +14,7 @@ import (
 	odhTypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 )
 
@@ -45,7 +45,7 @@ import (
 func Apply(
 	ctx context.Context,
 	connection *cluster.Connection,
-	owner *v1alpha1.PlatformModuleDefinition,
+	owner *toolApi.PlatformModuleDefinition,
 	release api.Release,
 	resources []unstructured.Unstructured,
 ) error {

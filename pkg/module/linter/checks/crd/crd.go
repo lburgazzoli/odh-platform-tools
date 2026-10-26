@@ -11,7 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	gvk "github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/util/jq"
 )
@@ -32,7 +32,7 @@ type CRD struct{}
 // Validate reports the module unless its bundle contains exactly one
 // CustomResourceDefinition declaring the module's own group and kind.
 func (CRD) Validate(
-	definition v1alpha1.PlatformModuleDefinition,
+	definition toolApi.PlatformModuleDefinition,
 	resources []unstructured.Unstructured,
 ) ([]linter.Diagnostic, error) {
 	var matches []*unstructured.Unstructured
@@ -99,7 +99,7 @@ func (CRD) Validate(
 
 // Validate runs the check.
 func Validate(
-	definition v1alpha1.PlatformModuleDefinition,
+	definition toolApi.PlatformModuleDefinition,
 	resources []unstructured.Unstructured,
 ) ([]linter.Diagnostic, error) {
 	v := CRD{}

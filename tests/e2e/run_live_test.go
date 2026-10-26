@@ -31,7 +31,7 @@ import (
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	runcli "github.com/lburgazzoli/odh-platform-tools/cmd/module/run"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // The live scenarios are sequential by design: they share one engine
@@ -76,7 +76,7 @@ func TestRunLiveHelmAppliesAndOwns(t *testing.T) {
 	definition := s.definition(t)
 
 	g.Expect(definition.UID).To(Equal(types.UID(report.Owner.UID)))
-	g.Expect(definition.Spec.Manifests.Format).To(Equal(v1alpha1.FormatHelm))
+	g.Expect(definition.Spec.Manifests.Format).To(Equal(toolApi.FormatHelm))
 	g.Expect(definition.Spec.Manifests.Helm.Path).To(Equal("./manifests/chart"))
 	g.Expect(string(definition.Spec.Manifests.Helm.Values["message"].Raw)).To(Equal(`"authored-value"`))
 

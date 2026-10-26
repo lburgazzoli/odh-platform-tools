@@ -9,7 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	gvk "github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/util/jq"
 )
@@ -33,7 +33,7 @@ type Deployment struct{}
 // Deployment, and reports every container the definition selects that
 // does not exist in the Deployment's pod spec.
 func (d Deployment) Validate(
-	definition v1alpha1.PlatformModuleDefinition,
+	definition toolApi.PlatformModuleDefinition,
 	resources []unstructured.Unstructured,
 ) ([]linter.Diagnostic, error) {
 	var deployments []*unstructured.Unstructured
@@ -87,7 +87,7 @@ func (d Deployment) Validate(
 
 // Validate runs the check.
 func Validate(
-	definition v1alpha1.PlatformModuleDefinition,
+	definition toolApi.PlatformModuleDefinition,
 	resources []unstructured.Unstructured,
 ) ([]linter.Diagnostic, error) {
 	v := Deployment{}

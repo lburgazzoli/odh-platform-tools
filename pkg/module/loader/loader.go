@@ -19,7 +19,7 @@ import (
 
 	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
@@ -46,7 +46,7 @@ func Load(
 	fsys fs.FS,
 	path string,
 	opts ...LoadOption,
-) (v1alpha1.PlatformModuleDefinition, error) {
+) (toolApi.PlatformModuleDefinition, error) {
 	return New(fsys).Load(ctx, path, opts...)
 }
 
@@ -56,15 +56,15 @@ func LoadFromPath(
 	ctx context.Context,
 	path string,
 	opts ...LoadOption,
-) (v1alpha1.PlatformModuleDefinition, error) {
+) (toolApi.PlatformModuleDefinition, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return v1alpha1.PlatformModuleDefinition{}, moduleerrors.NewDefinitionErrorf("resolve definition file %s: %w", path, err)
+		return toolApi.PlatformModuleDefinition{}, moduleerrors.NewDefinitionErrorf("resolve definition file %s: %w", path, err)
 	}
 
 	relative, err := filepath.Rel("/", absolute)
 	if err != nil {
-		return v1alpha1.PlatformModuleDefinition{}, moduleerrors.NewDefinitionErrorf("resolve definition file %s: %w", path, err)
+		return toolApi.PlatformModuleDefinition{}, moduleerrors.NewDefinitionErrorf("resolve definition file %s: %w", path, err)
 	}
 
 	return Load(ctx, os.DirFS("/"), relative, opts...)
@@ -81,7 +81,7 @@ func (l *Loader) Load(
 	ctx context.Context,
 	path string,
 	opts ...LoadOption,
-) (v1alpha1.PlatformModuleDefinition, error) {
+) (toolApi.PlatformModuleDefinition, error) {
 	options := LoadOptions{}
 
 	for _, opt := range opts {
@@ -91,17 +91,17 @@ func (l *Loader) Load(
 	}
 
 	if err := ctx.Err(); err != nil {
-		return v1alpha1.PlatformModuleDefinition{}, err
+		return toolApi.PlatformModuleDefinition{}, err
 	}
 
 	data, err := l.readDefinitionFile(path)
 	if err != nil {
-		return v1alpha1.PlatformModuleDefinition{}, err
+		return toolApi.PlatformModuleDefinition{}, err
 	}
 
 	decoded, err := l.decodeDefinition(data)
 	if err != nil {
-		return v1alpha1.PlatformModuleDefinition{}, moduleerrors.NewDefinitionErrorf("%s: %w", path, err)
+		return toolApi.PlatformModuleDefinition{}, moduleerrors.NewDefinitionErrorf("%s: %w", path, err)
 	}
 
 	l.applyDefaults(&decoded)
@@ -112,10 +112,10 @@ func (l *Loader) Load(
 // applyDefaults applies the placement defaults to a freshly decoded
 // definition in place: an omitted instance name becomes metadata.name,
 // and an omitted main container name becomes
-// v1alpha1.DefaultMainContainerName. The two defaults are independent:
+// toolApi.DefaultMainContainerName. The two defaults are independent:
 // neither may skip the other. The definition belongs to the loader, so
 // in-place mutation is safe.
-func (l *Loader) applyDefaults(definition *v1alpha1.PlatformModuleDefinition) {
+func (l *Loader) applyDefaults(definition *toolApi.PlatformModuleDefinition) {
 	if definition.Spec.Instance.Name == "" {
 		definition.Spec.Instance.Name = definition.Name
 	}
@@ -125,7 +125,7 @@ func (l *Loader) applyDefaults(definition *v1alpha1.PlatformModuleDefinition) {
 		return
 	}
 
-	container.Name = v1alpha1.DefaultMainContainerName
+	container.Name = toolApi.DefaultMainContainerName
 }
 
 // readDefinitionFile reads the definition file at path in the loader's
@@ -149,29 +149,29 @@ func (l *Loader) readDefinitionFile(path string) ([]byte, error) {
 // to the typed definition with the framework's unstructured-to-typed
 // conversion. The stream must hold exactly one document: none or
 // several fail instead of being silently ignored.
-func (l *Loader) decodeDefinition(data []byte) (v1alpha1.PlatformModuleDefinition, error) {
+func (l *Loader) decodeDefinition(data []byte) (toolApi.PlatformModuleDefinition, error) {
 	scheme := runtime.NewScheme()
-	if err := v1alpha1.AddToScheme(scheme); err != nil {
-		return v1alpha1.PlatformModuleDefinition{}, err
+	if err := toolApi.AddToScheme(scheme); err != nil {
+		return toolApi.PlatformModuleDefinition{}, err
 	}
 
 	documents, err := fwresources.Decode(
 		serializer.NewCodecFactory(scheme).UniversalDeserializer(), data)
 	if err != nil {
-		return v1alpha1.PlatformModuleDefinition{}, err
+		return toolApi.PlatformModuleDefinition{}, err
 	}
 
 	if len(documents) == 0 {
-		return v1alpha1.PlatformModuleDefinition{}, errors.New("definition must contain one object document")
+		return toolApi.PlatformModuleDefinition{}, errors.New("definition must contain one object document")
 	}
 
 	if len(documents) > 1 {
-		return v1alpha1.PlatformModuleDefinition{}, errors.New("definition must contain exactly one document")
+		return toolApi.PlatformModuleDefinition{}, errors.New("definition must contain exactly one document")
 	}
 
-	var definition v1alpha1.PlatformModuleDefinition
+	var definition toolApi.PlatformModuleDefinition
 	if err := fwresources.ObjectFromUnstructured(scheme, &documents[0], &definition); err != nil {
-		return v1alpha1.PlatformModuleDefinition{}, err
+		return toolApi.PlatformModuleDefinition{}, err
 	}
 
 	return definition, nil

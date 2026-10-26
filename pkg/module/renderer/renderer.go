@@ -38,7 +38,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/helm"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/kustomize"
@@ -66,7 +66,7 @@ import (
 // errors.Is/As and the format and module named in the error text.
 func Render(
 	ctx context.Context,
-	definition v1alpha1.PlatformModuleDefinition,
+	definition toolApi.PlatformModuleDefinition,
 	definitionFile string,
 	opts ...RenderOption,
 ) ([]unstructured.Unstructured, error) {
@@ -104,14 +104,14 @@ func resolveOptions(opts ...RenderOption) RenderOptions {
 // deferred, so an unsupported value reaches this point as a
 // definition failure rather than being caught at load time.
 func backendFor(
-	definition v1alpha1.PlatformModuleDefinition,
+	definition toolApi.PlatformModuleDefinition,
 	definitionFile string,
 	namespace string,
 ) (enginetypes.Renderer, error) {
 	switch definition.Spec.Manifests.Format {
-	case v1alpha1.FormatHelm:
+	case toolApi.FormatHelm:
 		return helm.New(definition, definitionFile, namespace)
-	case v1alpha1.FormatKustomize:
+	case toolApi.FormatKustomize:
 		return kustomize.New(definition, definitionFile, namespace)
 	default:
 		return nil, moduleerrors.NewDefinitionErrorf("unsupported manifest format %q for module %s",
@@ -127,7 +127,7 @@ func backendFor(
 // test — goes through.
 func execute(
 	ctx context.Context,
-	definition v1alpha1.PlatformModuleDefinition,
+	definition toolApi.PlatformModuleDefinition,
 	native enginetypes.Renderer,
 	options RenderOptions,
 ) ([]unstructured.Unstructured, error) {

@@ -50,7 +50,7 @@ import (
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	runcli "github.com/lburgazzoli/odh-platform-tools/cmd/module/run"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // The identities every scenario tracks and cleans up. The shared
@@ -58,7 +58,7 @@ import (
 // shared infrastructure — foreign on an external cluster — and is
 // never deleted by scenario code.
 var (
-	definitionGVK = v1alpha1.GroupVersion.WithKind("PlatformModuleDefinition")
+	definitionGVK = toolApi.GroupVersion.WithKind("PlatformModuleDefinition")
 	namespaceGVK  = schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Namespace"}
 	crdGVK        = apiextensionsv1.SchemeGroupVersion.WithKind("CustomResourceDefinition")
 	configMapGVK  = corev1.SchemeGroupVersion.WithKind("ConfigMap")
@@ -448,10 +448,10 @@ func (s *scenario) namespace(t *testing.T, name string) *corev1.Namespace {
 }
 
 // definition reads the persisted module definition.
-func (s *scenario) definition(t *testing.T) *v1alpha1.PlatformModuleDefinition {
+func (s *scenario) definition(t *testing.T) *toolApi.PlatformModuleDefinition {
 	t.Helper()
 
-	definition := &v1alpha1.PlatformModuleDefinition{}
+	definition := &toolApi.PlatformModuleDefinition{}
 
 	if err := engine(t).Client().Get(t.Context(),
 		crclient.ObjectKey{Name: s.name}, definition); err != nil {

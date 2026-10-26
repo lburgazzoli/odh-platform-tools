@@ -12,40 +12,40 @@ import (
 
 	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // newDefinition returns the synthetic module definition carrying the
 // full controller deployment descriptor: a token image, one extra env
 // entry, an init container target, and one related image.
-func newDefinition() v1alpha1.PlatformModuleDefinition {
-	return v1alpha1.PlatformModuleDefinition{
+func newDefinition() toolApi.PlatformModuleDefinition {
+	return toolApi.PlatformModuleDefinition{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "synthetic",
 		},
-		Spec: v1alpha1.PlatformModuleDefinitionSpec{
-			Instance: v1alpha1.Instance{
-				Type: v1alpha1.ModuleType{
+		Spec: toolApi.PlatformModuleDefinitionSpec{
+			Instance: toolApi.Instance{
+				Type: toolApi.ModuleType{
 					Group:   "components.platform.opendatahub.io",
 					Version: "v1alpha1",
 					Kind:    "SyntheticModule",
 				},
 			},
-			Manifests: v1alpha1.Manifests{
-				Format: v1alpha1.FormatHelm,
+			Manifests: toolApi.Manifests{
+				Format: toolApi.FormatHelm,
 			},
 			RelatedImages: []string{"RELATED_IMAGE_OPERAND"},
-			Controller: v1alpha1.Controller{
-				Deployment: v1alpha1.ControllerDeployment{
+			Controller: toolApi.Controller{
+				Deployment: toolApi.ControllerDeployment{
 					Name: "synthetic-controller",
-					Container: &v1alpha1.ContainerDefinition{
+					Container: &toolApi.ContainerDefinition{
 						Name:  "manager",
 						Image: "{{RELATED_IMAGE_CONTROLLER}}",
-						Env: []v1alpha1.EnvVar{
+						Env: []toolApi.EnvVar{
 							{Name: "LOG_LEVEL", Value: new("debug")},
 						},
 					},
-					InitContainer: &v1alpha1.ContainerTarget{
+					InitContainer: &toolApi.ContainerTarget{
 						Name: "copy-manifests",
 					},
 				},
@@ -56,7 +56,7 @@ func newDefinition() v1alpha1.PlatformModuleDefinition {
 
 // newDefinitionPointer returns a pointer to a fresh standard
 // definition, as the runner hands one to the injectors.
-func newDefinitionPointer() *v1alpha1.PlatformModuleDefinition {
+func newDefinitionPointer() *toolApi.PlatformModuleDefinition {
 	definition := newDefinition()
 	return &definition
 }
@@ -71,7 +71,7 @@ func newResolvedImages() map[string]string {
 
 // newEnvInjector returns the env injector for the given definition
 // and fully populated runtime inputs.
-func newEnvInjector(definition *v1alpha1.PlatformModuleDefinition) *EnvInjector {
+func newEnvInjector(definition *toolApi.PlatformModuleDefinition) *EnvInjector {
 	return &EnvInjector{
 		Definition:            definition,
 		Images:                newResolvedImages(),

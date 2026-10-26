@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/kustomize/kyaml/filesys"
 	"sigs.k8s.io/yaml"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 )
 
@@ -92,13 +92,13 @@ metadata:
 
 // guardDefinition returns a definition owning the synthetic module
 // type.
-func guardDefinition() v1alpha1.PlatformModuleDefinition {
-	return v1alpha1.PlatformModuleDefinition{
-		TypeMeta:   metav1.TypeMeta{APIVersion: v1alpha1.APIVersion, Kind: v1alpha1.Kind},
+func guardDefinition() toolApi.PlatformModuleDefinition {
+	return toolApi.PlatformModuleDefinition{
+		TypeMeta:   metav1.TypeMeta{APIVersion: toolApi.APIVersion, Kind: toolApi.Kind},
 		ObjectMeta: metav1.ObjectMeta{Name: "synthetic"},
-		Spec: v1alpha1.PlatformModuleDefinitionSpec{
-			Instance: v1alpha1.Instance{
-				Type: v1alpha1.ModuleType{
+		Spec: toolApi.PlatformModuleDefinitionSpec{
+			Instance: toolApi.Instance{
+				Type: toolApi.ModuleType{
 					Group:   "components.platform.opendatahub.io",
 					Version: "v1alpha1",
 					Kind:    "SyntheticModule",
@@ -264,7 +264,7 @@ func newGuardMemoryFs(t *testing.T, resource string) filesys.FileSystem {
 // loadGuardDefinition loads the module definition through the real
 // loader from an in-memory filesystem, so the guard fixtures perform
 // no disk reads either.
-func loadGuardDefinition(t *testing.T) v1alpha1.PlatformModuleDefinition {
+func loadGuardDefinition(t *testing.T) toolApi.PlatformModuleDefinition {
 	t.Helper()
 
 	g := NewWithT(t)

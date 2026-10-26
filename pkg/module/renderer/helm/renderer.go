@@ -16,7 +16,7 @@ import (
 	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
 	helm "github.com/k8s-manifest-kit/renderer-helm/pkg"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/source"
 )
 
@@ -39,7 +39,7 @@ import (
 // configuration, so descriptor images and environment entries cannot
 // affect the output.
 func New(
-	definition v1alpha1.PlatformModuleDefinition,
+	definition toolApi.PlatformModuleDefinition,
 	definitionFile string,
 	namespace string,
 ) (enginetypes.Renderer, error) {
@@ -65,7 +65,7 @@ func New(
 // so a malformed entry surfaces as a render failure, not a new error
 // seam here.
 func helmSource(
-	definition v1alpha1.PlatformModuleDefinition,
+	definition toolApi.PlatformModuleDefinition,
 	definitionFile string,
 	namespace string,
 ) helm.Source {

@@ -10,7 +10,7 @@ import (
 
 	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // controllerDeploymentYAML is the module controller Deployment with
@@ -313,7 +313,7 @@ func TestEnvInjectorPrecedence(t *testing.T) {
 	g := NewWithT(t)
 
 	definition := newDefinition()
-	definition.Spec.Controller.Deployment.Container.Env = []v1alpha1.EnvVar{
+	definition.Spec.Controller.Deployment.Container.Env = []toolApi.EnvVar{
 		{Name: "RELATED_IMAGE_OPERAND", Value: new("extra-wins")},
 		{Name: "APPLICATIONS_NAMESPACE", Value: new("extra-ns")},
 	}
@@ -348,7 +348,7 @@ func TestEnvInjectorExtraEnvListMapSemantics(t *testing.T) {
 	g := NewWithT(t)
 
 	definition := newDefinition()
-	definition.Spec.Controller.Deployment.Container.Env = []v1alpha1.EnvVar{
+	definition.Spec.Controller.Deployment.Container.Env = []toolApi.EnvVar{
 		{Name: "ZETA", Value: new("one")},
 		{Name: "ALPHA"},
 		{Name: "ALPHA", Value: new("two")},
@@ -383,7 +383,7 @@ func TestEnvInjectorPlaceholderValueStaysLiteral(t *testing.T) {
 	g := NewWithT(t)
 
 	definition := newDefinition()
-	definition.Spec.Controller.Deployment.Container.Env = []v1alpha1.EnvVar{
+	definition.Spec.Controller.Deployment.Container.Env = []toolApi.EnvVar{
 		{Name: "LOG_LEVEL", Value: new("{{LOG_LEVEL}}")},
 	}
 
@@ -409,7 +409,7 @@ func TestEnvInjectorSortedExtraEnv(t *testing.T) {
 	g := NewWithT(t)
 
 	definition := newDefinition()
-	definition.Spec.Controller.Deployment.Container.Env = []v1alpha1.EnvVar{
+	definition.Spec.Controller.Deployment.Container.Env = []toolApi.EnvVar{
 		{Name: "ZETA", Value: new("z")},
 		{Name: "ALPHA", Value: new("a")},
 	}

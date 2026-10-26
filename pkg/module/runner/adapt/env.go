@@ -13,7 +13,7 @@ import (
 	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/images"
 )
 
@@ -43,7 +43,7 @@ const (
 type EnvInjector struct {
 	// Definition is the loaded module definition. Its Spec is read
 	// directly; the runner owns the definition's lifetime.
-	Definition *v1alpha1.PlatformModuleDefinition
+	Definition *toolApi.PlatformModuleDefinition
 
 	// Images is the resolved image snapshot, the images service output.
 	Images map[string]string
@@ -132,7 +132,7 @@ func (inj *EnvInjector) injectEnvVarsIntoDeployment(log logr.Logger, obj *unstru
 		return nil
 	}
 
-	targetName := v1alpha1.DefaultMainContainerName
+	targetName := toolApi.DefaultMainContainerName
 	imageRef := ""
 	image := ""
 	var extraEnv map[string]string

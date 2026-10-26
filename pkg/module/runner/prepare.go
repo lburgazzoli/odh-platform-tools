@@ -29,7 +29,7 @@ import (
 
 	configcrd "github.com/lburgazzoli/odh-platform-tools/config/crd"
 	k8scrd "github.com/lburgazzoli/odh-platform-tools/pkg/k8s/crd"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 )
 
@@ -52,8 +52,8 @@ const fieldOwner = "platform.opendatahub.io/module-run"
 func prepareOwner(
 	ctx context.Context,
 	connection *cluster.Connection,
-	definition v1alpha1.PlatformModuleDefinition,
-) (*v1alpha1.PlatformModuleDefinition, error) {
+	definition toolApi.PlatformModuleDefinition,
+) (*toolApi.PlatformModuleDefinition, error) {
 	client := connection.Client()
 
 	crd := &apiextensionsv1.CustomResourceDefinition{}
@@ -66,7 +66,7 @@ func prepareOwner(
 		return nil, prepareFail("applying the definition custom resource definition", err)
 	}
 
-	if err := k8scrd.WaitForCRDToBeEstablished(ctx, client, v1alpha1.CRDName); err != nil {
+	if err := k8scrd.WaitForCRDToBeEstablished(ctx, client, toolApi.CRDName); err != nil {
 		return nil, prepareFail("waiting for the definition custom resource definition", err)
 	}
 

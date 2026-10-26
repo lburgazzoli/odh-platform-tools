@@ -35,7 +35,7 @@ import (
 
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
@@ -167,27 +167,27 @@ func testOptions() Options {
 
 // testDefinition returns a typed Helm-format definition whose main
 // container image is a whole-token reference.
-func testDefinition() v1alpha1.PlatformModuleDefinition {
-	return v1alpha1.PlatformModuleDefinition{
-		TypeMeta:   metav1.TypeMeta{APIVersion: v1alpha1.APIVersion, Kind: v1alpha1.Kind},
+func testDefinition() toolApi.PlatformModuleDefinition {
+	return toolApi.PlatformModuleDefinition{
+		TypeMeta:   metav1.TypeMeta{APIVersion: toolApi.APIVersion, Kind: toolApi.Kind},
 		ObjectMeta: metav1.ObjectMeta{Name: "synthetic"},
-		Spec: v1alpha1.PlatformModuleDefinitionSpec{
-			Instance: v1alpha1.Instance{
-				Type: v1alpha1.ModuleType{
+		Spec: toolApi.PlatformModuleDefinitionSpec{
+			Instance: toolApi.Instance{
+				Type: toolApi.ModuleType{
 					Group:   "components.platform.opendatahub.io",
 					Version: "v1alpha1",
 					Kind:    "SyntheticModule",
 				},
 			},
-			Manifests: v1alpha1.Manifests{
-				Format: v1alpha1.FormatHelm,
-				Helm:   &v1alpha1.HelmManifests{Path: "./manifests/chart"},
+			Manifests: toolApi.Manifests{
+				Format: toolApi.FormatHelm,
+				Helm:   &toolApi.HelmManifests{Path: "./manifests/chart"},
 			},
 			RelatedImages: []string{"RELATED_IMAGE_ALPHA"},
-			Controller: v1alpha1.Controller{
-				Deployment: v1alpha1.ControllerDeployment{
+			Controller: toolApi.Controller{
+				Deployment: toolApi.ControllerDeployment{
 					Name: "synthetic-controller",
-					Container: &v1alpha1.ContainerDefinition{
+					Container: &toolApi.ContainerDefinition{
 						Name:  "manager",
 						Image: "{{RELATED_IMAGE_CONTROLLER}}",
 					},
@@ -205,7 +205,7 @@ type stubRunner struct {
 	runner *Runner
 	calls  *[]string
 
-	definition v1alpha1.PlatformModuleDefinition
+	definition toolApi.PlatformModuleDefinition
 
 	// cluster is the fake-client connection the connect stub returns;
 	// the owner preparation and the rollout wait both run through it.
@@ -221,7 +221,7 @@ type stubRunner struct {
 	renderError      error
 	connectError     error
 	applyError       error
-	appliedOwner     *v1alpha1.PlatformModuleDefinition
+	appliedOwner     *toolApi.PlatformModuleDefinition
 	appliedRelease   api.Release
 	appliedResources []unstructured.Unstructured
 
@@ -269,7 +269,7 @@ func (s *stubRunner) record(name string) {
 }
 
 // load is the loader stub.
-func (s *stubRunner) load(_ context.Context, _ string, _ ...loader.LoadOption) (v1alpha1.PlatformModuleDefinition, error) {
+func (s *stubRunner) load(_ context.Context, _ string, _ ...loader.LoadOption) (toolApi.PlatformModuleDefinition, error) {
 	s.record("load")
 
 	return s.definition, s.loadError
@@ -281,7 +281,7 @@ func (s *stubRunner) load(_ context.Context, _ string, _ ...loader.LoadOption) (
 // payload.
 func (s *stubRunner) render(
 	ctx context.Context,
-	_ v1alpha1.PlatformModuleDefinition,
+	_ toolApi.PlatformModuleDefinition,
 	_ string,
 	opts ...renderer.RenderOption,
 ) ([]unstructured.Unstructured, error) {
@@ -336,7 +336,7 @@ func (s *stubRunner) connect(
 func (s *stubRunner) apply(
 	_ context.Context,
 	_ *cluster.Connection,
-	owner *v1alpha1.PlatformModuleDefinition,
+	owner *toolApi.PlatformModuleDefinition,
 	release api.Release,
 	resources []unstructured.Unstructured,
 ) error {

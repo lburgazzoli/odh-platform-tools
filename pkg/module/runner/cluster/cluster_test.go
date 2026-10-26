@@ -21,7 +21,7 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 // testKubeconfigYAML is a standalone kubeconfig with one context
@@ -330,7 +330,7 @@ func TestConnectBuildsLazyClient(t *testing.T) {
 
 	g.Expect(connection.Client()).NotTo(BeNil())
 
-	definitionGVK := v1alpha1.GroupVersion.WithKind("PlatformModuleDefinition")
+	definitionGVK := toolApi.GroupVersion.WithKind("PlatformModuleDefinition")
 	g.Expect(connection.Client().Scheme().Recognizes(definitionGVK)).To(BeTrue())
 }
 

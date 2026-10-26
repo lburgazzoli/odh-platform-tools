@@ -37,7 +37,7 @@ import (
 
 	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/util/option"
@@ -562,7 +562,7 @@ func writeModuleFile(t *testing.T, root string, rel string, content string) {
 }
 
 // loadDefinition loads the module definition through the real loader.
-func loadDefinition(t *testing.T, root string) v1alpha1.PlatformModuleDefinition {
+func loadDefinition(t *testing.T, root string) toolApi.PlatformModuleDefinition {
 	t.Helper()
 
 	return loadDefinitionFile(t, root, "definition.yaml")
@@ -570,7 +570,7 @@ func loadDefinition(t *testing.T, root string) v1alpha1.PlatformModuleDefinition
 
 // loadDefinitionFile loads the module definition at a
 // module-root-relative path through the real loader.
-func loadDefinitionFile(t *testing.T, root string, rel string) v1alpha1.PlatformModuleDefinition {
+func loadDefinitionFile(t *testing.T, root string, rel string) toolApi.PlatformModuleDefinition {
 	t.Helper()
 
 	g := NewWithT(t)
@@ -805,7 +805,7 @@ func TestRenderRejectsUnsupportedFormat(t *testing.T) {
 	writeHelmChartFixture(t, root)
 
 	definition := loadDefinition(t, root)
-	definition.Spec.Manifests.Format = v1alpha1.Format("bogus")
+	definition.Spec.Manifests.Format = toolApi.Format("bogus")
 
 	resources, err := Render(t.Context(), definition, filepath.Join(root, "definition.yaml"))
 

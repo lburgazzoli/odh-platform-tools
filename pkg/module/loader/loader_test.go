@@ -12,7 +12,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/util/option"
 )
@@ -333,7 +333,7 @@ func TestLoadHelmDefinition(t *testing.T) {
 	g.Expect(definition.Spec.RelatedImages).To(Equal([]string{"RELATED_IMAGE_SYNTHETIC_OPERAND"}))
 
 	// Placement defaults are applied.
-	g.Expect(definition.Spec.Controller.Deployment.Container.Name).To(Equal(v1alpha1.DefaultMainContainerName))
+	g.Expect(definition.Spec.Controller.Deployment.Container.Name).To(Equal(toolApi.DefaultMainContainerName))
 
 	// The omitted instance name defaults to the module name.
 	g.Expect(definition.Spec.Instance.Name).To(Equal("synthetic"))
@@ -448,7 +448,7 @@ func TestLoadDefaultsNamesIndependently(t *testing.T) {
 			name:          "both names omitted",
 			content:       helmDefinitionYAML,
 			wantInstance:  "synthetic",
-			wantContainer: v1alpha1.DefaultMainContainerName,
+			wantContainer: toolApi.DefaultMainContainerName,
 		},
 		{
 			name:          "instance name omitted",
@@ -460,7 +460,7 @@ func TestLoadDefaultsNamesIndependently(t *testing.T) {
 			name:          "container name omitted",
 			content:       instanceNameDefinitionYAML,
 			wantInstance:  "synthetic-trainer",
-			wantContainer: v1alpha1.DefaultMainContainerName,
+			wantContainer: toolApi.DefaultMainContainerName,
 		},
 		{
 			name:          "both names authored",
@@ -547,7 +547,7 @@ func TestLoadJSONDefinition(t *testing.T) {
 
 	definition, err := Load(t.Context(), os.DirFS(root), "definition.json")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(definition.Spec.Manifests.Format).To(Equal(v1alpha1.FormatHelm))
+	g.Expect(definition.Spec.Manifests.Format).To(Equal(toolApi.FormatHelm))
 }
 
 func TestLoadToleratesTrailingEmptyDocument(t *testing.T) {
