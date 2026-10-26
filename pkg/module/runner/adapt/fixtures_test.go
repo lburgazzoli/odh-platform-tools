@@ -1,7 +1,6 @@
 package adapt
 
 import (
-	"fmt"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -11,8 +10,6 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
 	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
-
-	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/k8s"
 
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
@@ -116,37 +113,6 @@ func envVarNames(container corev1.Container) []string {
 	}
 
 	return names
-}
-
-// initContainer returns a transform extracting the synthetic
-// definition's init container — "copy-manifests" — from a workload's
-// pod template. The gomega-matchers extractors cover regular
-// containers only, so the init container resolves through the pod
-// template extractor first.
-func initContainer() func(any) (any, error) {
-	const name = "copy-manifests"
-
-	podTemplate := k8s.PodTemplate()
-
-	return func(in any) (any, error) {
-		extracted, err := podTemplate(in)
-		if err != nil {
-			return nil, err
-		}
-
-		template, ok := extracted.(corev1.PodTemplateSpec)
-		if !ok {
-			return nil, fmt.Errorf("no pod template on %T", in)
-		}
-
-		for _, container := range template.Spec.InitContainers {
-			if container.Name == name {
-				return container, nil
-			}
-		}
-
-		return nil, fmt.Errorf("init container %q not found", name)
-	}
 }
 
 // serviceYAML is a non-Deployment rendered resource.

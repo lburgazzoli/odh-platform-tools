@@ -360,7 +360,7 @@ func TestEnvInjector(t *testing.T) {
 			WithTransform(k8s.EnvVar("MONITORING_NAMESPACE"), HaveField("Value", "opendatahub-monitoring")),
 			WithTransform(k8s.EnvVar("ODH_MODULE_OPERATOR_PLATFORM_TYPE"), HaveField("Value", "self-managed")),
 		)),
-		WithTransform(initContainer(), SatisfyAll(
+		WithTransform(k8s.InitContainer("copy-manifests"), SatisfyAll(
 			HaveField("Image", "quay.io/example/controller:v1"),
 			WithTransform(envVarNames, Equal([]string{
 				"RELATED_IMAGE_OPERAND", "LOG_LEVEL", "APPLICATIONS_NAMESPACE",
@@ -949,7 +949,7 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 		g.Expect(deployment.Object).To(SatisfyAll(
 			WithTransform(k8s.Container("manager"), HaveField("Image", "quay.io/example/controller:v1")),
-			WithTransform(initContainer(), HaveField("Image", "quay.io/example/init:v2")),
+			WithTransform(k8s.InitContainer("copy-manifests"), HaveField("Image", "quay.io/example/init:v2")),
 		))
 	})
 
@@ -975,7 +975,7 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
 		g.Expect(deployment.Object).To(SatisfyAll(
 			WithTransform(k8s.Container("manager"), HaveField("Image", "quay.io/example/controller:v1")),
-			WithTransform(initContainer(), HaveField("Image", "quay.io/example/init:v3")),
+			WithTransform(k8s.InitContainer("copy-manifests"), HaveField("Image", "quay.io/example/init:v3")),
 		))
 	})
 
@@ -1012,7 +1012,7 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		g.Expect(err).To(Succeed())
 
 		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-		g.Expect(deployment.Object).To(WithTransform(initContainer(),
+		g.Expect(deployment.Object).To(WithTransform(k8s.InitContainer("copy-manifests"),
 			HaveField("Image", "registry.example/chart-init:v0")))
 	})
 }
@@ -1084,7 +1084,7 @@ func TestEnvInjectorAlreadyCorrectValuesStillRoundTrips(t *testing.T) {
 			})),
 			WithTransform(k8s.EnvVar("LOG_LEVEL"), HaveField("Value", "debug")),
 		)),
-		WithTransform(initContainer(), HaveField("Image", "quay.io/example/controller:v1")),
+		WithTransform(k8s.InitContainer("copy-manifests"), HaveField("Image", "quay.io/example/controller:v1")),
 	))
 }
 

@@ -148,6 +148,8 @@ github.com/lburgazzoli/gomega-matchers v0.6.0 h1:/WZA3rY+2r27vD9SjcTIVbXMNiZLFr5
 github.com/lburgazzoli/gomega-matchers v0.6.0/go.mod h1:Q9Kn4GEq+SFZRGXPvebiGPCzuV4LLNoiKz2qyqJwLHM=
 github.com/lburgazzoli/gomega-matchers v0.6.1-0.20261011111949-4f0dd51a8c1a h1:GiSMpSIabZFphO3260DWJnZaBcZUlN7KV8boi4GdfJg=
 github.com/lburgazzoli/gomega-matchers v0.6.1-0.20261011111949-4f0dd51a8c1a/go.mod h1:OHrkAKS5hdS+oVNp/cJeKpr2w8CBfvLMvuPVRLFV1CY=
+github.com/lburgazzoli/gomega-matchers v0.6.1-0.20261026213959-cadebcbb3063 h1:wWIxLnc7YpyefNhYLNJl8vzEzoC4/TyElAQ4O8E20co=
+github.com/lburgazzoli/gomega-matchers v0.6.1-0.20261026213959-cadebcbb3063/go.mod h1:OHrkAKS5hdS+oVNp/cJeKpr2w8CBfvLMvuPVRLFV1CY=
 github.com/liggitt/tabwriter v0.0.0-20181228230101-89fcab3d43de h1:9TO3cAIGXtEhnIaL+V+BEER86oLrvS+kWobKpbJuye0=
 github.com/liggitt/tabwriter v0.0.0-20181228230101-89fcab3d43de/go.mod h1:zAbeS9B/r2mtpb6U+EI2rYA5OAXxsYw6wTamcNW+zcE=
 github.com/lithammer/dedent v1.1.0 h1:VNzHMVCBNG1j0fh3OrsFRkVUwStdDArbgBWoPAffktY=
