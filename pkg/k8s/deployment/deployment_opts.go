@@ -38,10 +38,7 @@ type CustomizeOption = option.Option[CustomizeOptions]
 // empty string; a missing name is an error at apply time.
 func WithContainerImage(name string, image string) CustomizeOption {
 	return option.FunctionalOption[CustomizeOptions](func(target *CustomizeOptions) {
-		target.requests = append(target.requests, containerImageRequest{
-			name:  name,
-			image: image,
-		})
+		target.requests = append(target.requests, containerImage(name, image))
 	})
 }
 
@@ -50,10 +47,7 @@ func WithContainerImage(name string, image string) CustomizeOption {
 // empty string; a missing name is an error at apply time.
 func WithInitContainerImage(name string, image string) CustomizeOption {
 	return option.FunctionalOption[CustomizeOptions](func(target *CustomizeOptions) {
-		target.requests = append(target.requests, initContainerImageRequest{
-			name:  name,
-			image: image,
-		})
+		target.requests = append(target.requests, initContainerImage(name, image))
 	})
 }
 
@@ -72,9 +66,6 @@ func WithContainerEnv(name string, envs []corev1.EnvVar) CustomizeOption {
 	}
 
 	return option.FunctionalOption[CustomizeOptions](func(target *CustomizeOptions) {
-		target.requests = append(target.requests, containerEnvRequest{
-			name: name,
-			envs: snapshot,
-		})
+		target.requests = append(target.requests, containerEnv(name, snapshot))
 	})
 }

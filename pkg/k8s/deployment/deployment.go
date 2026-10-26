@@ -48,7 +48,7 @@ func Customize(d *appsv1.Deployment, opts ...CustomizeOption) error {
 	}
 
 	for _, request := range options.requests {
-		if err := request.apply(d); err != nil {
+		if err := request(d); err != nil {
 			return err
 		}
 	}

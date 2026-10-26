@@ -23,68 +23,61 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// customizationRequest is one ordered mutation collected by an option.
-type customizationRequest interface {
-	apply(d *appsv1.Deployment) error
-}
+// customizationRequest is one ordered Deployment mutation, deferred
+// from option collection to Customize's apply pass. It is deliberately
+// not another option.Option: ApplyTo mutates a configuration struct
+// and cannot report failure, while a request mutates the Deployment
+// itself and returns the first error.
+type customizationRequest func(d *appsv1.Deployment) error
 
-// containerImageRequest assigns a literal image to the first regular
-// container with the exact name.
-type containerImageRequest struct {
-	name  string
-	image string
-}
+// containerImage returns the request assigning a literal image to the
+// first regular container with the exact name.
+func containerImage(name string, image string) customizationRequest {
+	return func(d *appsv1.Deployment) error {
+		idx, ok := findContainer(d.Spec.Template.Spec.Containers, name)
+		if !ok {
+			return fmt.Errorf("container %q not found in Deployment %s", name, d.Name)
+		}
 
-func (r containerImageRequest) apply(d *appsv1.Deployment) error {
-	idx, ok := findContainer(d.Spec.Template.Spec.Containers, r.name)
-	if !ok {
-		return fmt.Errorf("container %q not found in Deployment %s", r.name, d.Name)
+		d.Spec.Template.Spec.Containers[idx].Image = image
+
+		return nil
 	}
-
-	d.Spec.Template.Spec.Containers[idx].Image = r.image
-
-	return nil
 }
 
-// initContainerImageRequest assigns a literal image to the first init
-// container with the exact name.
-type initContainerImageRequest struct {
-	name  string
-	image string
-}
+// initContainerImage returns the request assigning a literal image to
+// the first init container with the exact name.
+func initContainerImage(name string, image string) customizationRequest {
+	return func(d *appsv1.Deployment) error {
+		idx, ok := findContainer(d.Spec.Template.Spec.InitContainers, name)
+		if !ok {
+			return fmt.Errorf("init container %q not found in Deployment %s", name, d.Name)
+		}
 
-func (r initContainerImageRequest) apply(d *appsv1.Deployment) error {
-	idx, ok := findContainer(d.Spec.Template.Spec.InitContainers, r.name)
-	if !ok {
-		return fmt.Errorf("init container %q not found in Deployment %s", r.name, d.Name)
+		d.Spec.Template.Spec.InitContainers[idx].Image = image
+
+		return nil
 	}
-
-	d.Spec.Template.Spec.InitContainers[idx].Image = r.image
-
-	return nil
 }
 
-// containerEnvRequest merges env vars into the first regular container
-// with the exact name; the container must exist even for an empty env
-// list.
-type containerEnvRequest struct {
-	name string
-	envs []corev1.EnvVar
-}
+// containerEnv returns the request merging env vars into the first
+// regular container with the exact name; the container must exist even
+// for an empty env list.
+func containerEnv(name string, envs []corev1.EnvVar) customizationRequest {
+	return func(d *appsv1.Deployment) error {
+		idx, ok := findContainer(d.Spec.Template.Spec.Containers, name)
+		if !ok {
+			return fmt.Errorf("container %q not found in Deployment %s", name, d.Name)
+		}
 
-func (r containerEnvRequest) apply(d *appsv1.Deployment) error {
-	idx, ok := findContainer(d.Spec.Template.Spec.Containers, r.name)
-	if !ok {
-		return fmt.Errorf("container %q not found in Deployment %s", r.name, d.Name)
+		container := &d.Spec.Template.Spec.Containers[idx]
+
+		for _, env := range envs {
+			mergeEnv(container, *env.DeepCopy())
+		}
+
+		return nil
 	}
-
-	container := &d.Spec.Template.Spec.Containers[idx]
-
-	for _, env := range r.envs {
-		mergeEnv(container, *env.DeepCopy())
-	}
-
-	return nil
 }
 
 // findContainer returns the index of the first container carrying the

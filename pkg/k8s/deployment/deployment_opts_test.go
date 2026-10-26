@@ -110,7 +110,7 @@ func TestWithContainerOptionsCollectOrderedRequests(t *testing.T) {
 	d := newTestDeployment()
 
 	for _, request := range options.requests {
-		g.Expect(request.apply(d)).To(Succeed())
+		g.Expect(request(d)).To(Succeed())
 	}
 
 	main := container(t, d.Spec.Template.Spec.Containers, "manager")
