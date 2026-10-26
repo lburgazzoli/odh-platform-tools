@@ -42,7 +42,7 @@ func WaitForCRDToBeEstablished(
 	ctx context.Context,
 	cli crclient.Client,
 	name string,
-	opts ...Option,
+	opts ...WaitOption,
 ) error {
 	options := newOptions(opts...)
 
