@@ -14,6 +14,7 @@ import (
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/option"
 )
 
 // helmDefinitionYAML is the valid Helm module definition.
@@ -577,6 +578,28 @@ func TestLoadRejectsDuplicateKeys(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
 	g.Expect(err.Error()).To(ContainSubstring(`mapping key "name" already defined`))
+}
+
+// TestLoadAppliesOptionMachinery pins the option plumbing: a load
+// accepts options in every shape the machinery allows — nil options,
+// plain functional options, and whole LoadOptions presets — without
+// changing the result. No WithXxx constructors exist yet; the
+// machinery is the extension point for future ones.
+func TestLoadAppliesOptionMachinery(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := writeHelmModule(t)
+
+	definition, err := Load(
+		t.Context(), os.DirFS(root), "definition.yaml",
+		LoadOption(nil),
+		option.FunctionalOption[LoadOptions](func(*LoadOptions) {}),
+		LoadOptions{},
+	)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(definition.Name).To(Equal("synthetic"))
 }
 
 func TestLoadRejectsInvalidDocuments(t *testing.T) {

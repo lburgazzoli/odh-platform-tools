@@ -35,19 +35,28 @@ func New(fsys fs.FS) *Loader {
 
 // Load reads, decodes, and validates the module definition at
 // path in fsys and returns it normalized: the one-shot form of
-// New(fsys).Load.
+// New(fsys).Load with the given options.
 //
 // Every failure except cancellation is a configuration error matching
 // errors.Is(err, moduleerrors.ErrInvalidDefinition). Cancellation and
 // deadline errors are returned unwrapped so they keep their identity
 // and precedence over configuration classification.
-func Load(ctx context.Context, fsys fs.FS, path string) (v1alpha1.PlatformModuleDefinition, error) {
-	return New(fsys).Load(ctx, path)
+func Load(
+	ctx context.Context,
+	fsys fs.FS,
+	path string,
+	opts ...LoadOption,
+) (v1alpha1.PlatformModuleDefinition, error) {
+	return New(fsys).Load(ctx, path, opts...)
 }
 
 // LoadFromPath is Load over the operating-system filesystem: the path
 // may be relative to the working directory or absolute.
-func LoadFromPath(ctx context.Context, path string) (v1alpha1.PlatformModuleDefinition, error) {
+func LoadFromPath(
+	ctx context.Context,
+	path string,
+	opts ...LoadOption,
+) (v1alpha1.PlatformModuleDefinition, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return v1alpha1.PlatformModuleDefinition{}, moduleerrors.NewDefinitionErrorf("resolve definition file %s: %w", path, err)
@@ -58,7 +67,7 @@ func LoadFromPath(ctx context.Context, path string) (v1alpha1.PlatformModuleDefi
 		return v1alpha1.PlatformModuleDefinition{}, moduleerrors.NewDefinitionErrorf("resolve definition file %s: %w", path, err)
 	}
 
-	return Load(ctx, os.DirFS("/"), relative)
+	return Load(ctx, os.DirFS("/"), relative, opts...)
 }
 
 // Load reads and decodes the module definition at path in
@@ -68,7 +77,19 @@ func LoadFromPath(ctx context.Context, path string) (v1alpha1.PlatformModuleDefi
 // errors.Is(err, moduleerrors.ErrInvalidDefinition). Cancellation and
 // deadline errors are returned unwrapped so they keep their identity
 // and precedence over configuration classification.
-func (l *Loader) Load(ctx context.Context, path string) (v1alpha1.PlatformModuleDefinition, error) {
+func (l *Loader) Load(
+	ctx context.Context,
+	path string,
+	opts ...LoadOption,
+) (v1alpha1.PlatformModuleDefinition, error) {
+	options := LoadOptions{}
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt.ApplyTo(&options)
+		}
+	}
+
 	if err := ctx.Err(); err != nil {
 		return v1alpha1.PlatformModuleDefinition{}, err
 	}

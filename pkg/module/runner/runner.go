@@ -51,6 +51,7 @@ import (
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/adapt"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
@@ -58,8 +59,13 @@ import (
 )
 
 // DefinitionLoad loads and normalizes one definition file. The
-// loader is the concrete implementation.
-type DefinitionLoad func(ctx context.Context, path string) (v1alpha1.PlatformModuleDefinition, error)
+// loader is the concrete implementation; its options flow through
+// untouched.
+type DefinitionLoad func(
+	ctx context.Context,
+	path string,
+	opts ...loader.LoadOption,
+) (v1alpha1.PlatformModuleDefinition, error)
 
 // ManifestRender renders the manifest backend selected by a loaded
 // definition with shared runtime options. The Helm and Kustomize

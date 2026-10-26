@@ -13,6 +13,7 @@ import (
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 )
 
 // actionCalls records the service invocations of one action run.
@@ -27,7 +28,7 @@ type actionCalls struct {
 // loader returns a fake definition loader returning definition and
 // err.
 func (r *actionCalls) loader(definition v1alpha1.PlatformModuleDefinition, err error) DefinitionLoad {
-	return func(ctx context.Context, path string) (v1alpha1.PlatformModuleDefinition, error) {
+	return func(ctx context.Context, path string, _ ...loader.LoadOption) (v1alpha1.PlatformModuleDefinition, error) {
 		r.sequence = append(r.sequence, "load")
 		r.contexts = append(r.contexts, ctx)
 		r.paths = append(r.paths, path)

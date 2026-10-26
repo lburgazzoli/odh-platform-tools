@@ -272,7 +272,7 @@ func (s *stubRunner) record(name string) {
 }
 
 // load is the loader stub.
-func (s *stubRunner) load(_ context.Context, _ string) (v1alpha1.PlatformModuleDefinition, error) {
+func (s *stubRunner) load(_ context.Context, _ string, _ ...loader.LoadOption) (v1alpha1.PlatformModuleDefinition, error) {
 	s.record("load")
 
 	return s.definition, s.loadError
