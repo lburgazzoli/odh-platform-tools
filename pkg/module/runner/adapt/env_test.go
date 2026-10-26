@@ -433,7 +433,10 @@ func TestEnvInjectorOverridesExistingEnvAndRemovesValueFrom(t *testing.T) {
 
 	g := NewWithT(t)
 
-	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+	definition := newDefinition()
+	definition.Spec.Controller.Deployment.InitContainer = nil
+
+	var render enginetypes.PostRenderer = newEnvInjector(&definition).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentValueFromYAML)})
 	g.Expect(err).To(Succeed())
@@ -462,6 +465,7 @@ func TestEnvInjectorPrecedence(t *testing.T) {
 	g := NewWithT(t)
 
 	definition := newDefinition()
+	definition.Spec.Controller.Deployment.InitContainer = nil
 	definition.Spec.Controller.Deployment.Container.Env = []toolApi.EnvVar{
 		{Name: "RELATED_IMAGE_OPERAND", Value: new("extra-wins")},
 		{Name: "APPLICATIONS_NAMESPACE", Value: new("extra-ns")},
@@ -497,6 +501,7 @@ func TestEnvInjectorExtraEnvListMapSemantics(t *testing.T) {
 	g := NewWithT(t)
 
 	definition := newDefinition()
+	definition.Spec.Controller.Deployment.InitContainer = nil
 	definition.Spec.Controller.Deployment.Container.Env = []toolApi.EnvVar{
 		{Name: "ZETA", Value: new("one")},
 		{Name: "ALPHA"},
@@ -534,6 +539,7 @@ func TestEnvInjectorPlaceholderValueStaysLiteral(t *testing.T) {
 	g := NewWithT(t)
 
 	definition := newDefinition()
+	definition.Spec.Controller.Deployment.InitContainer = nil
 	definition.Spec.Controller.Deployment.Container.Env = []toolApi.EnvVar{
 		{Name: "LOG_LEVEL", Value: new("{{LOG_LEVEL}}")},
 	}
@@ -560,6 +566,7 @@ func TestEnvInjectorSortedExtraEnv(t *testing.T) {
 	g := NewWithT(t)
 
 	definition := newDefinition()
+	definition.Spec.Controller.Deployment.InitContainer = nil
 	definition.Spec.Controller.Deployment.Container.Env = []toolApi.EnvVar{
 		{Name: "ZETA", Value: new("z")},
 		{Name: "ALPHA", Value: new("a")},
@@ -586,6 +593,7 @@ func TestEnvInjectorContainerNameFallback(t *testing.T) {
 	g := NewWithT(t)
 
 	definition := newDefinition()
+	definition.Spec.Controller.Deployment.InitContainer = nil
 	definition.Spec.Controller.Deployment.Container.Name = ""
 
 	var render enginetypes.PostRenderer = newEnvInjector(&definition).Run
@@ -614,6 +622,7 @@ func TestEnvInjectorDeploymentNameFallback(t *testing.T) {
 	g := NewWithT(t)
 
 	definition := newDefinition()
+	definition.Spec.Controller.Deployment.InitContainer = nil
 	definition.Spec.Controller.Deployment.Name = ""
 
 	var render enginetypes.PostRenderer = (&EnvInjector{
@@ -774,11 +783,10 @@ func TestEnvInjectorMalformedFieldOutsideContainersErrors(t *testing.T) {
 	g.Expect(resources).To(BeNil())
 }
 
-// TestEnvInjectorMissingMainContainerSkips pins that a valid target
+// TestEnvInjectorMissingMainContainerErrors pins that a valid target
 // whose containers do not include the configured main container name
-// skips successfully and keeps its original rendered map — including
-// an unknown field a typed round-trip would have dropped.
-func TestEnvInjectorMissingMainContainerSkips(t *testing.T) {
+// fails the pass, and no failed output is presented as success.
+func TestEnvInjectorMissingMainContainerErrors(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -786,10 +794,9 @@ func TestEnvInjectorMissingMainContainerSkips(t *testing.T) {
 	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWrongMainContainerYAML)})
-	g.Expect(err).To(Succeed())
-
-	g.Expect(resources).To(HaveLen(1))
-	g.Expect(resources[0]).To(Equal(resource(t, deploymentWrongMainContainerYAML)))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`container "manager" not found in Deployment synthetic-controller`))
+	g.Expect(resources).To(BeNil())
 }
 
 // TestEnvInjectorDropsUnknownFieldsOnAdaptedTarget pins the typed
@@ -801,7 +808,10 @@ func TestEnvInjectorDropsUnknownFieldsOnAdaptedTarget(t *testing.T) {
 
 	g := NewWithT(t)
 
-	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+	definition := newDefinition()
+	definition.Spec.Controller.Deployment.InitContainer = nil
+
+	var render enginetypes.PostRenderer = newEnvInjector(&definition).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentUnknownFieldYAML)})
 	g.Expect(err).To(Succeed())
@@ -833,6 +843,7 @@ func TestEnvInjectorNoContainerBlock(t *testing.T) {
 	g := NewWithT(t)
 
 	definition := newDefinition()
+	definition.Spec.Controller.Deployment.InitContainer = nil
 	definition.Spec.Controller.Deployment.Container = nil
 
 	var render enginetypes.PostRenderer = (&EnvInjector{
@@ -876,18 +887,16 @@ func TestEnvInjectorIgnoresNonDeploymentResources(t *testing.T) {
 	g.Expect(resources[1]).To(Equal(resource(t, sameNameWrongGVKYAML)))
 }
 
-// TestEnvInjectorInitContainerBranches pins the init container image
-// injection branches: an absent initContainers list skips, a
-// configured name missing from a nonempty list errors only when the
-// controller image resolved, and no init target leaves the slice
+// TestEnvInjectorInitContainerBranches pins the init container
+// branches: a configured init container missing from the target —
+// absent, empty, or differently named — fails the pass regardless of
+// image resolution, an init container carrying its own image gets that
+// image instead of the main one, and no init target leaves the slice
 // untouched.
-//
-// Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
-// (injectInitContainerImage), commit 5a1d17f57b32.
 func TestEnvInjectorInitContainerBranches(t *testing.T) {
 	t.Parallel()
 
-	t.Run("absent init slice skips", func(t *testing.T) {
+	t.Run("absent init slice errors", func(t *testing.T) {
 		t.Parallel()
 
 		g := NewWithT(t)
@@ -895,17 +904,12 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
 
 		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
-		g.Expect(err).To(Succeed())
-
-		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-		g.Expect(deployment.Object).To(SatisfyAll(
-			jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-				| .image == "quay.io/example/controller:v1"`),
-			jq.Match(`.spec.template.spec | has("initContainers") | not`),
-		))
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring(`init container "copy-manifests" not found in Deployment synthetic-controller`))
+		g.Expect(resources).To(BeNil())
 	})
 
-	t.Run("empty init slice skips", func(t *testing.T) {
+	t.Run("empty init slice errors", func(t *testing.T) {
 		t.Parallel()
 
 		g := NewWithT(t)
@@ -913,14 +917,9 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
 
 		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentEmptyInitYAML)})
-		g.Expect(err).To(Succeed())
-
-		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-		g.Expect(deployment.Object).To(SatisfyAll(
-			jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-				| .image == "quay.io/example/controller:v1"`),
-			jq.Match(`.spec.template.spec | has("initContainers") | not`),
-		))
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring(`init container "copy-manifests" not found in Deployment synthetic-controller`))
+		g.Expect(resources).To(BeNil())
 	})
 
 	t.Run("missing named init with resolved image errors", func(t *testing.T) {
@@ -936,7 +935,7 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		g.Expect(resources).To(BeNil())
 	})
 
-	t.Run("missing named init with unresolved image skips", func(t *testing.T) {
+	t.Run("missing named init with unresolved image errors", func(t *testing.T) {
 		t.Parallel()
 
 		g := NewWithT(t)
@@ -944,11 +943,81 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 		var render enginetypes.PostRenderer = (&EnvInjector{Definition: newDefinitionPointer()}).Run
 
 		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentOtherInitYAML)})
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring(`init container "copy-manifests" not found in Deployment synthetic-controller`))
+		g.Expect(resources).To(BeNil())
+	})
+
+	t.Run("init image distinct from main image", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		definition := newDefinition()
+		definition.Spec.Controller.Deployment.InitContainer.Image = "quay.io/example/init:v2"
+
+		var render enginetypes.PostRenderer = newEnvInjector(&definition).Run
+
+		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
 		g.Expect(err).To(Succeed())
 
 		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-		g.Expect(deployment.Object).To(jq.Match(`.spec.template.spec.initContainers[] | select(.name == "other-init")
-			| .image == "registry.example/other-init:v0"`))
+		g.Expect(deployment.Object).To(SatisfyAll(
+			jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
+				| .image == "quay.io/example/controller:v1"`),
+			jq.Match(`.spec.template.spec.initContainers[] | select(.name == "copy-manifests")
+				| .image == "quay.io/example/init:v2"`),
+		))
+	})
+
+	t.Run("init image reference resolves independently", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		definition := newDefinition()
+		definition.Spec.Controller.Deployment.InitContainer.Image = "{{RELATED_IMAGE_INIT}}"
+
+		images := newResolvedImages()
+		images["RELATED_IMAGE_INIT"] = "quay.io/example/init:v3"
+
+		var render enginetypes.PostRenderer = (&EnvInjector{
+			Definition: &definition,
+			Images:     images,
+		}).Run
+
+		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+		g.Expect(err).To(Succeed())
+
+		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+		g.Expect(deployment.Object).To(SatisfyAll(
+			jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
+				| .image == "quay.io/example/controller:v1"`),
+			jq.Match(`.spec.template.spec.initContainers[] | select(.name == "copy-manifests")
+				| .image == "quay.io/example/init:v3"`),
+		))
+	})
+
+	t.Run("unresolved init image keeps chart default", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		definition := newDefinition()
+		definition.Spec.Controller.Deployment.InitContainer.Image = "{{RELATED_IMAGE_ABSENT}}"
+
+		var render enginetypes.PostRenderer = newEnvInjector(&definition).Run
+
+		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+		g.Expect(err).To(Succeed())
+
+		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+		g.Expect(deployment.Object).To(SatisfyAll(
+			jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
+				| .image == "quay.io/example/controller:v1"`),
+			jq.Match(`.spec.template.spec.initContainers[] | select(.name == "copy-manifests")
+				| .image == "registry.example/chart-init:v0"`),
+		))
 	})
 
 	t.Run("no init target leaves slice untouched", func(t *testing.T) {
@@ -977,8 +1046,7 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 // customization contract: a matched target with a found main container
 // is converted back even when the image is unresolved and the resolved
 // env list is empty — its unknown fields may be dropped — while a
-// missing-main target and a foreign Deployment keep their original
-// rendered maps.
+// foreign Deployment keeps its original rendered map.
 func TestEnvInjectorEmptyCustomizationStillRoundTrips(t *testing.T) {
 	t.Parallel()
 
@@ -986,13 +1054,13 @@ func TestEnvInjectorEmptyCustomizationStillRoundTrips(t *testing.T) {
 
 	definition := newDefinition()
 	definition.Spec.RelatedImages = nil
+	definition.Spec.Controller.Deployment.InitContainer = nil
 	definition.Spec.Controller.Deployment.Container.Env = nil
 
 	var render enginetypes.PostRenderer = (&EnvInjector{Definition: &definition}).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{
 		resource(t, controllerDeploymentUnknownFieldYAML),
-		resource(t, deploymentWrongMainContainerYAML),
 		resource(t, otherDeploymentYAML),
 	})
 	g.Expect(err).To(Succeed())
@@ -1011,9 +1079,8 @@ func TestEnvInjectorEmptyCustomizationStillRoundTrips(t *testing.T) {
 			| .env[] | select(.name == "CHART_ENV") | .value == "chart-value"`),
 	))
 
-	// The skip and passthrough paths keep their original maps.
-	g.Expect(resources[1]).To(Equal(resource(t, deploymentWrongMainContainerYAML)))
-	g.Expect(resources[2]).To(Equal(resource(t, otherDeploymentYAML)))
+	// The passthrough path keeps its original map.
+	g.Expect(resources[1]).To(Equal(resource(t, otherDeploymentYAML)))
 }
 
 // TestEnvInjectorAlreadyCorrectValuesStillRoundTrips pins that a

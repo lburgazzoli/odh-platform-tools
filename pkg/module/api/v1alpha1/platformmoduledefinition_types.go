@@ -249,8 +249,9 @@ type ControllerDeployment struct {
 
 // ContainerDefinition describes the controller's main container. The
 // image may be a literal pipeline-built value or a whole-value
-// {{VARIABLE}} reference; when it resolves, the same image also
-// overrides the init container selected by InitContainer.
+// {{VARIABLE}} reference; when it resolves, it also overrides the init
+// container selected by InitContainer unless that target carries an
+// image of its own.
 type ContainerDefinition struct {
 	// Name is the main container name. It is empty when the
 	// definition omits it or authors an explicit empty string; both
@@ -274,10 +275,11 @@ type ContainerDefinition struct {
 	Env []EnvVar `json:"env,omitzero"`
 }
 
-// ContainerTarget selects one controller container by name. The init
-// placement is name-only: a resolved main image overrides the named
-// init container too, and env injection affects only the main
-// container, so no init-specific image or env settings exist.
+// ContainerTarget selects one controller container by name and may
+// carry its own image: a resolved target image overrides the named
+// init container directly, and when the target carries no image the
+// resolved main image overrides it instead. Env injection affects
+// only the main container.
 type ContainerTarget struct {
 	// Name is the init container name. It is empty when the
 	// definition omits it or authors an explicit empty string; both
@@ -286,6 +288,16 @@ type ContainerTarget struct {
 	//
 	// +optional
 	Name string `json:"name,omitzero"`
+
+	// Image is the init container image, distinct from the main
+	// container's. It may be a literal or a whole-value {{VARIABLE}}
+	// reference; its contents stay opaque here and are resolved by the
+	// runner, never by lint. When it is empty, the resolved main image
+	// applies instead; when it is set but unresolved, the rendered init
+	// container image is kept.
+	//
+	// +optional
+	Image string `json:"image,omitzero"`
 }
 
 // EnvVar is one explicit main-container environment variable. Value

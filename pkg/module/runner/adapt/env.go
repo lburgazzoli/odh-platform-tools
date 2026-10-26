@@ -15,7 +15,7 @@ import (
 	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
 	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 
-	gvk "github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
+	k8s "github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/k8s/deployment"
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/images"
@@ -88,7 +88,7 @@ func (inj *EnvInjector) Run(
 	}
 
 	for i := range resources {
-		if resources[i].GroupVersionKind() != gvk.Deployment || resources[i].GetName() != target {
+		if resources[i].GroupVersionKind() != k8s.Deployment || resources[i].GetName() != target {
 			continue
 		}
 
@@ -112,11 +112,11 @@ func (inj *EnvInjector) Run(
 
 // adaptDeployment converts the targeted Deployment to its typed form,
 // delegates the image and env mutations to the typed customization
-// options, and returns the converted-back resource. It returns a nil
-// resource only when the target container is absent, leaving the
-// caller's original object untouched — that skip path is never
-// reserialized, while a successfully customized target always is, even
-// when no effective field value changed.
+// options, and returns the converted-back resource. The containers the
+// definition names — the main container and a configured init
+// container — must exist on the target: a missing one fails the pass.
+// A successfully customized target is always reserialized, even when
+// no effective field value changed.
 func (inj *EnvInjector) adaptDeployment(
 	ctx context.Context,
 	obj *unstructured.Unstructured,
@@ -145,37 +145,53 @@ func (inj *EnvInjector) adaptDeployment(
 		image = images.ResolveImage(container.Image, inj.Images)
 	}
 
-	idx := slices.IndexFunc(podSpec.Containers, func(c corev1.Container) bool {
-		return c.Name == targetName
-	})
-	if idx < 0 {
-		log.Error(nil, "target container not found in Deployment, skipping env injection",
-			"deployment", obj.GetName(), "deploymentNamespace", obj.GetNamespace(), "container", targetName)
-		return nil, nil
+	// Containers named by the definition must exist on the target: a
+	// missing main or configured init container fails the pass instead
+	// of being skipped.
+	if _, found := k8s.FindContainer(podSpec.Containers, targetName); !found {
+		return nil, fmt.Errorf("container %q not found in Deployment %s", targetName, obj.GetName())
 	}
 
-	var opts []deployment.CustomizeOption
-
 	if image != "" {
-		opts = append(opts, deployment.WithContainerImage(targetName, image))
-
-		// The same resolved image goes to the main and init containers
-		// or neither: an absent or empty initContainers list skips, and
-		// a configured name missing from a nonempty list errors —
-		// reached only when the image resolved, since an unresolved
-		// image omits the init option entirely.
-		if init := descriptor.InitContainer; init != nil && len(podSpec.InitContainers) > 0 {
-			opts = append(opts, deployment.WithInitContainerImage(init.Name, image))
+		if err := deployment.Customize(
+			typed,
+			deployment.WithContainerImage(targetName, image),
+		); err != nil {
+			return nil, fmt.Errorf("deployment %s: %w", obj.GetName(), err)
 		}
 	} else if descriptor.Container != nil && descriptor.Container.Image != "" {
 		log.V(1).Info("controller image unresolved, keeping chart default",
 			"deployment", obj.GetName())
 	}
 
-	opts = append(opts, deployment.WithContainerEnv(targetName, inj.injectedEnvVars(ctx)))
-
-	if err := deployment.Customize(typed, opts...); err != nil {
+	if err := deployment.Customize(
+		typed,
+		deployment.WithContainerEnv(targetName, inj.injectedEnvVars(ctx)),
+	); err != nil {
 		return nil, fmt.Errorf("deployment %s: %w", obj.GetName(), err)
+	}
+
+	// The configured init container must exist, and it carries its own
+	// resolved image when it declares one — the resolved main image
+	// otherwise; an unresolved effective image keeps the chart default.
+	if init := descriptor.InitContainer; init != nil {
+		if _, found := k8s.FindContainer(podSpec.InitContainers, init.Name); !found {
+			return nil, fmt.Errorf("init container %q not found in Deployment %s", init.Name, obj.GetName())
+		}
+
+		initImage := image
+		if init.Image != "" {
+			initImage = images.ResolveImage(init.Image, inj.Images)
+		}
+
+		if initImage != "" {
+			if err := deployment.Customize(
+				typed,
+				deployment.WithInitContainerImage(init.Name, initImage),
+			); err != nil {
+				return nil, fmt.Errorf("deployment %s: %w", obj.GetName(), err)
+			}
+		}
 	}
 
 	out, err := fwresources.ObjectToUnstructured(clientgoscheme.Scheme, typed)
