@@ -427,9 +427,15 @@ func TestRenderPresetDoesNotLeakCallerAppends(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(renderCalls).To(Equal([]string{"preset", "option"}))
 
+	// The preset cloned its processor slice: the render's own
+	// "option" append never wrote into the caller's spare capacity,
+	// so the slot behind the caller's length is still empty. An
+	// aliased preset would have left the "option" processor there.
+	g.Expect(callerSlice[:cap(callerSlice)][1]).To(BeNil())
+
 	// The caller keeps filling its own spare capacity after the
-	// render: the stored processor is the caller's, and the render's
-	// recorded calls are untouched.
+	// render: its own processor runs, and the render's recorded
+	// calls are untouched.
 	callerSlice = append(callerSlice, named(&callerCalls, "caller-second"))
 
 	_, _ = callerSlice[1](t.Context(), nil)
