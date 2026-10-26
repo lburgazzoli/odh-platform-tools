@@ -680,8 +680,7 @@ func TestWaitBudgetBoundaries(t *testing.T) {
 
 // TestWaitTimeoutIsRuntimeError proves an expiring wait budget fails
 // as a runtime deadline error while the report retains the confirmed
-// owner, publication, apply completion, and the requested wait's
-// non-completion.
+// owner, apply completion, and the requested wait's non-completion.
 func TestWaitTimeoutIsRuntimeError(t *testing.T) {
 	t.Parallel()
 

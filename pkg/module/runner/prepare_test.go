@@ -39,6 +39,8 @@ import (
 
 	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
 
+	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
+
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 )
@@ -426,6 +428,9 @@ func TestPrepareOwnerSanitizesDefinitionApply(t *testing.T) {
 	definition.Finalizers = []string{"forged.example.com/finalizer"}
 	definition.Labels = map[string]string{"authored": "label"}
 	definition.Annotations = map[string]string{"authored": "annotation"}
+	definition.Status = v1alpha1.PlatformModuleDefinitionStatus{
+		Status: api.Status{Phase: "forged", ObservedGeneration: 7},
+	}
 
 	_, err := prepareOwner(t.Context(), fixture.connection, definition)
 	g.Expect(err).NotTo(HaveOccurred())
