@@ -25,34 +25,6 @@ import (
 	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
 )
 
-// Options carries the runtime rendering inputs that offline lint
-// rendering does not have.
-type Options struct {
-	// Namespace is the installation namespace a run renders into.
-	//
-	// For the Helm backend it becomes the release namespace —
-	// .Release.Namespace for chart templates — without filling
-	// metadata.namespace itself: charts template the namespace
-	// explicitly or leave objects namespace-less, exactly as the
-	// operator passes the applications namespace to module charts.
-	//
-	// For the Kustomize backend it is the namespace the engine's real
-	// namespace transformer applies to namespaced objects, subjects,
-	// and references at render time; cluster-scoped objects keep their
-	// scope.
-	//
-	// The zero value leaves rendering untouched, matching offline
-	// lint output exactly.
-	Namespace string
-
-	// PostRenderers are caller-supplied post-renderers the shared
-	// engine applies after the library apply-order post-renderer.
-	// Lint supplies none; run registers the adaptation injectors
-	// here so ordering is enforced once, at engine level, instead of
-	// per backend.
-	PostRenderers []enginetypes.PostRenderer
-}
-
 // NewEngine builds the shared rendering engine around a native
 // manifest-kit renderer. The library postrenderer.ApplyOrder is
 // registered first, followed by the options' caller-supplied
@@ -62,7 +34,15 @@ type Options struct {
 // processors instead of publishing successful output; the framework
 // deploy action sorts the enriched batch again before writes, so no
 // additional final engine sort is added here.
-func NewEngine(r enginetypes.Renderer, options Options) (*engine.Engine, error) {
+func NewEngine(r enginetypes.Renderer, opts ...RenderOption) (*engine.Engine, error) {
+	options := RenderOptions{}
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt.ApplyTo(&options)
+		}
+	}
+
 	postRenderers := make([]enginetypes.PostRenderer, 0, len(options.PostRenderers)+1)
 	postRenderers = append(postRenderers, cancellable(postrenderer.ApplyOrder()))
 
