@@ -28,13 +28,16 @@
 // framework symbols:
 //
 //   - Env injection ports the operator's injectModuleEnv
-//     (internal/controller/modules/modules_controller_actions_inject_env.go):
-//     the container list of every Deployment is read before module
-//     matching, a malformed existing env list projects to an empty
-//     list and is replaced once anything is injected, and an empty
+//     (internal/controller/modules/modules_controller_actions_inject_env.go)
+//     reduced to a single module with a typed-target boundary: only
+//     the exact Deployment group/version/kind matching the configured
+//     controller name (module-name fallback) is converted to an
+//     appsv1.Deployment and mutated, so a malformed typed field on
+//     that target fails the render and unknown fields may be dropped,
+//     while unrelated resources are never converted. An empty
 //     configured Deployment name follows deploymentNameFor's
-//     release/module-name fallback. All three are exercised below
-//     through the real chain.
+//     release/module-name fallback. Both are exercised below through
+//     the real chain.
 //   - Image source precedence (environment over file, empty
 //     environment masks the file, undeclared ambient variables never
 //     injected) ports the operator's related-images contract; the

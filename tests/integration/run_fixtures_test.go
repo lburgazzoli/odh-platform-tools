@@ -115,9 +115,8 @@ spec:
 `
 
 // runHelmMalformedEnvDefinitionYAML targets a chart whose controller
-// container carries a malformed env field: the injector projects it
-// permissively to an empty list and replaces it with the injected
-// entries, the operator's recorded behavior.
+// container carries a malformed env field: the typed conversion of
+// the targeted Deployment fails the render instead of repairing it.
 const runHelmMalformedEnvDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
@@ -222,7 +221,8 @@ spec:
 `
 
 // runMalformedEnvDeploymentTemplateYAML renders the controller
-// Deployment with a malformed env field on the main container.
+// Deployment with a malformed env field on the main container, which
+// fails the render stage before any deploy.
 const runMalformedEnvDeploymentTemplateYAML = `apiVersion: apps/v1
 kind: Deployment
 metadata:

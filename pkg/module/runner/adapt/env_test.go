@@ -91,7 +91,8 @@ spec:
 `
 
 // controllerDeploymentMalformedEnvYAML is the controller Deployment
-// whose main container env is not a list.
+// whose main container env is not a list: the typed conversion of the
+// targeted Deployment fails.
 const controllerDeploymentMalformedEnvYAML = `apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -117,15 +118,138 @@ spec:
       containers: not-a-list
 `
 
-// deploymentWithoutContainersYAML is a foreign Deployment with no
-// containers at all.
-const deploymentWithoutContainersYAML = `apiVersion: apps/v1
+// deploymentMalformedReplicasYAML is the controller Deployment whose
+// replicas field is not an integer: conversion covers the whole
+// target, not only the container and env fields.
+const deploymentMalformedReplicasYAML = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthetic-controller
+spec:
+  replicas: not-an-integer
+  template:
+    spec:
+      containers:
+      - name: manager
+        image: registry.example/chart-controller:v0
+`
+
+// deploymentTargetWithoutContainersYAML is the module's own Deployment
+// with no containers field at all.
+const deploymentTargetWithoutContainersYAML = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthetic-controller
+spec:
+  template:
+    spec: {}
+`
+
+// deploymentTargetEmptyContainersYAML is the module's own Deployment
+// with an empty containers list.
+const deploymentTargetEmptyContainersYAML = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthetic-controller
+spec:
+  template:
+    spec:
+      containers: []
+`
+
+// foreignDeploymentWithoutContainersYAML is a foreign Deployment with
+// no containers at all.
+const foreignDeploymentWithoutContainersYAML = `apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: other-controller
 spec:
   template:
     spec: {}
+`
+
+// foreignMalformedContainersYAML is a foreign Deployment whose
+// containers field is not a list.
+const foreignMalformedContainersYAML = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: other-controller
+spec:
+  template:
+    spec:
+      containers: not-a-list
+`
+
+// foreignMalformedEnvYAML is a foreign Deployment whose main container
+// env is not a list.
+const foreignMalformedEnvYAML = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: other-controller
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        image: registry.example/other:v0
+        env: not-a-list
+`
+
+// deploymentWrongMainContainerYAML is the module's own Deployment
+// whose only container does not match the configured main container
+// name, carrying an unknown field that a typed round-trip would drop.
+const deploymentWrongMainContainerYAML = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthetic-controller
+spec:
+  template:
+    spec:
+      containers:
+      - name: other-main
+        image: registry.example/other-main:v0
+        x-custom: keep-me
+`
+
+// controllerDeploymentUnknownFieldYAML is the module's controller
+// Deployment carrying an unknown extension field on the pod spec,
+// which the typed round-trip may drop while known fields survive.
+const controllerDeploymentUnknownFieldYAML = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthetic-controller
+  labels:
+    app: synthetic
+spec:
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: synthetic
+    spec:
+      x-extension: sentinel
+      containers:
+      - name: manager
+        image: registry.example/chart-controller:v0
+        env:
+        - name: CHART_ENV
+          value: chart-value
+      - name: sidecar
+        image: registry.example/chart-sidecar:v0
+`
+
+// sameNameWrongGVKYAML is a resource of the targeted name that is not
+// an exact apps/v1 Deployment.
+const sameNameWrongGVKYAML = `apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  name: synthetic-controller
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        image: registry.example/chart-controller:v0
 `
 
 // otherDeploymentYAML is a valid foreign Deployment.
@@ -356,7 +480,9 @@ func TestEnvInjectorExtraEnvListMapSemantics(t *testing.T) {
 		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
 			| .env[] | select(.name == "ALPHA") | .value == "two"`),
 		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
-			| .env[] | select(.name == "BRAVO") | .value == ""`),
+			| .env[] | select(.name == "BRAVO") | (.value // "") == ""`),
+		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
+			| .env[] | select(.name == "BRAVO") | has("valueFrom") | not`),
 	))
 }
 
@@ -498,32 +624,75 @@ func TestEnvInjectorSkipsOtherDeployments(t *testing.T) {
 		| .image == "quay.io/example/controller:v1"`))
 }
 
-// TestEnvInjectorDeploymentWithoutContainersErrors pins that a
-// Deployment without containers errors even when it is not the
-// module's own: upstream reads every Deployment's containers before
-// matching names. A failed pass returns no successful output.
-//
-// Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
-// (injectEnvVarsIntoDeployment, no-containers error), commit 5a1d17f57b32.
-func TestEnvInjectorDeploymentWithoutContainersErrors(t *testing.T) {
+// TestEnvInjectorForeignMalformedDeploymentsPassThrough pins that
+// foreign Deployments — without containers, or with malformed
+// containers or env — are never converted: they remain byte-for-byte
+// as rendered and do not fail the pass, while the module's own
+// Deployment in the same batch is still adapted.
+func TestEnvInjectorForeignMalformedDeploymentsPassThrough(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
 	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutContainersYAML)})
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("deployment other-controller has no containers"))
-	g.Expect(resources).To(BeNil())
+	resources, err := render(t.Context(), []unstructured.Unstructured{
+		resource(t, controllerDeploymentYAML),
+		resource(t, foreignDeploymentWithoutContainersYAML),
+		resource(t, foreignMalformedContainersYAML),
+		resource(t, foreignMalformedEnvYAML),
+	})
+	g.Expect(err).To(Succeed())
+
+	g.Expect(resources[1]).To(Equal(resource(t, foreignDeploymentWithoutContainersYAML)))
+	g.Expect(resources[2]).To(Equal(resource(t, foreignMalformedContainersYAML)))
+	g.Expect(resources[3]).To(Equal(resource(t, foreignMalformedEnvYAML)))
+
+	own := findResource(t, resources, "Deployment", "synthetic-controller")
+	g.Expect(own.Object).To(jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
+		| .image == "quay.io/example/controller:v1"`))
+}
+
+// TestEnvInjectorTargetWithoutContainersErrors pins that the module's
+// own Deployment without containers — absent or empty — errors, and a
+// failed pass returns no successful output.
+func TestEnvInjectorTargetWithoutContainersErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("absent containers", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+
+		resources, err := render(t.Context(), []unstructured.Unstructured{
+			resource(t, deploymentTargetWithoutContainersYAML),
+		})
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("deployment synthetic-controller has no containers"))
+		g.Expect(resources).To(BeNil())
+	})
+
+	t.Run("empty containers", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+
+		resources, err := render(t.Context(), []unstructured.Unstructured{
+			resource(t, deploymentTargetEmptyContainersYAML),
+		})
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("deployment synthetic-controller has no containers"))
+		g.Expect(resources).To(BeNil())
+	})
 }
 
 // TestEnvInjectorMalformedContainersErrors pins that a non-list
-// containers field errors with the unstructured accessor's error, and
-// no failed output is presented as success.
-//
-// Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
-// (injectEnvVarsIntoDeployment, NestedSlice error), commit 5a1d17f57b32.
+// containers field on the targeted Deployment fails the typed
+// conversion, and no failed output is presented as success.
 func TestEnvInjectorMalformedContainersErrors(t *testing.T) {
 	t.Parallel()
 
@@ -533,15 +702,14 @@ func TestEnvInjectorMalformedContainersErrors(t *testing.T) {
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentMalformedContainersYAML)})
 	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("deployment synthetic-controller"))
 	g.Expect(resources).To(BeNil())
 }
 
-// TestEnvInjectorMalformedEnvReplaced pins that a malformed existing
-// env value is treated as empty and replaced by the injected entries.
-//
-// Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
-// (injectEnvVarsIntoDeployment, existingEnv type assertion), commit 5a1d17f57b32.
-func TestEnvInjectorMalformedEnvReplaced(t *testing.T) {
+// TestEnvInjectorMalformedEnvErrors pins that a malformed existing
+// env value on the targeted Deployment fails the typed conversion
+// instead of being repaired.
+func TestEnvInjectorMalformedEnvErrors(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -549,11 +717,72 @@ func TestEnvInjectorMalformedEnvReplaced(t *testing.T) {
 	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
 
 	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentMalformedEnvYAML)})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("deployment synthetic-controller"))
+	g.Expect(resources).To(BeNil())
+}
+
+// TestEnvInjectorMalformedFieldOutsideContainersErrors pins that the
+// typed conversion covers the whole targeted Deployment: a malformed
+// replicas field fails the pass even though the containers are valid.
+func TestEnvInjectorMalformedFieldOutsideContainersErrors(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentMalformedReplicasYAML)})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("deployment synthetic-controller"))
+	g.Expect(resources).To(BeNil())
+}
+
+// TestEnvInjectorMissingMainContainerSkips pins that a valid target
+// whose containers do not include the configured main container name
+// skips successfully and keeps its original rendered map — including
+// an unknown field a typed round-trip would have dropped.
+func TestEnvInjectorMissingMainContainerSkips(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWrongMainContainerYAML)})
+	g.Expect(err).To(Succeed())
+
+	g.Expect(resources).To(HaveLen(1))
+	g.Expect(resources[0]).To(Equal(resource(t, deploymentWrongMainContainerYAML)))
+}
+
+// TestEnvInjectorDropsUnknownFieldsOnAdaptedTarget pins the typed
+// round-trip boundary on an adapted target: an unknown pod-spec
+// extension field may be dropped, while known metadata, spec, and
+// sidecar fields survive semantically.
+func TestEnvInjectorDropsUnknownFieldsOnAdaptedTarget(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
+
+	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentUnknownFieldYAML)})
 	g.Expect(err).To(Succeed())
 
 	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
-	g.Expect(deployment.Object).To(jq.Match(`[.spec.template.spec.containers[] | select(.name == "manager") | .env[].name]
-		== ["RELATED_IMAGE_OPERAND","LOG_LEVEL","APPLICATIONS_NAMESPACE","MONITORING_NAMESPACE","ODH_MODULE_OPERATOR_PLATFORM_TYPE"]`))
+	g.Expect(deployment.Object).To(SatisfyAll(
+		jq.Match(`.spec.template.spec | has("x-extension") | not`),
+		jq.Match(`.metadata.labels.app == "synthetic"`),
+		jq.Match(`.spec.replicas == 2`),
+		jq.Match(`.spec.template.metadata.labels.app == "synthetic"`),
+		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
+			| .image == "quay.io/example/controller:v1"`),
+		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager")
+			| .env[] | select(.name == "CHART_ENV") | .value == "chart-value"`),
+		jq.Match(`.spec.template.spec.containers[] | select(.name == "sidecar")
+			| .image == "registry.example/chart-sidecar:v0"`),
+	))
 }
 
 // TestEnvInjectorNoContainerBlock pins that a definition without a
@@ -589,10 +818,9 @@ func TestEnvInjectorNoContainerBlock(t *testing.T) {
 }
 
 // TestEnvInjectorIgnoresNonDeploymentResources pins that only exact
-// Deployment group/version/kind resources are visited.
-//
-// Operator source: internal/controller/modules/modules_controller_actions_inject_env.go
-// (isDeployment), commit 5a1d17f57b32.
+// Deployment group/version/kind resources are visited: a Service, and
+// a resource of the targeted name carrying a different GVK, pass
+// through untouched.
 func TestEnvInjectorIgnoresNonDeploymentResources(t *testing.T) {
 	t.Parallel()
 
@@ -600,11 +828,16 @@ func TestEnvInjectorIgnoresNonDeploymentResources(t *testing.T) {
 
 	var render enginetypes.PostRenderer = newEnvInjector(newDefinitionPointer()).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, serviceYAML)})
+	resources, err := render(t.Context(), []unstructured.Unstructured{
+		resource(t, serviceYAML),
+		resource(t, sameNameWrongGVKYAML),
+	})
 	g.Expect(err).To(Succeed())
 
 	service := findResource(t, resources, "Service", "synthetic-service")
 	g.Expect(service.Object).To(jq.Match(`.spec.ports[0].port == 8080`))
+
+	g.Expect(resources[1]).To(Equal(resource(t, sameNameWrongGVKYAML)))
 }
 
 // TestEnvInjectorInitContainerBranches pins the init container image

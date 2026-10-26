@@ -682,11 +682,11 @@ func TestRunChainHelmFallbackDeploymentName(t *testing.T) {
 	))
 }
 
-// TestRunChainHelmMalformedEnvIsReplaced proves the operator's
-// permissive malformed-env projection through the real chain: a
-// chart-rendered controller container with a non-list env field gets
-// the injected entries in its place.
-func TestRunChainHelmMalformedEnvIsReplaced(t *testing.T) {
+// TestRunChainHelmMalformedEnvFailsRender proves the typed-target
+// boundary through the real chain: a chart-rendered controller
+// Deployment with a malformed env field fails the render stage before
+// any connection or write, instead of being repaired.
+func TestRunChainHelmMalformedEnvFailsRender(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -696,10 +696,13 @@ func TestRunChainHelmMalformedEnvIsReplaced(t *testing.T) {
 
 	harness := newRunHarness(t)
 
-	_, err := harness.run(t.Context(), runOptions(root))
-	g.Expect(err).NotTo(HaveOccurred())
+	result, err := harness.run(t.Context(), runOptions(root))
+	g.Expect(err).To(HaveOccurred())
 
-	controller := harness.stored(t, runDeploymentGVK, "run-namespace", "synthetic-controller")
-	g.Expect(controller.Object).To(jq.Match(
-		`.spec.template.spec.containers[0].env // [] | map(.name) == ["APPLICATIONS_NAMESPACE","ODH_MODULE_OPERATOR_PLATFORM_TYPE"]`))
+	g.Expect(result.Attempted).To(Equal(runner.StageRender))
+	g.Expect(result.Completed).To(Equal(runner.StageLoad))
+	g.Expect(result.Owner).To(BeNil())
+	g.Expect(result.ApplyCompleted).To(BeFalse())
+	g.Expect(harness.connected).To(BeFalse())
+	g.Expect(harness.writes).To(BeEmpty())
 }
