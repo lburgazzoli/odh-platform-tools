@@ -1,16 +1,19 @@
 package adapt
 
 import (
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 
 	enginetypes "github.com/k8s-manifest-kit/engine/pkg/types"
 
 	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
 	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/k8s"
 
+	toolk8s "github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
@@ -343,10 +346,15 @@ func TestEnvInjector(t *testing.T) {
 
 	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+	input, err := toolk8s.DecodeResources([]byte(controllerDeploymentYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(1))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+	deployment := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "synthetic-controller"})
+	g.Expect(deployment).NotTo(BeNil(), "expected Deployment synthetic-controller in the rendered output")
 	g.Expect(deployment.Object).To(SatisfyAll(
 		WithTransform(k8s.Container("manager"), SatisfyAll(
 			HaveField("Image", "quay.io/example/controller:v1"),
@@ -389,10 +397,15 @@ func TestEnvInjectorLiteralImage(t *testing.T) {
 
 	var render enginetypes.PostRenderer = (&EnvInjector{Definition: definition}).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+	input, err := toolk8s.DecodeResources([]byte(controllerDeploymentYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(1))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+	deployment := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "synthetic-controller"})
+	g.Expect(deployment).NotTo(BeNil(), "expected Deployment synthetic-controller in the rendered output")
 	g.Expect(deployment.Object).To(WithTransform(k8s.Container("manager"), SatisfyAll(
 		HaveField("Image", "quay.io/example/controller:v9"),
 		WithTransform(envVarNames, Equal([]string{"CHART_ENV", "LOG_LEVEL"})),
@@ -416,7 +429,11 @@ func TestEnvInjectorUnresolvedImages(t *testing.T) {
 
 		var render enginetypes.PostRenderer = (&EnvInjector{Definition: newDefinition()}).Run
 
-		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+		input, err := toolk8s.DecodeResources([]byte(controllerDeploymentYAML))
+		g.Expect(err).To(Succeed())
+		g.Expect(input).To(HaveLen(1))
+
+		resources, err := render(t.Context(), input)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring(`container "manager" image unresolved in Deployment synthetic-controller`))
 		g.Expect(resources).To(BeNil())
@@ -433,7 +450,11 @@ func TestEnvInjectorUnresolvedImages(t *testing.T) {
 
 		var render enginetypes.PostRenderer = (&EnvInjector{Definition: definition}).Run
 
-		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+		input, err := toolk8s.DecodeResources([]byte(controllerDeploymentYAML))
+		g.Expect(err).To(Succeed())
+		g.Expect(input).To(HaveLen(1))
+
+		resources, err := render(t.Context(), input)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring(`container "manager" image unresolved in Deployment synthetic-controller`))
 		g.Expect(resources).To(BeNil())
@@ -456,10 +477,15 @@ func TestEnvInjectorOverridesExistingEnvAndRemovesValueFrom(t *testing.T) {
 
 	var render enginetypes.PostRenderer = newEnvInjector(definition).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentValueFromYAML)})
+	input, err := toolk8s.DecodeResources([]byte(controllerDeploymentValueFromYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(1))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+	deployment := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "synthetic-controller"})
+	g.Expect(deployment).NotTo(BeNil(), "expected Deployment synthetic-controller in the rendered output")
 	g.Expect(deployment.Object).To(WithTransform(k8s.Container("manager"), SatisfyAll(
 		WithTransform(envVarNames, Equal([]string{
 			"RELATED_IMAGE_OPERAND", "LOG_LEVEL", "APPLICATIONS_NAMESPACE",
@@ -497,10 +523,15 @@ func TestEnvInjectorPrecedence(t *testing.T) {
 		ApplicationsNamespace: "opendatahub",
 	}).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
+	input, err := toolk8s.DecodeResources([]byte(deploymentWithoutInitYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(1))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+	deployment := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "synthetic-controller"})
+	g.Expect(deployment).NotTo(BeNil(), "expected Deployment synthetic-controller in the rendered output")
 	g.Expect(deployment.Object).To(WithTransform(k8s.Container("manager"), SatisfyAll(
 		WithTransform(k8s.EnvVar("RELATED_IMAGE_OPERAND"), HaveField("Value", "extra-wins")),
 		WithTransform(k8s.EnvVar("APPLICATIONS_NAMESPACE"), HaveField("Value", "opendatahub")),
@@ -530,10 +561,15 @@ func TestEnvInjectorExtraEnvListMapSemantics(t *testing.T) {
 
 	var render enginetypes.PostRenderer = (&EnvInjector{Definition: definition}).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
+	input, err := toolk8s.DecodeResources([]byte(deploymentWithoutInitYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(1))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+	deployment := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "synthetic-controller"})
+	g.Expect(deployment).NotTo(BeNil(), "expected Deployment synthetic-controller in the rendered output")
 	g.Expect(deployment.Object).To(WithTransform(k8s.Container("manager"), SatisfyAll(
 		WithTransform(k8s.EnvVar("ZETA"), HaveField("Value", "one")),
 		WithTransform(k8s.EnvVar("ALPHA"), HaveField("Value", "two")),
@@ -564,10 +600,15 @@ func TestEnvInjectorPlaceholderValueStaysLiteral(t *testing.T) {
 
 	var render enginetypes.PostRenderer = (&EnvInjector{Definition: definition}).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
+	input, err := toolk8s.DecodeResources([]byte(deploymentWithoutInitYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(1))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+	deployment := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "synthetic-controller"})
+	g.Expect(deployment).NotTo(BeNil(), "expected Deployment synthetic-controller in the rendered output")
 	g.Expect(deployment.Object).To(WithTransform(k8s.Container("manager"),
 		WithTransform(k8s.EnvVar("LOG_LEVEL"), HaveField("Value", "{{LOG_LEVEL}}"))))
 }
@@ -593,10 +634,15 @@ func TestEnvInjectorSortedExtraEnv(t *testing.T) {
 
 	var render enginetypes.PostRenderer = (&EnvInjector{Definition: definition}).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
+	input, err := toolk8s.DecodeResources([]byte(deploymentWithoutInitYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(1))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+	deployment := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "synthetic-controller"})
+	g.Expect(deployment).NotTo(BeNil(), "expected Deployment synthetic-controller in the rendered output")
 	g.Expect(deployment.Object).To(WithTransform(k8s.Container("manager"),
 		WithTransform(envVarNames, Equal([]string{"CHART_ENV", "ALPHA", "ZETA"}))))
 }
@@ -621,10 +667,15 @@ func TestEnvInjectorDeploymentNameFallback(t *testing.T) {
 		Images:     newResolvedImages(),
 	}).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, moduleNamedDeploymentYAML)})
+	input, err := toolk8s.DecodeResources([]byte(moduleNamedDeploymentYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(1))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, resources, "Deployment", "synthetic")
+	deployment := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "synthetic"})
+	g.Expect(deployment).NotTo(BeNil(), "expected Deployment synthetic in the rendered output")
 	g.Expect(deployment.Object).To(WithTransform(k8s.Container("manager"),
 		HaveField("Image", "quay.io/example/controller:v1")))
 }
@@ -642,19 +693,27 @@ func TestEnvInjectorSkipsOtherDeployments(t *testing.T) {
 
 	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{
-		resource(t, controllerDeploymentYAML),
-		resource(t, otherDeploymentYAML),
-	})
+	batch := strings.Join([]string{
+		controllerDeploymentYAML,
+		otherDeploymentYAML,
+	}, "\n---\n")
+
+	input, err := toolk8s.DecodeResources([]byte(batch))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(2))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(Succeed())
 
-	other := findResource(t, resources, "Deployment", "other-controller")
+	other := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "other-controller"})
+	g.Expect(other).NotTo(BeNil(), "expected Deployment other-controller in the rendered output")
 	g.Expect(other.Object).To(WithTransform(k8s.Container("manager"), SatisfyAll(
 		HaveField("Image", "registry.example/other:v0"),
 		HaveField("Env", BeNil()),
 	)))
 
-	own := findResource(t, resources, "Deployment", "synthetic-controller")
+	own := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "synthetic-controller"})
+	g.Expect(own).NotTo(BeNil(), "expected Deployment synthetic-controller in the rendered output")
 	g.Expect(own.Object).To(WithTransform(k8s.Container("manager"),
 		HaveField("Image", "quay.io/example/controller:v1")))
 }
@@ -671,19 +730,34 @@ func TestEnvInjectorForeignMalformedDeploymentsPassThrough(t *testing.T) {
 
 	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{
-		resource(t, controllerDeploymentYAML),
-		resource(t, foreignDeploymentWithoutContainersYAML),
-		resource(t, foreignMalformedContainersYAML),
-		resource(t, foreignMalformedEnvYAML),
-	})
+	batch := strings.Join([]string{
+		controllerDeploymentYAML,
+		foreignDeploymentWithoutContainersYAML,
+		foreignMalformedContainersYAML,
+		foreignMalformedEnvYAML,
+	}, "\n---\n")
+
+	input, err := toolk8s.DecodeResources([]byte(batch))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(4))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(Succeed())
 
-	g.Expect(resources[1]).To(Equal(resource(t, foreignDeploymentWithoutContainersYAML)))
-	g.Expect(resources[2]).To(Equal(resource(t, foreignMalformedContainersYAML)))
-	g.Expect(resources[3]).To(Equal(resource(t, foreignMalformedEnvYAML)))
+	expected, err := toolk8s.DecodeResources([]byte(strings.Join([]string{
+		foreignDeploymentWithoutContainersYAML,
+		foreignMalformedContainersYAML,
+		foreignMalformedEnvYAML,
+	}, "\n---\n")))
+	g.Expect(err).To(Succeed())
+	g.Expect(expected).To(HaveLen(3))
 
-	own := findResource(t, resources, "Deployment", "synthetic-controller")
+	g.Expect(resources[1]).To(Equal(expected[0]))
+	g.Expect(resources[2]).To(Equal(expected[1]))
+	g.Expect(resources[3]).To(Equal(expected[2]))
+
+	own := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "synthetic-controller"})
+	g.Expect(own).NotTo(BeNil(), "expected Deployment synthetic-controller in the rendered output")
 	g.Expect(own.Object).To(WithTransform(k8s.Container("manager"),
 		HaveField("Image", "quay.io/example/controller:v1")))
 }
@@ -701,9 +775,11 @@ func TestEnvInjectorTargetWithoutContainersErrors(t *testing.T) {
 
 		var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
-		resources, err := render(t.Context(), []unstructured.Unstructured{
-			resource(t, deploymentTargetWithoutContainersYAML),
-		})
+		input, err := toolk8s.DecodeResources([]byte(deploymentTargetWithoutContainersYAML))
+		g.Expect(err).To(Succeed())
+		g.Expect(input).To(HaveLen(1))
+
+		resources, err := render(t.Context(), input)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("deployment synthetic-controller has no containers"))
 		g.Expect(resources).To(BeNil())
@@ -716,9 +792,11 @@ func TestEnvInjectorTargetWithoutContainersErrors(t *testing.T) {
 
 		var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
-		resources, err := render(t.Context(), []unstructured.Unstructured{
-			resource(t, deploymentTargetEmptyContainersYAML),
-		})
+		input, err := toolk8s.DecodeResources([]byte(deploymentTargetEmptyContainersYAML))
+		g.Expect(err).To(Succeed())
+		g.Expect(input).To(HaveLen(1))
+
+		resources, err := render(t.Context(), input)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("deployment synthetic-controller has no containers"))
 		g.Expect(resources).To(BeNil())
@@ -735,7 +813,11 @@ func TestEnvInjectorMalformedContainersErrors(t *testing.T) {
 
 	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentMalformedContainersYAML)})
+	input, err := toolk8s.DecodeResources([]byte(deploymentMalformedContainersYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(1))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("deployment synthetic-controller"))
 	g.Expect(resources).To(BeNil())
@@ -751,7 +833,11 @@ func TestEnvInjectorMalformedEnvErrors(t *testing.T) {
 
 	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentMalformedEnvYAML)})
+	input, err := toolk8s.DecodeResources([]byte(controllerDeploymentMalformedEnvYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(1))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("deployment synthetic-controller"))
 	g.Expect(resources).To(BeNil())
@@ -767,7 +853,11 @@ func TestEnvInjectorMalformedFieldOutsideContainersErrors(t *testing.T) {
 
 	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentMalformedReplicasYAML)})
+	input, err := toolk8s.DecodeResources([]byte(deploymentMalformedReplicasYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(1))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("deployment synthetic-controller"))
 	g.Expect(resources).To(BeNil())
@@ -783,7 +873,11 @@ func TestEnvInjectorMissingMainContainerErrors(t *testing.T) {
 
 	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWrongMainContainerYAML)})
+	input, err := toolk8s.DecodeResources([]byte(deploymentWrongMainContainerYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(1))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring(`container "manager" not found in Deployment synthetic-controller`))
 	g.Expect(resources).To(BeNil())
@@ -803,10 +897,15 @@ func TestEnvInjectorDropsUnknownFieldsOnAdaptedTarget(t *testing.T) {
 
 	var render enginetypes.PostRenderer = newEnvInjector(definition).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentUnknownFieldYAML)})
+	input, err := toolk8s.DecodeResources([]byte(controllerDeploymentUnknownFieldYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(1))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+	deployment := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "synthetic-controller"})
+	g.Expect(deployment).NotTo(BeNil(), "expected Deployment synthetic-controller in the rendered output")
 	g.Expect(deployment.Object).To(SatisfyAll(
 		jq.Match(`.spec.template.spec | has("x-extension") | not`),
 		jq.Match(`.metadata.labels.app == "synthetic"`),
@@ -842,7 +941,11 @@ func TestEnvInjectorNoContainerBlock(t *testing.T) {
 		ApplicationsNamespace: "opendatahub",
 	}).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
+	input, err := toolk8s.DecodeResources([]byte(deploymentWithoutInitYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(1))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring(`container "manager" image unresolved in Deployment synthetic-controller`))
 	g.Expect(resources).To(BeNil())
@@ -859,16 +962,30 @@ func TestEnvInjectorIgnoresNonDeploymentResources(t *testing.T) {
 
 	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{
-		resource(t, serviceYAML),
-		resource(t, sameNameWrongGVKYAML),
-	})
+	batch := strings.Join([]string{
+		serviceYAML,
+		sameNameWrongGVKYAML,
+	}, "\n---\n")
+
+	input, err := toolk8s.DecodeResources([]byte(batch))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(2))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(Succeed())
 
-	service := findResource(t, resources, "Service", "synthetic-service")
+	service := findResource(resources, toolk8s.Service, types.NamespacedName{Name: "synthetic-service"})
+	g.Expect(service).NotTo(BeNil(), "expected Service synthetic-service in the rendered output")
+	g.Expect(service).NotTo(BeNil(), "expected Service synthetic-service in the rendered output")
 	g.Expect(service.Object).To(jq.Match(`.spec.ports[0].port == 8080`))
 
-	g.Expect(resources[1]).To(Equal(resource(t, sameNameWrongGVKYAML)))
+	lookalike := findResource(resources, schema.GroupVersionKind{Group: "apps", Version: "v1beta1", Kind: "Deployment"}, types.NamespacedName{Name: "synthetic-controller"})
+	g.Expect(lookalike).NotTo(BeNil(), "expected apps/v1beta1 Deployment synthetic-controller in the rendered output")
+
+	expected, err := toolk8s.DecodeResources([]byte(sameNameWrongGVKYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(expected).To(HaveLen(1))
+	g.Expect(*lookalike).To(Equal(expected[0]))
 }
 
 // TestEnvInjectorInitContainerBranches pins the init container
@@ -888,7 +1005,11 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 
 		var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
-		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentWithoutInitYAML)})
+		input, err := toolk8s.DecodeResources([]byte(deploymentWithoutInitYAML))
+		g.Expect(err).To(Succeed())
+		g.Expect(input).To(HaveLen(1))
+
+		resources, err := render(t.Context(), input)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring(`init container "copy-manifests" not found in Deployment synthetic-controller`))
 		g.Expect(resources).To(BeNil())
@@ -901,7 +1022,11 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 
 		var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
-		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentEmptyInitYAML)})
+		input, err := toolk8s.DecodeResources([]byte(deploymentEmptyInitYAML))
+		g.Expect(err).To(Succeed())
+		g.Expect(input).To(HaveLen(1))
+
+		resources, err := render(t.Context(), input)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring(`init container "copy-manifests" not found in Deployment synthetic-controller`))
 		g.Expect(resources).To(BeNil())
@@ -914,7 +1039,11 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 
 		var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
-		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentOtherInitYAML)})
+		input, err := toolk8s.DecodeResources([]byte(deploymentOtherInitYAML))
+		g.Expect(err).To(Succeed())
+		g.Expect(input).To(HaveLen(1))
+
+		resources, err := render(t.Context(), input)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring(`init container "copy-manifests" not found in Deployment synthetic-controller`))
 		g.Expect(resources).To(BeNil())
@@ -927,7 +1056,11 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 
 		var render enginetypes.PostRenderer = (&EnvInjector{Definition: newDefinition()}).Run
 
-		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, deploymentOtherInitYAML)})
+		input, err := toolk8s.DecodeResources([]byte(deploymentOtherInitYAML))
+		g.Expect(err).To(Succeed())
+		g.Expect(input).To(HaveLen(1))
+
+		resources, err := render(t.Context(), input)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring(`container "manager" image unresolved in Deployment synthetic-controller`))
 		g.Expect(resources).To(BeNil())
@@ -943,10 +1076,15 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 
 		var render enginetypes.PostRenderer = newEnvInjector(definition).Run
 
-		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+		input, err := toolk8s.DecodeResources([]byte(controllerDeploymentYAML))
+		g.Expect(err).To(Succeed())
+		g.Expect(input).To(HaveLen(1))
+
+		resources, err := render(t.Context(), input)
 		g.Expect(err).To(Succeed())
 
-		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+		deployment := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "synthetic-controller"})
+		g.Expect(deployment).NotTo(BeNil(), "expected Deployment synthetic-controller in the rendered output")
 		g.Expect(deployment.Object).To(SatisfyAll(
 			WithTransform(k8s.Container("manager"), HaveField("Image", "quay.io/example/controller:v1")),
 			WithTransform(k8s.InitContainer("copy-manifests"), HaveField("Image", "quay.io/example/init:v2")),
@@ -969,10 +1107,15 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 			Images:     images,
 		}).Run
 
-		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+		input, err := toolk8s.DecodeResources([]byte(controllerDeploymentYAML))
+		g.Expect(err).To(Succeed())
+		g.Expect(input).To(HaveLen(1))
+
+		resources, err := render(t.Context(), input)
 		g.Expect(err).To(Succeed())
 
-		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+		deployment := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "synthetic-controller"})
+		g.Expect(deployment).NotTo(BeNil(), "expected Deployment synthetic-controller in the rendered output")
 		g.Expect(deployment.Object).To(SatisfyAll(
 			WithTransform(k8s.Container("manager"), HaveField("Image", "quay.io/example/controller:v1")),
 			WithTransform(k8s.InitContainer("copy-manifests"), HaveField("Image", "quay.io/example/init:v3")),
@@ -989,7 +1132,11 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 
 		var render enginetypes.PostRenderer = newEnvInjector(definition).Run
 
-		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+		input, err := toolk8s.DecodeResources([]byte(controllerDeploymentYAML))
+		g.Expect(err).To(Succeed())
+		g.Expect(input).To(HaveLen(1))
+
+		resources, err := render(t.Context(), input)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring(`init container "copy-manifests" image unresolved in Deployment synthetic-controller`))
 		g.Expect(resources).To(BeNil())
@@ -1008,10 +1155,15 @@ func TestEnvInjectorInitContainerBranches(t *testing.T) {
 			Images:     newResolvedImages(),
 		}).Run
 
-		resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+		input, err := toolk8s.DecodeResources([]byte(controllerDeploymentYAML))
+		g.Expect(err).To(Succeed())
+		g.Expect(input).To(HaveLen(1))
+
+		resources, err := render(t.Context(), input)
 		g.Expect(err).To(Succeed())
 
-		deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+		deployment := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "synthetic-controller"})
+		g.Expect(deployment).NotTo(BeNil(), "expected Deployment synthetic-controller in the rendered output")
 		g.Expect(deployment.Object).To(WithTransform(k8s.InitContainer("copy-manifests"),
 			HaveField("Image", "registry.example/chart-init:v0")))
 	})
@@ -1035,16 +1187,23 @@ func TestEnvInjectorEmptyCustomizationStillRoundTrips(t *testing.T) {
 
 	var render enginetypes.PostRenderer = (&EnvInjector{Definition: definition}).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{
-		resource(t, controllerDeploymentUnknownFieldYAML),
-		resource(t, otherDeploymentYAML),
-	})
+	batch := strings.Join([]string{
+		controllerDeploymentUnknownFieldYAML,
+		otherDeploymentYAML,
+	}, "\n---\n")
+
+	input, err := toolk8s.DecodeResources([]byte(batch))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(2))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(Succeed())
 
 	// The valid target round-trips even though the env request carried
 	// nothing: the sentinel extension is dropped, the image is the
 	// literal, and the chart env is unchanged.
-	own := findResource(t, resources, "Deployment", "synthetic-controller")
+	own := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "synthetic-controller"})
+	g.Expect(own).NotTo(BeNil(), "expected Deployment synthetic-controller in the rendered output")
 	g.Expect(own.Object).To(SatisfyAll(
 		jq.Match(`.spec.template.spec | has("x-extension") | not`),
 		WithTransform(k8s.Container("manager"), SatisfyAll(
@@ -1055,7 +1214,10 @@ func TestEnvInjectorEmptyCustomizationStillRoundTrips(t *testing.T) {
 	))
 
 	// The passthrough path keeps its original map.
-	g.Expect(resources[1]).To(Equal(resource(t, otherDeploymentYAML)))
+	expected, err := toolk8s.DecodeResources([]byte(otherDeploymentYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(expected).To(HaveLen(1))
+	g.Expect(resources[1]).To(Equal(expected[0]))
 }
 
 // TestEnvInjectorAlreadyCorrectValuesStillRoundTrips pins that a
@@ -1069,12 +1231,15 @@ func TestEnvInjectorAlreadyCorrectValuesStillRoundTrips(t *testing.T) {
 
 	var render enginetypes.PostRenderer = newEnvInjector(newDefinition()).Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{
-		resource(t, controllerDeploymentAlreadyCorrectYAML),
-	})
+	input, err := toolk8s.DecodeResources([]byte(controllerDeploymentAlreadyCorrectYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(1))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(Succeed())
 
-	deployment := findResource(t, resources, "Deployment", "synthetic-controller")
+	deployment := findResource(resources, toolk8s.Deployment, types.NamespacedName{Name: "synthetic-controller"})
+	g.Expect(deployment).NotTo(BeNil(), "expected Deployment synthetic-controller in the rendered output")
 	g.Expect(deployment.Object).To(SatisfyAll(
 		WithTransform(k8s.Container("manager"), SatisfyAll(
 			HaveField("Image", "quay.io/example/controller:v1"),
@@ -1101,7 +1266,11 @@ func TestEnvInjectorDoesNotMutateInputs(t *testing.T) {
 
 	var render enginetypes.PostRenderer = injector.Run
 
-	resources, err := render(t.Context(), []unstructured.Unstructured{resource(t, controllerDeploymentYAML)})
+	input, err := toolk8s.DecodeResources([]byte(controllerDeploymentYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(input).To(HaveLen(1))
+
+	resources, err := render(t.Context(), input)
 	g.Expect(err).To(Succeed())
 	g.Expect(resources).To(HaveLen(1))
 
