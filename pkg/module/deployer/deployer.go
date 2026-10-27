@@ -83,8 +83,8 @@ type Connect func(ctx context.Context, getter genericclioptions.RESTClientGetter
 
 // ApplyPayload applies the rendered payload through the framework
 // deploy action under the invocation's effective field manager,
-// already resolved and validated by the caller. The deploy service
-// is the concrete implementation.
+// already resolved and validated by the caller. DeployPayload is the
+// concrete implementation.
 type ApplyPayload func(
 	ctx context.Context,
 	connection *cluster.Connection,

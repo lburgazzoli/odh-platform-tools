@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package deploy
+package deployer
 
 import (
 	"context"
@@ -509,7 +509,7 @@ func TestApplyAppliesWholePayloadThroughFrameworkDefaults(t *testing.T) {
 	// own sort, not input order, drives the writes.
 	resources := payload(t, g, configMapYAML, payloadCRDYAML)
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
+	g.Expect(DeployPayload(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
 
 	g.Expect(writes.snapshot()).To(Equal([]string{
 		"apply " + payloadCRDIdentity(),
@@ -555,7 +555,7 @@ func TestApplyUsesGivenFieldManagerOnOrdinaryPayloadOnly(t *testing.T) {
 
 	resources := payload(t, g, configMapYAML, payloadCRDYAML)
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, "team.example.deployer")).
+	g.Expect(DeployPayload(t.Context(), connection, newDefinition(), newRelease(), resources, "team.example.deployer")).
 		To(Succeed())
 
 	g.Expect(writes.applyOptions()).To(Equal([]applyOption{
@@ -614,7 +614,7 @@ data:
 
 	resources := payload(t, g, authored, empty)
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, "team.example.deployer")).
+	g.Expect(DeployPayload(t.Context(), connection, newDefinition(), newRelease(), resources, "team.example.deployer")).
 		To(Succeed())
 
 	authoredMap := stored(t, connection, gvkConfigMap, "modules", "module-config")
@@ -638,7 +638,7 @@ func TestApplyRequiresFieldManager(t *testing.T) {
 	harness := &fakeCluster{scheme: testScheme(t)}
 	connection, writes := harness.connect(t)
 
-	err := Apply(t.Context(), connection, newDefinition(), newRelease(), payload(t, g, configMapYAML), "")
+	err := DeployPayload(t.Context(), connection, newDefinition(), newRelease(), payload(t, g, configMapYAML), "")
 
 	typed := applyError(g, err)
 	g.Expect(errors.Is(typed, moduleerrors.ErrDeployPrepare)).To(BeTrue())
@@ -658,12 +658,12 @@ func TestApplyFieldManagerIsPerInvocation(t *testing.T) {
 
 	first := &fakeCluster{scheme: testScheme(t), objects: []crclient.Object{liveNamespace()}}
 	firstConnection, firstWrites := first.connect(t)
-	g.Expect(Apply(t.Context(), firstConnection, newDefinition(), newRelease(),
+	g.Expect(DeployPayload(t.Context(), firstConnection, newDefinition(), newRelease(),
 		payload(t, g, configMapYAML), "first.example")).To(Succeed())
 
 	second := &fakeCluster{scheme: testScheme(t), objects: []crclient.Object{liveNamespace()}}
 	secondConnection, secondWrites := second.connect(t)
-	g.Expect(Apply(t.Context(), secondConnection, newDefinition(), newRelease(),
+	g.Expect(DeployPayload(t.Context(), secondConnection, newDefinition(), newRelease(),
 		payload(t, g, configMapYAML), "second.example")).To(Succeed())
 
 	g.Expect(firstWrites.applyOptions()).To(ContainElement(
@@ -690,7 +690,7 @@ func TestApplyNormalizesOwnerRuntimeType(t *testing.T) {
 	owner := newDefinition()
 	owner.TypeMeta = metav1.TypeMeta{}
 
-	g.Expect(Apply(t.Context(), connection, owner, newRelease(), payload(t, g, configMapYAML), defaultFieldManager)).To(Succeed())
+	g.Expect(DeployPayload(t.Context(), connection, owner, newRelease(), payload(t, g, configMapYAML), defaultFieldManager)).To(Succeed())
 
 	configMap := stored(t, connection, gvkConfigMap, "modules", "module-config")
 	g.Expect(configMap.Object).To(SatisfyAll(
@@ -717,7 +717,7 @@ func TestApplyNeverOwnsNamespaces(t *testing.T) {
 
 	resources := payload(t, g, payloadCRDYAML, namespaceYAML)
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
+	g.Expect(DeployPayload(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
 
 	// The action's sort places the Namespace first.
 	g.Expect(writes.snapshot()).To(Equal([]string{
@@ -749,7 +749,7 @@ func TestApplyCreatesAbsentRenderedNamespace(t *testing.T) {
 	// the action's own sort, not input order, drives the writes.
 	resources := payload(t, g, configMapYAML, payloadCRDYAML, namespaceYAML)
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
+	g.Expect(DeployPayload(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
 
 	g.Expect(writes.snapshot()).To(Equal([]string{
 		"apply " + identity(schema.GroupVersionKind{Version: "v1", Kind: "Namespace"}, "", "modules"),
@@ -789,7 +789,7 @@ func TestApplyApplyErrorFailsStageWithFirstReport(t *testing.T) {
 
 	resources := payload(t, g, payloadCRDYAML, configMapYAML)
 
-	err := Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)
+	err := DeployPayload(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)
 
 	typed := applyError(g, err)
 	g.Expect(errors.Is(typed, moduleerrors.ErrDeployApply)).To(BeTrue())
@@ -825,7 +825,7 @@ func TestApplyLookupErrorFailsStageWithFirstReport(t *testing.T) {
 
 	resources := payload(t, g, payloadCRDYAML, configMapYAML)
 
-	err := Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)
+	err := DeployPayload(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)
 
 	typed := applyError(g, err)
 	g.Expect(errors.Is(typed, moduleerrors.ErrDeployApply)).To(BeTrue())
@@ -852,7 +852,7 @@ func TestApplyPreservesLiveDeploymentTuning(t *testing.T) {
 
 	resources := payload(t, g, payloadCRDYAML, deploymentYAML)
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
+	g.Expect(DeployPayload(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
 
 	deployment := stored(
 		t,
@@ -889,7 +889,7 @@ func TestApplySkipsUnmanagedResources(t *testing.T) {
 
 	resources := payload(t, g, payloadCRDYAML, unmanagedConfigMapYAML)
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
+	g.Expect(DeployPayload(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
 
 	// No write touched the unmanaged object; only the CRD applied.
 	g.Expect(writes.count("unmanaged-config")).To(Equal(0))
@@ -918,7 +918,7 @@ func TestApplyStripsForeignOwnerReferences(t *testing.T) {
 
 	resources := payload(t, g, payloadCRDYAML, foreignOwnedConfigMapYAML)
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
+	g.Expect(DeployPayload(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
 
 	// The foreign reference was stripped through an update, then the
 	// object was adopted through the apply.
@@ -950,10 +950,10 @@ func TestApplySecondInvocationRewrites(t *testing.T) {
 
 	resources := payload(t, g, payloadCRDYAML, configMapYAML)
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
+	g.Expect(DeployPayload(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
 	firstWrites := writes.count("apply " + moduleConfigMapIdentity())
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
+	g.Expect(DeployPayload(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
 
 	g.Expect(writes.count("apply " + moduleConfigMapIdentity())).To(Equal(2 * firstWrites))
 }
@@ -965,7 +965,7 @@ func TestApplyRequiresLiveOwner(t *testing.T) {
 
 	g := NewWithT(t)
 
-	err := Apply(t.Context(), nil, nil, newRelease(), nil, defaultFieldManager)
+	err := DeployPayload(t.Context(), nil, nil, newRelease(), nil, defaultFieldManager)
 
 	typed := applyError(g, err)
 	g.Expect(errors.Is(typed, moduleerrors.ErrDeployPrepare)).To(BeTrue())
@@ -988,7 +988,7 @@ func TestApplyCancelledInvocationIsNotAttempted(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := Apply(ctx, connection, newDefinition(), newRelease(), payload(t, g, configMapYAML), defaultFieldManager)
+	err := DeployPayload(ctx, connection, newDefinition(), newRelease(), payload(t, g, configMapYAML), defaultFieldManager)
 
 	typed := applyError(g, err)
 	g.Expect(errors.Is(typed, moduleerrors.ErrDeployPrepare)).To(BeTrue())

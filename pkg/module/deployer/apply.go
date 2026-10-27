@@ -44,7 +44,7 @@ import (
 // chain through Unwrap for callers that classify failures. Neither
 // ever echoes authored definition, dotenv, or API-returned values;
 // the framework action's own logging is already discarded by the
-// deploy service, and this orchestration adds no logging of its own.
+// payload apply, and this orchestration adds no logging of its own.
 //
 // An explicitly requested controller wait is layered after Deploy
 // through Options.Wait; the default invocation performs and reports

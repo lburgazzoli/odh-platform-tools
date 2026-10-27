@@ -102,7 +102,6 @@ import (
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/cluster"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/deploy"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
@@ -449,7 +448,7 @@ func (h *deployHarness) deploy(ctx context.Context, options deployer.Options) (d
 		loader.LoadFromPath,
 		renderer.Render,
 		h.connect,
-		deploy.Apply,
+		deployer.DeployPayload,
 	)
 
 	return composed.Apply(ctx)

@@ -1,15 +1,36 @@
-package deploy
+/*
+Copyright 2026 Luca Burgazzoli
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package deployer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/dynamic"
+	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
+	fwgvk "github.com/opendatahub-io/odh-platform-utilities/framework/cluster/gvk"
 	fwdeploy "github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/deploy"
 	odhTypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
@@ -19,10 +40,28 @@ import (
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
-// Apply installs the rendered module resources through the actual
-// framework deploy action, with the persisted definition as the live
-// owner, under the given field manager. It never publishes an owner
-// itself and never prunes.
+// errNilArgument marks a nil payload-apply argument; it carries identity
+// through the shared error's cause chain for errors.Is and its text
+// never echoes API-returned values.
+var errNilArgument = errors.New("nil deploy argument")
+
+// Fixed safe operation summaries, one per phase. They intentionally
+// omit server-returned detail, which stays reachable through the
+// cause chain: failures before the action runs are classified by
+// moduleerrors.ErrDeployPrepare, action failures by
+// moduleerrors.ErrDeployApply.
+const (
+	prepareFailureMessage = "preparing the module deployment failed; " +
+		"the raw causes remain reachable through errors.Is and errors.As"
+	applyFailureMessage = "applying the module resources failed; " +
+		"the raw causes remain reachable through errors.Is and errors.As"
+)
+
+// DeployPayload is the concrete ApplyPayload seam: it installs the
+// rendered module resources through the actual framework deploy
+// action, with the persisted definition as the live owner, under the
+// given field manager. It never publishes an owner itself and never
+// prunes.
 //
 // The flow is minimal: normalize the persisted owner's runtime type,
 // then invoke the action once with the whole payload. The action's
@@ -41,15 +80,15 @@ import (
 // fieldManager is the invocation's effective server-side-apply field
 // manager, already resolved and validated by the caller: the
 // production caller passes Options.FieldManager defaulted to
-// deployer.DefaultFieldManager, and this service adds no defaulting
-// of its own. It reaches the framework through WithFieldOwner, so it
-// covers the ordinary payload apply — including the manager-derived
-// fallback part-of label on objects that author none and the
-// framework's deploy metric label — while bundled payload CRDs keep
-// the framework's own fixed manager and fallback label. An empty
-// argument is rejected here as a safe preparation failure before any
-// client access, never silently reverting to the framework's
-// owner-kind default.
+// DefaultFieldManager, and this service adds no defaulting of its
+// own. It reaches the framework through WithFieldOwner, so it covers
+// the ordinary payload apply — including the manager-derived fallback
+// part-of label on objects that author none and the framework's
+// deploy metric label — while bundled payload CRDs keep the
+// framework's own fixed manager and fallback label. An empty argument
+// is rejected here as a safe preparation failure before any client
+// access, never silently reverting to the framework's owner-kind
+// default.
 //
 // The framework's continue-on-error first report is the stage's error
 // contract, exactly as in the operator, and its force-SSA adoption
@@ -59,7 +98,7 @@ import (
 // moduleerrors.ErrDeployApply for the action itself — and the
 // framework's raw report stays reachable through Unwrap for
 // errors.Is and errors.As.
-func Apply(
+func DeployPayload(
 	ctx context.Context,
 	connection *cluster.Connection,
 	owner *toolApi.PlatformModuleDefinition,
@@ -138,4 +177,70 @@ func Apply(
 	}
 
 	return nil
+}
+
+// controllerBridge is the minimal concrete Controller the framework
+// deploy action reads, shaped after the operator's modules controller:
+// dynamic ownership with no statically owned types. It owns no
+// reconciler and no manager. The action populates the dynamic-owned
+// set as it decides to own rendered types; Owns answers from that
+// set. core/v1 Namespaces and CRDs stay excluded from ownership — the
+// never-own-namespaces policy the action's shouldOwn reads — so the
+// action never sets controller references on them (CRDs additionally
+// bypass shouldOwn entirely through the action's unowned deployCRD
+// path). Its client is the plain connection client; the discovery and
+// dynamic getters report nil, because only out-of-scope
+// garbage-collection and dynamic-ownership actions read them.
+type controllerBridge struct {
+	client       crclient.Client
+	dynamicOwned map[schema.GroupVersionKind]struct{}
+}
+
+// compile assertion: the bridge satisfies the framework Controller
+// contract.
+var _ odhTypes.Controller = (*controllerBridge)(nil)
+
+// Owns reports whether the type is in the dynamic-owned set the
+// action populated: a module deploy declares no statically owned types,
+// exactly like the operator's modules controller.
+func (b *controllerBridge) Owns(gvk schema.GroupVersionKind) bool {
+	_, owned := b.dynamicOwned[gvk]
+
+	return owned
+}
+
+// AddDynamicOwnedType records a type the action decided to own.
+func (b *controllerBridge) AddDynamicOwnedType(gvk schema.GroupVersionKind) {
+	b.dynamicOwned[gvk] = struct{}{}
+}
+
+// GetClient returns the plain connection client the action deploys
+// through.
+func (b *controllerBridge) GetClient() crclient.Client {
+	return b.client
+}
+
+// GetDiscoveryClient reports none: the deploy action reads no
+// discovery client.
+func (b *controllerBridge) GetDiscoveryClient() discovery.DiscoveryInterface {
+	return nil
+}
+
+// GetDynamicClient reports none: the deploy action reads no dynamic
+// client.
+func (b *controllerBridge) GetDynamicClient() dynamic.Interface {
+	return nil
+}
+
+// IsDynamicOwnershipEnabled keeps dynamic ownership on: rendered
+// ordinary resources receive controller references to the persisted
+// definition.
+func (b *controllerBridge) IsDynamicOwnershipEnabled() bool {
+	return true
+}
+
+// IsExcludedFromDynamicOwnership excludes core/v1 Namespaces and
+// CRDs, matching the upstream controller's exclusions.
+func (b *controllerBridge) IsExcludedFromDynamicOwnership(gvk schema.GroupVersionKind) bool {
+	return gvk == fwgvk.Namespace || gvk == fwgvk.CustomResourceDefinition
 }

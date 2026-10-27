@@ -21,7 +21,6 @@ import (
 
 	deployer "github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/cluster"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/deploy"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
@@ -41,6 +40,6 @@ func NewDeployer(options deployer.Options, getter genericclioptions.RESTClientGe
 		loader.LoadFromPath,
 		renderer.Render,
 		cluster.Connect,
-		deploy.Apply,
+		deployer.DeployPayload,
 	)
 }
