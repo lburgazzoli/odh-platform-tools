@@ -12,55 +12,19 @@ package deploy
 
 import "errors"
 
-// Stage names the deployment phase an error refers to.
-type Stage string
+// errNilArgument marks a nil Apply argument; it carries identity
+// through the shared error's cause chain for errors.Is and its text
+// never echoes API-returned values.
+var errNilArgument = errors.New("nil deploy argument")
 
+// Fixed safe operation summaries, one per phase. They intentionally
+// omit server-returned detail, which stays reachable through the
+// cause chain: failures before the action runs are classified by
+// moduleerrors.ErrDeployPrepare, action failures by
+// moduleerrors.ErrDeployApply.
 const (
-	// StagePrepare covers the checks made before the action runs:
-	// invocation validity and the persisted owner's runtime-type
-	// normalization.
-	StagePrepare Stage = "prepare"
-	// StageApply covers the single framework action invocation.
-	StageApply Stage = "apply"
+	prepareFailureMessage = "preparing the module deployment failed; " +
+		"the raw causes remain reachable through errors.Is and errors.As"
+	applyFailureMessage = "applying the module resources failed; " +
+		"the raw causes remain reachable through errors.Is and errors.As"
 )
-
-// Policy sentinels. They carry identity through the typed error's
-// cause chain for errors.Is and errors.As; none of their text echoes
-// API-returned values.
-var (
-	// errNilArgument marks a nil Apply argument.
-	errNilArgument = errors.New("nil deploy argument")
-)
-
-// Error is the safe error Apply returns: the failing stage, a message
-// that never echoes server-returned text, and the raw cause — the
-// framework's own report — reachable only through Unwrap for
-// errors.Is and errors.As.
-type Error struct {
-	// Stage is the deployment phase that failed.
-	Stage Stage
-	// Message is safe text: it names the stage and operation, never
-	// the server's own error body.
-	Message string
-
-	cause error
-}
-
-// Error returns the safe stage message.
-func (e *Error) Error() string {
-	return e.Message
-}
-
-// Unwrap returns the raw cause — the framework action's first error
-// report — so callers can classify the underlying failure.
-func (e *Error) Unwrap() error {
-	return e.cause
-}
-
-// stageMessages are the safe operation summaries per stage. They
-// intentionally omit server-returned detail, which stays reachable
-// through the cause chain.
-var stageMessages = map[Stage]string{
-	StagePrepare: "preparing the module deployment failed; the raw causes remain reachable through errors.Is and errors.As",
-	StageApply:   "applying the module resources failed; the raw causes remain reachable through errors.Is and errors.As",
-}

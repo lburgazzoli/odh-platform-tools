@@ -30,6 +30,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
 // waitTargetKey is the wait's single target identity: the test
@@ -161,17 +163,17 @@ func TestWaitRequiresSuccessfulDeploy(t *testing.T) {
 
 	freshFixture := newPrepareCluster(t)
 	fresh := newWaitStub(t, waitOptions(), freshFixture, nil)
-	g.Expect(errors.Is(fresh.runner.Wait(t.Context()), ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(fresh.runner.Wait(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 
 	local := newWaitStub(t, waitOptions(), newPrepareCluster(t), nil)
 	g.Expect(local.runner.Load(t.Context())).To(Succeed())
 	g.Expect(local.runner.Render(t.Context())).To(Succeed())
-	g.Expect(errors.Is(local.runner.Wait(t.Context()), ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(local.runner.Wait(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 
 	failed := newWaitStub(t, waitOptions(), newPrepareCluster(t), nil)
 	failed.loadError = errors.New("definition failure")
 	g.Expect(failed.runner.Load(t.Context())).To(HaveOccurred())
-	g.Expect(errors.Is(failed.runner.Wait(t.Context()), ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(failed.runner.Wait(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 
 	g.Expect(freshFixture.gets).To(BeEmpty())
 }
@@ -193,7 +195,7 @@ func TestWaitRunsOnce(t *testing.T) {
 	deployed(t, stub)
 
 	g.Expect(stub.runner.Wait(t.Context())).To(Succeed())
-	g.Expect(errors.Is(stub.runner.Wait(t.Context()), ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(stub.runner.Wait(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 }
 
 // TestRunDefaultMakesNoWaitGet proves the default run performs no
@@ -355,7 +357,11 @@ func TestWaitMissingTargetFailsAfterApply(t *testing.T) {
 
 	result, err := stub.runner.Run(t.Context())
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, ErrWaitTargetMissing)).To(BeTrue())
+	g.Expect(err.Error()).To(Equal(
+		`no rendered controller deployment matched the wait target: module synthetic controller deployment "synthetic-controller"`))
+	g.Expect(errors.Is(err, moduleerrors.ErrWaitTargetMissing)).To(BeTrue())
+	g.Expect(errors.Is(err, moduleerrors.ErrRolloutWait)).To(BeFalse())
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidRunOptions)).To(BeFalse())
 
 	g.Expect(result).To(SatisfyAll(
 		HaveField("Attempted", StageDeploy),
@@ -704,6 +710,8 @@ func TestWaitTimeoutIsRuntimeError(t *testing.T) {
 	result, err := stub.runner.Run(t.Context())
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
+	g.Expect(errors.Is(err, moduleerrors.ErrRolloutWait)).To(BeTrue())
+	g.Expect(errors.Is(err, moduleerrors.ErrWaitTargetMissing)).To(BeFalse())
 
 	g.Expect(result).To(SatisfyAll(
 		HaveField("Attempted", StageDeploy),
@@ -747,6 +755,8 @@ func TestWaitAPIErrorFails(t *testing.T) {
 	// The API error's server-side identity is preserved through the
 	// wait's wrapping.
 	g.Expect(apierrors.IsInternalError(err)).To(BeTrue())
+	g.Expect(errors.Is(err, moduleerrors.ErrRolloutWait)).To(BeTrue())
+	g.Expect(errors.Is(err, moduleerrors.ErrOwnerPreparation)).To(BeFalse())
 
 	g.Expect(stub.runner.applied).To(BeTrue())
 	g.Expect(stub.runner.owner).NotTo(BeNil())
@@ -786,6 +796,7 @@ func TestWaitErrorIsSafeText(t *testing.T) {
 	g.Expect(errors.As(err, &status)).To(BeTrue())
 	g.Expect(apierrors.IsInternalError(err)).To(BeTrue())
 	g.Expect(status.Error()).To(ContainSubstring(marker))
+	g.Expect(errors.Is(err, moduleerrors.ErrRolloutWait)).To(BeTrue())
 }
 
 // TestRunRejectsNegativeWaitTimeout proves a negative wait budget on
@@ -804,7 +815,7 @@ func TestRunRejectsNegativeWaitTimeout(t *testing.T) {
 
 	result, err := stub.runner.Run(t.Context())
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, ErrInvalidOptions)).To(BeTrue())
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidRunOptions)).To(BeTrue())
 
 	g.Expect(result).To(Equal(Result{}))
 	g.Expect(*stub.calls).To(BeEmpty())

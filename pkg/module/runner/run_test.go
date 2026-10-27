@@ -24,6 +24,8 @@ import (
 	"time"
 
 	. "github.com/onsi/gomega"
+
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
 // TestRunAppliesOnlyOrchestration proves Run sequences Load → Render
@@ -79,7 +81,8 @@ func TestRunRejectsInvalidOptionsBeforeTimer(t *testing.T) {
 
 	result, err := stub.runner.Run(t.Context())
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, ErrInvalidOptions)).To(BeTrue())
+	g.Expect(err.Error()).To(Equal("invalid run options: Timeout must be positive"))
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidRunOptions)).To(BeTrue())
 	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeFalse())
 
 	g.Expect(result).To(Equal(Result{}))
@@ -118,7 +121,7 @@ func TestRunRequiresFreshRunner(t *testing.T) {
 	g.Expect(stub.runner.Load(t.Context())).To(Succeed())
 
 	result, err := stub.runner.Run(t.Context())
-	g.Expect(errors.Is(err, ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(err, moduleerrors.ErrStageSequence)).To(BeTrue())
 	g.Expect(result).To(Equal(Result{}))
 	g.Expect(*stub.calls).To(Equal([]string{"load"}))
 
@@ -127,7 +130,7 @@ func TestRunRequiresFreshRunner(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	_, err = fresh.runner.Run(t.Context())
-	g.Expect(errors.Is(err, ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(err, moduleerrors.ErrStageSequence)).To(BeTrue())
 	g.Expect(*fresh.calls).To(Equal([]string{"load", "render", "connect", "apply"}))
 }
 
@@ -200,7 +203,7 @@ func TestRunCancellationDuringRenderRejectsLateOutput(t *testing.T) {
 	g.Expect(stub.runner.resources).To(BeNil())
 
 	// The failed invocation is terminal: Deploy never runs.
-	g.Expect(errors.Is(stub.runner.Deploy(t.Context()), ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(stub.runner.Deploy(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 	g.Expect(*stub.calls).To(Equal([]string{"load", "render"}))
 }
 

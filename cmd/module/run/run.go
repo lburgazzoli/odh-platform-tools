@@ -18,7 +18,6 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/images"
 )
 
 // Process exit statuses.
@@ -99,18 +98,16 @@ const (
 // other execution error — render, connection, owner preparation, apply,
 // and wait failures included — is a runtime failure.
 func classify(err error) (string, int) {
-	var imageSourceErr *images.ImageSourceError
-
 	switch {
 	case err == nil:
 		return "", ExitSuccess
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return FailureCancelled, ExitFailure
-	case errors.Is(err, runner.ErrInvalidOptions):
+	case errors.Is(err, moduleerrors.ErrInvalidRunOptions):
 		return FailureInvalidOptions, ExitUsage
 	case errors.Is(err, moduleerrors.ErrInvalidDefinition):
 		return FailureDefinition, ExitUsage
-	case errors.As(err, &imageSourceErr):
+	case errors.Is(err, moduleerrors.ErrImageSource):
 		return FailureImageFile, ExitUsage
 	default:
 		return FailureRuntime, ExitFailure

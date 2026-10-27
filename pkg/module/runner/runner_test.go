@@ -36,6 +36,7 @@ import (
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
 
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
@@ -357,29 +358,31 @@ func TestLoadRejectsInvalidOptions(t *testing.T) {
 
 	cases := []struct {
 		name    string
+		message string
+		prefix  bool
 		options func() Options
 	}{
-		{"missing definition file", func() Options {
+		{"missing definition file", "invalid run options: DefinitionFile is required", false, func() Options {
 			options := testOptions()
 			options.DefinitionFile = ""
 			return options
 		}},
-		{"missing platform version", func() Options {
+		{"missing platform version", "invalid run options: PlatformVersion is required", false, func() Options {
 			options := testOptions()
 			options.PlatformVersion = ""
 			return options
 		}},
-		{"zero timeout", func() Options {
+		{"zero timeout", "invalid run options: Timeout must be positive", false, func() Options {
 			options := testOptions()
 			options.Timeout = 0
 			return options
 		}},
-		{"negative timeout", func() Options {
+		{"negative timeout", "invalid run options: Timeout must be positive", false, func() Options {
 			options := testOptions()
 			options.Timeout = -time.Minute
 			return options
 		}},
-		{"unparsable platform version", func() Options {
+		{"unparsable platform version", "invalid run options: parsing platform version:", true, func() Options {
 			options := testOptions()
 			options.PlatformVersion = "not-a-version"
 			return options
@@ -396,13 +399,20 @@ func TestLoadRejectsInvalidOptions(t *testing.T) {
 
 			err := stub.runner.Load(t.Context())
 			g.Expect(err).To(HaveOccurred())
-			g.Expect(errors.Is(err, ErrInvalidOptions)).To(BeTrue())
+			g.Expect(errors.Is(err, moduleerrors.ErrInvalidRunOptions)).To(BeTrue())
+			g.Expect(errors.Is(err, moduleerrors.ErrStageSequence)).To(BeFalse())
+
+			if testCase.prefix {
+				g.Expect(err.Error()).To(HavePrefix(testCase.message))
+			} else {
+				g.Expect(err.Error()).To(Equal(testCase.message))
+			}
 
 			// No service ran, and the failed invocation is terminal.
 			g.Expect(*stub.calls).To(BeEmpty())
 			g.Expect(stub.runner.Render(t.Context())).NotTo(Succeed())
 			g.Expect(stub.runner.Deploy(t.Context())).NotTo(Succeed())
-			g.Expect(errors.Is(stub.runner.Render(t.Context()), ErrStageSequence)).To(BeTrue())
+			g.Expect(errors.Is(stub.runner.Render(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 		})
 	}
 }
@@ -484,28 +494,33 @@ func TestStageSequence(t *testing.T) {
 
 	stub := newStubRunner(t, testOptions())
 
-	// Render and Deploy before Load reject without any service call.
-	g.Expect(errors.Is(stub.runner.Render(t.Context()), ErrStageSequence)).To(BeTrue())
-	g.Expect(errors.Is(stub.runner.Deploy(t.Context()), ErrStageSequence)).To(BeTrue())
+	// Render and Deploy before Load reject without any service call,
+	// with the exact stage-numbered diagnostics.
+	g.Expect(stub.runner.Render(t.Context()).Error()).To(Equal(
+		"invalid runner stage sequence: stage 2 cannot follow 0"))
+	g.Expect(stub.runner.Deploy(t.Context()).Error()).To(Equal(
+		"invalid runner stage sequence: stage 3 cannot follow 0"))
+	g.Expect(errors.Is(stub.runner.Render(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(stub.runner.Deploy(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 	g.Expect(*stub.calls).To(BeEmpty())
 
 	g.Expect(stub.runner.Load(t.Context())).To(Succeed())
 
 	// Deploy before Render, and a repeated Load, reject the same way.
-	g.Expect(errors.Is(stub.runner.Deploy(t.Context()), ErrStageSequence)).To(BeTrue())
-	g.Expect(errors.Is(stub.runner.Load(t.Context()), ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(stub.runner.Deploy(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(stub.runner.Load(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 	g.Expect(*stub.calls).To(Equal([]string{"load"}))
 
 	g.Expect(stub.runner.Render(t.Context())).To(Succeed())
 
-	g.Expect(errors.Is(stub.runner.Render(t.Context()), ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(stub.runner.Render(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 	g.Expect(*stub.calls).To(Equal([]string{"load", "render"}))
 
 	g.Expect(stub.runner.Deploy(t.Context())).To(Succeed())
 
 	// A successful invocation accepts no further stage.
-	g.Expect(errors.Is(stub.runner.Deploy(t.Context()), ErrStageSequence)).To(BeTrue())
-	g.Expect(errors.Is(stub.runner.Load(t.Context()), ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(stub.runner.Deploy(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(stub.runner.Load(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect", "apply"}))
 }
 
@@ -521,9 +536,9 @@ func TestFailedStageIsTerminal(t *testing.T) {
 
 	g.Expect(stub.runner.Load(t.Context())).NotTo(Succeed())
 
-	g.Expect(errors.Is(stub.runner.Load(t.Context()), ErrStageSequence)).To(BeTrue())
-	g.Expect(errors.Is(stub.runner.Render(t.Context()), ErrStageSequence)).To(BeTrue())
-	g.Expect(errors.Is(stub.runner.Deploy(t.Context()), ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(stub.runner.Load(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(stub.runner.Render(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(stub.runner.Deploy(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 	g.Expect(*stub.calls).To(Equal([]string{"load"}))
 }
 
@@ -560,7 +575,7 @@ func TestRenderFailureStopsBeforeConnection(t *testing.T) {
 	stub.renderError = errors.New("render failure")
 
 	g.Expect(stub.runner.Render(t.Context())).To(HaveOccurred())
-	g.Expect(errors.Is(stub.runner.Render(t.Context()), ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(stub.runner.Render(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 	g.Expect(*stub.calls).To(Equal([]string{"load", "render"}))
 	g.Expect(stub.runner.Deploy(t.Context())).NotTo(Succeed())
 	g.Expect(*stub.calls).To(Equal([]string{"load", "render"}))
@@ -680,7 +695,7 @@ func TestDeployPreparationFailureStopsBeforePayload(t *testing.T) {
 
 		err := stub.runner.Deploy(t.Context())
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(errors.Is(err, ErrStageSequence)).To(BeFalse())
+		g.Expect(errors.Is(err, moduleerrors.ErrStageSequence)).To(BeFalse())
 
 		// No payload apply ran, and no owner is confirmed.
 		g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect"}))
@@ -689,7 +704,7 @@ func TestDeployPreparationFailureStopsBeforePayload(t *testing.T) {
 		g.Expect(stub.runner.applied).To(BeFalse())
 
 		// The failed invocation is terminal.
-		g.Expect(errors.Is(stub.runner.Deploy(t.Context()), ErrStageSequence)).To(BeTrue())
+		g.Expect(errors.Is(stub.runner.Deploy(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 	})
 
 	t.Run("definition apply failure", func(t *testing.T) {

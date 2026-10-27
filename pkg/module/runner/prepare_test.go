@@ -42,6 +42,7 @@ import (
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
 
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 )
 
@@ -509,6 +510,8 @@ func TestPrepareOwnerFailuresAreSafeAndBounded(t *testing.T) {
 		var status *apierrors.StatusError
 		g.Expect(errors.As(err, &status)).To(BeTrue())
 		g.Expect(apierrors.IsForbidden(err)).To(BeTrue())
+		g.Expect(errors.Is(err, moduleerrors.ErrOwnerPreparation)).To(BeTrue())
+		g.Expect(errors.Is(err, moduleerrors.ErrDeployPrepare)).To(BeFalse())
 
 		definitionApplies, _ := fixture.applyIndex(prepareDefinitionWrite)
 		g.Expect(definitionApplies).To(Equal(0))
@@ -535,5 +538,7 @@ func TestPrepareOwnerFailuresAreSafeAndBounded(t *testing.T) {
 
 		var marker *markerError
 		g.Expect(errors.As(err, &marker)).To(BeTrue())
+		g.Expect(errors.Is(err, moduleerrors.ErrOwnerPreparation)).To(BeTrue())
+		g.Expect(errors.Is(err, moduleerrors.ErrRolloutWait)).To(BeFalse())
 	})
 }

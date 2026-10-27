@@ -17,9 +17,9 @@ limitations under the License.
 package runner
 
 import (
-	"errors"
-	"fmt"
 	"time"
+
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
 // DefaultPlatformType is the platform identity applied when the
@@ -86,28 +86,29 @@ type Options struct {
 }
 
 // validate reports whether the options are usable. Every failure is
-// an options error matching ErrInvalidOptions, so callers classify it
-// as a usage failure before any input or output happens.
+// an options error matching moduleerrors.ErrInvalidRunOptions, so
+// callers classify it as a usage failure before any input or output
+// happens.
 func (o Options) validate() error {
 	if o.DefinitionFile == "" {
-		return fmt.Errorf("%w: DefinitionFile is required", ErrInvalidOptions)
+		return moduleerrors.New(moduleerrors.ErrInvalidRunOptions,
+			"invalid run options: DefinitionFile is required")
 	}
 
 	if o.PlatformVersion == "" {
-		return fmt.Errorf("%w: PlatformVersion is required", ErrInvalidOptions)
+		return moduleerrors.New(moduleerrors.ErrInvalidRunOptions,
+			"invalid run options: PlatformVersion is required")
 	}
 
 	if o.Timeout <= 0 {
-		return fmt.Errorf("%w: Timeout must be positive", ErrInvalidOptions)
+		return moduleerrors.New(moduleerrors.ErrInvalidRunOptions,
+			"invalid run options: Timeout must be positive")
 	}
 
 	if o.Wait && o.WaitTimeout < 0 {
-		return fmt.Errorf("%w: WaitTimeout must not be negative", ErrInvalidOptions)
+		return moduleerrors.New(moduleerrors.ErrInvalidRunOptions,
+			"invalid run options: WaitTimeout must not be negative")
 	}
 
 	return nil
 }
-
-// ErrInvalidOptions identifies invalid per-call run options, separate
-// from definition, source, render, and deployment error categories.
-var ErrInvalidOptions = errors.New("invalid run options")

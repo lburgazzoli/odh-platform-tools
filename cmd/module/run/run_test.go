@@ -30,8 +30,7 @@ func confirmedOwner() *toolApi.PlatformModuleDefinition {
 }
 
 // imageSourceError returns one real image-source failure from the
-// images service, whose type is not constructible outside its
-// package: an explicit but unreadable related-images file.
+// images service: an explicit but unreadable related-images file.
 func imageSourceError() error {
 	_, err := images.Load("/nonexistent/images.env", nil)
 
@@ -202,8 +201,65 @@ func TestRunCommandClassification(t *testing.T) {
 		},
 		{
 			"invalid options",
-			fmt.Errorf("load: %w", runner.ErrInvalidOptions),
+			fmt.Errorf("load: %w", moduleerrors.ErrInvalidRunOptions),
 			FailureInvalidOptions, ExitUsage,
+		},
+		{
+			"run options wrapper",
+			moduleerrors.New(moduleerrors.ErrInvalidRunOptions,
+				"invalid run options: Timeout must be positive"),
+			FailureInvalidOptions, ExitUsage,
+		},
+		{
+			"lint options wrapper is not a run usage failure",
+			moduleerrors.New(moduleerrors.ErrInvalidLintOptions,
+				"invalid lint options: DefinitionFile is required"),
+			FailureRuntime, ExitFailure,
+		},
+		{
+			"owner preparation wrapper",
+			moduleerrors.New(moduleerrors.ErrOwnerPreparation,
+				"applying the module definition failed; the raw cause remains reachable through errors.Is and errors.As",
+				moduleerrors.WithCause(errors.New("refused"))),
+			FailureRuntime, ExitFailure,
+		},
+		{
+			"deploy prepare wrapper",
+			moduleerrors.New(moduleerrors.ErrDeployPrepare,
+				"preparing the module deployment failed; the raw causes remain reachable through errors.Is and errors.As"),
+			FailureRuntime, ExitFailure,
+		},
+		{
+			"deploy apply wrapper",
+			moduleerrors.New(moduleerrors.ErrDeployApply,
+				"applying the module resources failed; the raw causes remain reachable through errors.Is and errors.As"),
+			FailureRuntime, ExitFailure,
+		},
+		{
+			"rollout wait wrapper",
+			moduleerrors.New(moduleerrors.ErrRolloutWait,
+				"waiting for module synthetic controller rollout failed: the wait was cancelled or its budget expired",
+				moduleerrors.WithCause(context.DeadlineExceeded)),
+			FailureCancelled, ExitFailure,
+		},
+		{
+			"rollout wait wrapper carrying cancellation wins over runtime",
+			moduleerrors.New(moduleerrors.ErrRolloutWait,
+				"waiting for module synthetic controller rollout failed: the wait was cancelled or its budget expired",
+				moduleerrors.WithCause(context.Canceled)),
+			FailureCancelled, ExitFailure,
+		},
+		{
+			"rollout wait wrapper without cancellation",
+			moduleerrors.New(moduleerrors.ErrRolloutWait,
+				"waiting for deployment run-namespace/synthetic-controller failed: refused"),
+			FailureRuntime, ExitFailure,
+		},
+		{
+			"missing wait target wrapper",
+			moduleerrors.New(moduleerrors.ErrWaitTargetMissing,
+				`no rendered controller deployment matched the wait target: module synthetic controller deployment "synthetic-controller"`),
+			FailureRuntime, ExitFailure,
 		},
 		{
 			"definition",

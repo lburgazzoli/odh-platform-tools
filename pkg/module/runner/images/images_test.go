@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
 // sourcesDotenv is a dotenv file mixing quoting styles and comments.
@@ -267,24 +269,29 @@ func TestLoadMissingFileIsAnInputError(t *testing.T) {
 
 	_, err := Load(path, []string{"RELATED_IMAGE_CONTROLLER"})
 
-	var inputErr *ImageSourceError
+	var inputErr *moduleerrors.ModuleError
 	g.Expect(errors.As(err, &inputErr)).To(BeTrue())
-	g.Expect(inputErr.Error()).To(ContainSubstring(path))
+	g.Expect(inputErr.Error()).To(Equal("invalid related images file " + path))
+	g.Expect(errors.Is(err, moduleerrors.ErrImageSource)).To(BeTrue())
 	g.Expect(errors.Is(err, fs.ErrNotExist)).To(BeTrue())
 }
 
 func TestLoadMalformedFileHidesContent(t *testing.T) {
 	g := NewWithT(t)
 
-	_, err := Load(writeSources(t, "sources.env", malformedDotenv), []string{
+	path := writeSources(t, "sources.env", malformedDotenv)
+
+	_, err := Load(path, []string{
 		"RELATED_IMAGE_CONTROLLER",
 	})
 
-	var inputErr *ImageSourceError
+	var inputErr *moduleerrors.ModuleError
 	g.Expect(errors.As(err, &inputErr)).To(BeTrue())
 
-	// The public text never echoes the offending line, while the
-	// cause retains it for callers that need the details.
+	// The public text names the file and never echoes the offending
+	// line, while the cause retains it for callers that need the
+	// details.
+	g.Expect(inputErr.Error()).To(Equal("invalid related images file " + path))
 	g.Expect(inputErr.Error()).To(SatisfyAll(
 		Not(ContainSubstring("THIS LINE IS NOT AN ASSIGNMENT")),
 		Not(ContainSubstring("doesn't match format")),

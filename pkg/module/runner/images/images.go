@@ -20,6 +20,8 @@ import (
 	"strconv"
 
 	"github.com/spf13/viper"
+
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
 // Load snapshots the requested keys from the process environment and,
@@ -45,7 +47,8 @@ func Load(path string, keys []string) (map[string]string, error) {
 	// internal keys are ever read from this instance.
 	for i, key := range keys {
 		if err := env.BindEnv(strconv.Itoa(i), key); err != nil {
-			return nil, &ImageSourceError{path: path, cause: err}
+			return nil, moduleerrors.New(moduleerrors.ErrImageSource,
+				"invalid related images file "+path, moduleerrors.WithCause(err))
 		}
 	}
 
@@ -55,7 +58,8 @@ func Load(path string, keys []string) (map[string]string, error) {
 		file.SetConfigType("env")
 
 		if err := file.ReadInConfig(); err != nil {
-			return nil, &ImageSourceError{path: path, cause: err}
+			return nil, moduleerrors.New(moduleerrors.ErrImageSource,
+				"invalid related images file "+path, moduleerrors.WithCause(err))
 		}
 	}
 

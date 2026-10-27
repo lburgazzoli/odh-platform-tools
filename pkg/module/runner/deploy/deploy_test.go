@@ -50,6 +50,7 @@ import (
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
 
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 )
 
@@ -178,11 +179,11 @@ func payload(t *testing.T, g *WithT, documents ...string) []unstructured.Unstruc
 	return resources
 }
 
-// applyError extracts Apply's typed error.
-func applyError(g *WithT, err error) *Error {
+// applyError extracts Apply's shared module error.
+func applyError(g *WithT, err error) *moduleerrors.ModuleError {
 	g.Expect(err).To(HaveOccurred())
 
-	typed := &Error{}
+	typed := &moduleerrors.ModuleError{}
 	g.Expect(errors.As(err, &typed)).To(BeTrue())
 
 	return typed
@@ -613,8 +614,9 @@ func TestApplyApplyErrorFailsStageWithFirstReport(t *testing.T) {
 	err := Apply(t.Context(), connection, newDefinition(), newRelease(), resources)
 
 	typed := applyError(g, err)
-	g.Expect(typed.Stage).To(Equal(StageApply))
-	g.Expect(typed.Error()).To(Equal(stageMessages[StageApply]))
+	g.Expect(errors.Is(typed, moduleerrors.ErrDeployApply)).To(BeTrue())
+	g.Expect(errors.Is(typed, moduleerrors.ErrDeployPrepare)).To(BeFalse())
+	g.Expect(typed.Error()).To(Equal(applyFailureMessage))
 	g.Expect(typed.Error()).NotTo(ContainSubstring("Forbidden"))
 	g.Expect(typed.Error()).NotTo(ContainSubstring("secret-detail"))
 	g.Expect(apierrors.IsForbidden(typed.Unwrap())).To(BeTrue())
@@ -648,8 +650,9 @@ func TestApplyLookupErrorFailsStageWithFirstReport(t *testing.T) {
 	err := Apply(t.Context(), connection, newDefinition(), newRelease(), resources)
 
 	typed := applyError(g, err)
-	g.Expect(typed.Stage).To(Equal(StageApply))
-	g.Expect(typed.Error()).To(Equal(stageMessages[StageApply]))
+	g.Expect(errors.Is(typed, moduleerrors.ErrDeployApply)).To(BeTrue())
+	g.Expect(errors.Is(typed, moduleerrors.ErrDeployPrepare)).To(BeFalse())
+	g.Expect(typed.Error()).To(Equal(applyFailureMessage))
 	g.Expect(typed.Error()).NotTo(ContainSubstring("unavailable-detail"))
 	g.Expect(apierrors.IsServiceUnavailable(typed.Unwrap())).To(BeTrue())
 }
@@ -787,7 +790,9 @@ func TestApplyRequiresLiveOwner(t *testing.T) {
 	err := Apply(t.Context(), nil, nil, newRelease(), nil)
 
 	typed := applyError(g, err)
-	g.Expect(typed.Stage).To(Equal(StagePrepare))
+	g.Expect(errors.Is(typed, moduleerrors.ErrDeployPrepare)).To(BeTrue())
+	g.Expect(errors.Is(typed, moduleerrors.ErrDeployApply)).To(BeFalse())
+	g.Expect(typed.Error()).To(Equal(prepareFailureMessage))
 	g.Expect(errors.Is(typed.Unwrap(), errNilArgument)).To(BeTrue())
 }
 
@@ -808,7 +813,8 @@ func TestApplyCancelledInvocationIsNotAttempted(t *testing.T) {
 	err := Apply(ctx, connection, newDefinition(), newRelease(), payload(t, g, configMapYAML))
 
 	typed := applyError(g, err)
-	g.Expect(typed.Stage).To(Equal(StagePrepare))
+	g.Expect(errors.Is(typed, moduleerrors.ErrDeployPrepare)).To(BeTrue())
+	g.Expect(errors.Is(typed, moduleerrors.ErrDeployApply)).To(BeFalse())
 	g.Expect(errors.Is(typed.Unwrap(), context.Canceled)).To(BeTrue())
 	g.Expect(writes.snapshot()).To(BeEmpty())
 }

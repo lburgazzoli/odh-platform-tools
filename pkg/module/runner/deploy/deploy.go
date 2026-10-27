@@ -15,6 +15,7 @@ import (
 	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 )
 
@@ -39,9 +40,11 @@ import (
 // The framework's continue-on-error first report is the stage's error
 // contract, exactly as in the operator, and its force-SSA adoption
 // semantics govern foreign-owned objects. The returned error is a
-// safe typed *Error: its text names the stage, and the framework's
-// raw report stays reachable through Unwrap for errors.Is and
-// errors.As.
+// safe shared module error: its category names the phase —
+// moduleerrors.ErrDeployPrepare before the action runs,
+// moduleerrors.ErrDeployApply for the action itself — and the
+// framework's raw report stays reachable through Unwrap for
+// errors.Is and errors.As.
 func Apply(
 	ctx context.Context,
 	connection *cluster.Connection,
@@ -50,15 +53,14 @@ func Apply(
 	resources []unstructured.Unstructured,
 ) error {
 	if err := ctx.Err(); err != nil {
-		return &Error{Stage: StagePrepare, Message: stageMessages[StagePrepare], cause: err}
+		return moduleerrors.New(moduleerrors.ErrDeployPrepare,
+			prepareFailureMessage, moduleerrors.WithCause(err))
 	}
 
 	if connection == nil || owner == nil {
-		return &Error{
-			Stage:   StagePrepare,
-			Message: stageMessages[StagePrepare],
-			cause:   fmt.Errorf("%w: connection and owner must not be nil", errNilArgument),
-		}
+		return moduleerrors.New(moduleerrors.ErrDeployPrepare,
+			prepareFailureMessage,
+			moduleerrors.WithCause(fmt.Errorf("%w: connection and owner must not be nil", errNilArgument)))
 	}
 
 	client := connection.Client()
@@ -67,7 +69,8 @@ func Apply(
 	// connection scheme before the action reads the instance: scheme
 	// registration alone does not populate TypeMeta.
 	if err := fwresources.EnsureGroupVersionKind(client.Scheme(), owner); err != nil {
-		return &Error{Stage: StagePrepare, Message: stageMessages[StagePrepare], cause: err}
+		return moduleerrors.New(moduleerrors.ErrDeployPrepare,
+			prepareFailureMessage, moduleerrors.WithCause(err))
 	}
 
 	// The plain connection client goes to the action: the framework's
@@ -102,7 +105,8 @@ func Apply(
 		Release:    release,
 		Resources:  resources,
 	}); err != nil {
-		return &Error{Stage: StageApply, Message: stageMessages[StageApply], cause: err}
+		return moduleerrors.New(moduleerrors.ErrDeployApply,
+			applyFailureMessage, moduleerrors.WithCause(err))
 	}
 
 	return nil

@@ -27,6 +27,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/kubectl/pkg/polymorphichelpers"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
+
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
 // deploymentGVK is the only workload kind the opt-in wait covers:
@@ -69,18 +71,21 @@ const defaultWaitPollInterval = time.Second
 //
 // A wait failure is a runtime error: the published owner and apply
 // completion are retained, and the
-// report never claims readiness. Wait failures are safe typed errors:
+// report never claims readiness. Wait failures are safe shared
+// moduleerrors.ErrRolloutWait errors:
 // their text names the operation and the target identity — namespace
 // and name, already safe report identity — and never the API's or the
 // status helper's own text; underlying causes stay reachable only
 // through Unwrap for errors.Is and errors.As.
 func (r *Runner) Wait(ctx context.Context) error {
 	if r.stage != stageDeployed {
-		return fmt.Errorf("%w: Wait requires a successful Deploy", ErrStageSequence)
+		return moduleerrors.New(moduleerrors.ErrStageSequence,
+			"invalid runner stage sequence: Wait requires a successful Deploy")
 	}
 
 	if r.waited {
-		return fmt.Errorf("%w: Wait already ran", ErrStageSequence)
+		return moduleerrors.New(moduleerrors.ErrStageSequence,
+			"invalid runner stage sequence: Wait already ran")
 	}
 
 	r.waited = true
@@ -95,7 +100,9 @@ func (r *Runner) Wait(ctx context.Context) error {
 
 	if len(targets) == 0 {
 		r.fail()
-		return fmt.Errorf("%w: module %s controller deployment %q", ErrWaitTargetMissing, r.definition.Name, r.controllerDeploymentName())
+		return moduleerrors.New(moduleerrors.ErrWaitTargetMissing,
+			fmt.Sprintf("no rendered controller deployment matched the wait target: module %s controller deployment %q",
+				r.definition.Name, r.controllerDeploymentName()))
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, r.waitBudget())
@@ -168,8 +175,8 @@ func (r *Runner) selectWaitTargets() []Target {
 // status helper reports every one rolled out. Each round GETs every
 // target fresh, applies the termination and identity rules, and asks
 // the helper; the shared context bounds the whole loop. Every failure
-// is a safe typed waitError whose cause carries the raw API or
-// helper error.
+// is a safe shared ErrRolloutWait error whose cause carries the raw
+// API or helper error.
 func (r *Runner) observeUntilRolledOut(ctx context.Context, targets []Target) error {
 	viewer := &polymorphichelpers.DeploymentStatusViewer{}
 	pinned := make(map[Target]types.UID, len(targets))
@@ -236,35 +243,13 @@ func (r *Runner) observeUntilRolledOut(ctx context.Context, targets []Target) er
 
 		select {
 		case <-ctx.Done():
-			return &waitError{
-				message: fmt.Sprintf("waiting for module %s controller rollout failed: the wait was cancelled or its budget expired", r.definition.Name),
-				cause:   ctx.Err(),
-			}
+			return moduleerrors.New(moduleerrors.ErrRolloutWait,
+				fmt.Sprintf("waiting for module %s controller rollout failed: the wait was cancelled or its budget expired",
+					r.definition.Name),
+				moduleerrors.WithCause(ctx.Err()))
 		case <-ticker.C:
 		}
 	}
-}
-
-// waitError is the safe typed error the wait returns. Its text names
-// the operation and, where one exists, the target identity —
-// namespace and name, already safe report identity — never the API's
-// or the status helper's own text, which may echo server-returned
-// detail. The raw cause stays reachable through Unwrap for errors.Is
-// and errors.As.
-type waitError struct {
-	message string
-	cause   error
-}
-
-// Error returns the safe wait message.
-func (e *waitError) Error() string {
-	return e.message
-}
-
-// Unwrap returns the raw cause — the API or status-helper error — so
-// callers can classify the underlying failure.
-func (e *waitError) Unwrap() error {
-	return e.cause
 }
 
 // waitTargetFailure builds the safe failure for one waited target:
@@ -274,8 +259,10 @@ func waitTargetFailure(target Target, detail string, cause error) error {
 	message := fmt.Sprintf("waiting for deployment %s/%s failed: %s", target.Namespace, target.Name, detail)
 
 	if cause != nil {
-		message += "; the raw cause remains reachable through errors.Is and errors.As"
+		return moduleerrors.New(moduleerrors.ErrRolloutWait,
+			message+"; the raw cause remains reachable through errors.Is and errors.As",
+			moduleerrors.WithCause(cause))
 	}
 
-	return &waitError{message: message, cause: cause}
+	return moduleerrors.New(moduleerrors.ErrRolloutWait, message)
 }

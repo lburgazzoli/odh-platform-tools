@@ -30,6 +30,7 @@ import (
 	configcrd "github.com/lburgazzoli/odh-platform-tools/config/crd"
 	k8scrd "github.com/lburgazzoli/odh-platform-tools/pkg/k8s/crd"
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/cluster"
 )
 
@@ -90,32 +91,14 @@ func prepareOwner(
 	return desired, nil
 }
 
-// prepareError is the safe error the preparation returns: its text
-// names the failed operation only, never echoing server-returned or
-// authored values; the raw cause stays reachable through Unwrap for
-// errors.Is and errors.As.
-type prepareError struct {
-	message string
-	cause   error
-}
-
-// Error returns the safe message.
-func (e *prepareError) Error() string {
-	return e.message
-}
-
-// Unwrap returns the raw cause, preserving error identities for
-// errors.Is and errors.As.
-func (e *prepareError) Unwrap() error {
-	return e.cause
-}
-
-// prepareFail wraps one preparation failure in the safe error.
+// prepareFail wraps one preparation failure in the safe shared
+// moduleerrors.ErrOwnerPreparation error: its text names the failed
+// operation only, never echoing server-returned or authored values;
+// the raw cause stays reachable through Unwrap for errors.Is and
+// errors.As.
 func prepareFail(operation string, cause error) error {
-	return &prepareError{
-		message: fmt.Sprintf(
-			"%s failed; the raw cause remains reachable through errors.Is and errors.As",
+	return moduleerrors.New(moduleerrors.ErrOwnerPreparation,
+		fmt.Sprintf("%s failed; the raw cause remains reachable through errors.Is and errors.As",
 			operation),
-		cause: cause,
-	}
+		moduleerrors.WithCause(cause))
 }

@@ -18,7 +18,8 @@ package runner
 
 import (
 	"context"
-	"fmt"
+
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
 // Run is the default apply-only orchestration: Load, then Render,
@@ -59,7 +60,8 @@ func (r *Runner) Run(ctx context.Context) (Result, error) {
 	}
 
 	if r.stage != stageNew {
-		return rejectedResult(), fmt.Errorf("%w: Run requires a fresh runner", ErrStageSequence)
+		return rejectedResult(), moduleerrors.New(moduleerrors.ErrStageSequence,
+			"invalid runner stage sequence: Run requires a fresh runner")
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, r.options.Timeout)

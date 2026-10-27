@@ -48,6 +48,7 @@ import (
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
 
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/adapt"
@@ -193,7 +194,9 @@ func (r *Runner) Load(ctx context.Context) error {
 	parsed, err := semver.ParseTolerant(r.options.PlatformVersion)
 	if err != nil {
 		r.fail()
-		return fmt.Errorf("%w: parsing platform version: %w", ErrInvalidOptions, err)
+		return moduleerrors.New(moduleerrors.ErrInvalidRunOptions,
+			"invalid run options: parsing platform version: "+err.Error(),
+			moduleerrors.WithCause(err))
 	}
 
 	definition, err := r.load(ctx, r.options.DefinitionFile)
@@ -363,11 +366,14 @@ func (r *Runner) Deploy(ctx context.Context) error {
 // output happens.
 func (r *Runner) begin(next stage) error {
 	if r.stage == stageFailed {
-		return fmt.Errorf("%w: a failed invocation is terminal", ErrStageSequence)
+		return moduleerrors.New(moduleerrors.ErrStageSequence,
+			"invalid runner stage sequence: a failed invocation is terminal")
 	}
 
 	if next != r.stage+1 {
-		return fmt.Errorf("%w: stage %d cannot follow %d", ErrStageSequence, next, r.stage)
+		return moduleerrors.New(moduleerrors.ErrStageSequence,
+			fmt.Sprintf("invalid runner stage sequence: stage %d cannot follow %d",
+				next, r.stage))
 	}
 
 	return nil

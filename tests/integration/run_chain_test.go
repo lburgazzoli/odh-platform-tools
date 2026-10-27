@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"path/filepath"
 	"testing"
 	"time"
@@ -19,7 +20,6 @@ import (
 
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner/images"
 )
 
 // runDefinitionWrite is the persisted definition's write identity
@@ -307,8 +307,12 @@ func TestRunChainMissingImagesFileFailsBeforeCluster(t *testing.T) {
 	result, err := harness.run(t.Context(), options)
 	g.Expect(err).To(HaveOccurred())
 
-	var imageErr *images.ImageSourceError
+	g.Expect(errors.Is(err, moduleerrors.ErrImageSource)).To(BeTrue())
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeFalse())
+
+	var imageErr *moduleerrors.ModuleError
 	g.Expect(errors.As(err, &imageErr)).To(BeTrue())
+	g.Expect(errors.Is(err, fs.ErrNotExist)).To(BeTrue())
 
 	g.Expect(result.Attempted).To(Equal(runner.StageLoad))
 	g.Expect(result.Owner).To(BeNil())
@@ -426,6 +430,8 @@ func TestRunChainPreparationFailures(t *testing.T) {
 			Not(ContainSubstring("CHAIN-MARKER-refused")),
 		))
 		g.Expect(apierrors.IsForbidden(err)).To(BeTrue())
+		g.Expect(errors.Is(err, moduleerrors.ErrOwnerPreparation)).To(BeTrue())
+		g.Expect(errors.Is(err, moduleerrors.ErrDeployApply)).To(BeFalse())
 
 		// The definition apply was attempted; no payload write was.
 		_, definitionWrite := harness.writeIndex(runDefinitionWrite)
