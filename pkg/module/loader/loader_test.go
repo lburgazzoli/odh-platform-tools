@@ -3,6 +3,7 @@ package loader
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -843,6 +844,42 @@ func TestLoadRejectsMissingAndNonRegularFiles(t *testing.T) {
 	_, err = Load(t.Context(), os.DirFS(root), "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
+
+	// The empty path carries no filesystem cause, so its diagnostic is
+	// exactly the prefixed requirement text.
+	g.Expect(err.Error()).To(Equal("invalid module definition: definition file path is required"))
+
+	var wrapper *moduleerrors.ModuleError
+	g.Expect(errors.As(err, &wrapper)).To(BeTrue())
+}
+
+// readFailureFS is a filesystem whose opens fail with a fixed error,
+// keeping read-failure diagnostics controlled.
+type readFailureFS struct {
+	err error
+}
+
+func (f readFailureFS) Open(string) (fs.File, error) { return nil, f.err }
+
+// TestLoadReadFailureComposesExactDiagnostic proves a read failure
+// composes the exact prefixed public text, keeps the raw cause
+// reachable, and exposes the shared wrapper.
+func TestLoadReadFailureComposesExactDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	cause := errors.New("controlled read failure")
+	_, err := Load(t.Context(), readFailureFS{err: cause}, "definition.yaml")
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(Equal(
+		"invalid module definition: read definition file definition.yaml: controlled read failure"))
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
+	g.Expect(errors.Is(err, cause)).To(BeTrue())
+
+	var wrapper *moduleerrors.ModuleError
+	g.Expect(errors.As(err, &wrapper)).To(BeTrue())
 }
 
 func TestLoadIgnoresEnvironment(t *testing.T) {

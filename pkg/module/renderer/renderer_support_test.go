@@ -19,6 +19,7 @@ package renderer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"testing/fstest"
@@ -34,6 +35,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 )
 
@@ -124,17 +126,32 @@ func guardResource(t *testing.T, document string) unstructured.Unstructured {
 // guard rejects the objects a module run must never deploy — the
 // configured module type's own instances at any version, any
 // config.opendatahub.io PlatformModuleDefinition, and the reserved
-// definition CRD — with the sentinel reachable through errors.Is.
+// definition CRD — with the exact identity text, the central sentinel
+// reachable through errors.Is, and the shared wrapper exposed through
+// errors.As.
 func TestCheckReservedRejectsReservedIdentities(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
 		name     string
 		document string
+		message  func(resource unstructured.Unstructured) string
 	}{
-		{"module instance at another version", guardModuleInstanceV1YAML},
-		{"platform module definition at another version", guardDefinitionObjectYAML},
-		{"reserved definition CRD", guardReservedCRDYAML},
+		{"module instance at another version", guardModuleInstanceV1YAML,
+			func(resource unstructured.Unstructured) string {
+				return fmt.Sprintf("reserved rendered resource: module instance %s %s",
+					resource.GroupVersionKind(), resource.GetName())
+			}},
+		{"platform module definition at another version", guardDefinitionObjectYAML,
+			func(resource unstructured.Unstructured) string {
+				return fmt.Sprintf("reserved rendered resource: definition object %s %s",
+					resource.GroupVersionKind(), resource.GetName())
+			}},
+		{"reserved definition CRD", guardReservedCRDYAML,
+			func(resource unstructured.Unstructured) string {
+				return fmt.Sprintf("reserved rendered resource: definition custom resource definition %s",
+					resource.GetName())
+			}},
 	}
 
 	for _, testCase := range cases {
@@ -143,13 +160,20 @@ func TestCheckReservedRejectsReservedIdentities(t *testing.T) {
 
 			g := NewWithT(t)
 
+			resource := guardResource(t, testCase.document)
+
 			err := CheckReserved(guardDefinition(), []unstructured.Unstructured{
 				guardResource(t, guardOrdinaryConfigMapYAML),
-				guardResource(t, testCase.document),
+				resource,
 			})
 
 			g.Expect(err).To(HaveOccurred())
-			g.Expect(errors.Is(err, ErrReservedResource)).To(BeTrue())
+			g.Expect(err.Error()).To(Equal(testCase.message(resource)))
+			g.Expect(errors.Is(err, moduleerrors.ErrReservedResource)).To(BeTrue())
+			g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeFalse())
+
+			var wrapper *moduleerrors.ModuleError
+			g.Expect(errors.As(err, &wrapper)).To(BeTrue())
 		})
 	}
 }
@@ -327,11 +351,11 @@ func TestRenderHelmRejectsReservedResourcesOnEveryPath(t *testing.T) {
 
 			_, err := Render(t.Context(), definition, definitionFile)
 			g.Expect(err).To(HaveOccurred())
-			g.Expect(errors.Is(err, ErrReservedResource)).To(BeTrue())
+			g.Expect(errors.Is(err, moduleerrors.ErrReservedResource)).To(BeTrue())
 
 			_, err = Render(t.Context(), definition, definitionFile, WithNamespace("modules"))
 			g.Expect(err).To(HaveOccurred())
-			g.Expect(errors.Is(err, ErrReservedResource)).To(BeTrue())
+			g.Expect(errors.Is(err, moduleerrors.ErrReservedResource)).To(BeTrue())
 		})
 	}
 }
@@ -356,7 +380,7 @@ func TestRenderHelmRejectsReservedCRDFromBundledCRDs(t *testing.T) {
 
 	_, err := Render(t.Context(), definition, definitionFile)
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, ErrReservedResource)).To(BeTrue())
+	g.Expect(errors.Is(err, moduleerrors.ErrReservedResource)).To(BeTrue())
 }
 
 // TestRenderHelmGuardAllowsOrdinaryResources proves an ordinary
@@ -415,7 +439,7 @@ func TestExecuteKustomizeRejectsReservedResourcesInMemory(t *testing.T) {
 
 			_, err = execute(t.Context(), definition, native, RenderOptions{})
 			g.Expect(err).To(HaveOccurred())
-			g.Expect(errors.Is(err, ErrReservedResource)).To(BeTrue())
+			g.Expect(errors.Is(err, moduleerrors.ErrReservedResource)).To(BeTrue())
 
 			// The runtime variant observes the enrichment rather than
 			// re-applying a namespace to an already-built renderer.
@@ -434,7 +458,7 @@ func TestExecuteKustomizeRejectsReservedResourcesInMemory(t *testing.T) {
 				PostRenderers: []enginetypes.PostRenderer{observe},
 			})
 			g.Expect(observed).To(Equal(1))
-			g.Expect(errors.Is(err, ErrReservedResource)).To(BeTrue())
+			g.Expect(errors.Is(err, moduleerrors.ErrReservedResource)).To(BeTrue())
 		})
 	}
 }

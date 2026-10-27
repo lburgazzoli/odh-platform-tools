@@ -17,7 +17,6 @@ limitations under the License.
 package renderer
 
 import (
-	"errors"
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -25,13 +24,8 @@ import (
 	fwgvk "github.com/opendatahub-io/odh-platform-utilities/framework/cluster/gvk"
 
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
-
-// ErrReservedResource is the sentinel for rendered objects a module
-// run must never deploy: the configured module type's own instances,
-// PlatformModuleDefinition objects, and the persisted definition
-// custom resource definition.
-var ErrReservedResource = errors.New("reserved rendered resource")
 
 // CheckReserved is the shared payload guard every render path — lint
 // and run alike — applies to its own output: it rejects the objects a
@@ -40,9 +34,10 @@ var ErrReservedResource = errors.New("reserved rendered resource")
 // Reserved are instances of the definition's configured module type
 // (any version), any config.opendatahub.io PlatformModuleDefinition,
 // and the persisted definition custom resource definition under its
-// reserved name. A rejected object fails the render itself; it is
-// never silently dropped, so no caller can deploy it by accident.
-// All other rendered resources pass through unexamined.
+// reserved name. A rejected object fails the render itself —
+// classified by moduleerrors.ErrReservedResource — and is never
+// silently dropped, so no caller can deploy it by accident. All other
+// rendered resources pass through unexamined.
 func CheckReserved(
 	definition toolApi.PlatformModuleDefinition,
 	resources []unstructured.Unstructured,
@@ -55,11 +50,14 @@ func CheckReserved(
 
 		switch {
 		case gvk.Group == module.Group && gvk.Kind == module.Kind:
-			return fmt.Errorf("%w: module instance %s %s", ErrReservedResource, gvk, res.GetName())
+			return moduleerrors.New(moduleerrors.ErrReservedResource,
+				fmt.Sprintf("reserved rendered resource: module instance %s %s", gvk, res.GetName()))
 		case gvk.Group == toolApi.GroupVersion.Group && gvk.Kind == toolApi.Kind:
-			return fmt.Errorf("%w: definition object %s %s", ErrReservedResource, gvk, res.GetName())
+			return moduleerrors.New(moduleerrors.ErrReservedResource,
+				fmt.Sprintf("reserved rendered resource: definition object %s %s", gvk, res.GetName()))
 		case gvk == fwgvk.CustomResourceDefinition && res.GetName() == toolApi.CRDName:
-			return fmt.Errorf("%w: definition custom resource definition %s", ErrReservedResource, res.GetName())
+			return moduleerrors.New(moduleerrors.ErrReservedResource,
+				fmt.Sprintf("reserved rendered resource: definition custom resource definition %s", res.GetName()))
 		}
 	}
 

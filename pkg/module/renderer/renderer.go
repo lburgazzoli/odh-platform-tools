@@ -114,9 +114,11 @@ func backendFor(
 	case toolApi.FormatKustomize:
 		return kustomize.New(definition, definitionFile, namespace)
 	default:
-		return nil, moduleerrors.NewDefinitionErrorf("unsupported manifest format %q for module %s",
+		detail := fmt.Errorf("unsupported manifest format %q for module %s",
 			definition.Spec.Manifests.Format,
 			definition.Name)
+		return nil, moduleerrors.New(moduleerrors.ErrInvalidDefinition,
+			"invalid module definition: "+detail.Error(), moduleerrors.WithCause(detail))
 	}
 }
 

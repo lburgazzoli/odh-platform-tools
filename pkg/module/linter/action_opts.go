@@ -1,13 +1,8 @@
 package linter
 
 import (
-	"errors"
-	"fmt"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
-
-// ErrInvalidOptions identifies invalid per-call lint action options,
-// separate from definition, source, and render error categories.
-var ErrInvalidOptions = errors.New("invalid lint options")
 
 // Options are the plain per-call inputs of one lint invocation. They
 // carry no Cobra command, no output-format choice, and no environment
@@ -19,10 +14,13 @@ type Options struct {
 	DefinitionFile string
 }
 
-// validate reports whether the options are usable.
+// validate reports whether the options are usable: a missing
+// definition file is an invalid-options failure classified by
+// moduleerrors.ErrInvalidLintOptions.
 func (o Options) validate() error {
 	if o.DefinitionFile == "" {
-		return fmt.Errorf("%w: DefinitionFile is required", ErrInvalidOptions)
+		return moduleerrors.New(moduleerrors.ErrInvalidLintOptions,
+			"invalid lint options: DefinitionFile is required")
 	}
 
 	return nil

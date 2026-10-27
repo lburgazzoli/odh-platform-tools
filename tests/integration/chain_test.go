@@ -122,7 +122,8 @@ func TestLintChainInvalidOptions(t *testing.T) {
 
 	result, err := module.NewLinter().Run(t.Context(), linter.Options{})
 
-	g.Expect(errors.Is(err, linter.ErrInvalidOptions)).To(BeTrue())
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidLintOptions)).To(BeTrue())
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidRunOptions)).To(BeFalse())
 	g.Expect(result.Diagnostics).To(BeEmpty())
 }
 
@@ -148,7 +149,7 @@ func TestLintChainRejectsEscapingSource(t *testing.T) {
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeFalse())
-	g.Expect(errors.Is(err, linter.ErrInvalidOptions)).To(BeFalse())
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidLintOptions)).To(BeFalse())
 	g.Expect(result.Diagnostics).To(BeEmpty())
 }
 

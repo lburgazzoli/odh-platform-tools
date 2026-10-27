@@ -10,6 +10,7 @@ package loader
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -22,6 +23,11 @@ import (
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
+
+// definitionFailurePrefix is the fixed public prefix of every
+// definition failure this package composes, preserved from the
+// retired definition factories' wrap text.
+const definitionFailurePrefix = "invalid module definition: "
 
 // Loader loads module definitions from a filesystem.
 type Loader struct {
@@ -59,12 +65,18 @@ func LoadFromPath(
 ) (toolApi.PlatformModuleDefinition, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return toolApi.PlatformModuleDefinition{}, moduleerrors.NewDefinitionErrorf("resolve definition file %s: %w", path, err)
+		return toolApi.PlatformModuleDefinition{}, moduleerrors.New(
+			moduleerrors.ErrInvalidDefinition,
+			definitionFailurePrefix+fmt.Sprintf("resolve definition file %s: %v", path, err),
+			moduleerrors.WithCause(err))
 	}
 
 	relative, err := filepath.Rel("/", absolute)
 	if err != nil {
-		return toolApi.PlatformModuleDefinition{}, moduleerrors.NewDefinitionErrorf("resolve definition file %s: %w", path, err)
+		return toolApi.PlatformModuleDefinition{}, moduleerrors.New(
+			moduleerrors.ErrInvalidDefinition,
+			definitionFailurePrefix+fmt.Sprintf("resolve definition file %s: %v", path, err),
+			moduleerrors.WithCause(err))
 	}
 
 	return Load(ctx, os.DirFS("/"), relative, opts...)
@@ -101,7 +113,10 @@ func (l *Loader) Load(
 
 	decoded, err := l.decodeDefinition(data)
 	if err != nil {
-		return toolApi.PlatformModuleDefinition{}, moduleerrors.NewDefinitionErrorf("%s: %w", path, err)
+		return toolApi.PlatformModuleDefinition{}, moduleerrors.New(
+			moduleerrors.ErrInvalidDefinition,
+			definitionFailurePrefix+fmt.Sprintf("%s: %v", path, err),
+			moduleerrors.WithCause(err))
 	}
 
 	l.applyDefaults(&decoded)
@@ -138,12 +153,16 @@ func (l *Loader) applyDefaults(definition *toolApi.PlatformModuleDefinition) {
 // filesystem. Errors name the path exactly as passed to Load.
 func (l *Loader) readDefinitionFile(path string) ([]byte, error) {
 	if path == "" {
-		return nil, moduleerrors.NewDefinitionError(errors.New("definition file path is required"))
+		cause := errors.New("definition file path is required")
+		return nil, moduleerrors.New(moduleerrors.ErrInvalidDefinition,
+			definitionFailurePrefix+cause.Error(), moduleerrors.WithCause(cause))
 	}
 
 	data, err := fs.ReadFile(l.fsys, path)
 	if err != nil {
-		return nil, moduleerrors.NewDefinitionErrorf("read definition file %s: %w", path, err)
+		return nil, moduleerrors.New(moduleerrors.ErrInvalidDefinition,
+			definitionFailurePrefix+fmt.Sprintf("read definition file %s: %v", path, err),
+			moduleerrors.WithCause(err))
 	}
 
 	return data, nil

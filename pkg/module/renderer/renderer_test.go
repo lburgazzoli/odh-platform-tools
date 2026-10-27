@@ -22,6 +22,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -810,8 +811,14 @@ func TestRenderRejectsUnsupportedFormat(t *testing.T) {
 	resources, err := Render(t.Context(), definition, filepath.Join(root, "definition.yaml"))
 
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("bogus"))
+	g.Expect(err.Error()).To(Equal(fmt.Sprintf(
+		"invalid module definition: unsupported manifest format %q for module %s",
+		"bogus", definition.Name)))
 	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
+
+	var wrapper *moduleerrors.ModuleError
+	g.Expect(errors.As(err, &wrapper)).To(BeTrue())
+
 	g.Expect(resources).To(BeNil())
 }
 
@@ -1611,7 +1618,7 @@ func TestRenderGuardRejectsCallerEnrichedReservedIdentities(t *testing.T) {
 				resources, err := Render(t.Context(), definition, definitionFile, WithPostRenderer(enricher))
 
 				g.Expect(err).To(HaveOccurred())
-				g.Expect(errors.Is(err, ErrReservedResource)).To(BeTrue())
+				g.Expect(errors.Is(err, moduleerrors.ErrReservedResource)).To(BeTrue())
 				g.Expect(resources).To(BeNil())
 			})
 		}

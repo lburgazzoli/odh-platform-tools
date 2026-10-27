@@ -76,7 +76,7 @@ func classify(err error) (string, int) {
 		return "", ExitSuccess
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return FailureCancelled, ExitFailure
-	case errors.Is(err, linter.ErrInvalidOptions):
+	case errors.Is(err, moduleerrors.ErrInvalidLintOptions):
 		return FailureInvalidOptions, ExitUsage
 	case errors.Is(err, moduleerrors.ErrInvalidDefinition):
 		return FailureDefinition, ExitUsage

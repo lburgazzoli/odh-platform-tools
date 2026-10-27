@@ -25,7 +25,6 @@ package errors
 
 import (
 	stderrors "errors"
-	"fmt"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/util/option"
 )
@@ -35,50 +34,70 @@ import (
 // violations. Errors returned by the loader and its callers wrap it,
 // so callers classify them with errors.Is instead of matching message
 // text.
-var ErrInvalidDefinition = stderrors.New("invalid module definition")
+var ErrInvalidDefinition = stderrors.New(
+	"invalid module definition",
+)
 
 // ErrInvalidLintOptions identifies invalid per-call lint action
 // options, distinct from definition, source, and render failures.
-var ErrInvalidLintOptions = stderrors.New("invalid lint options")
+var ErrInvalidLintOptions = stderrors.New(
+	"invalid lint options",
+)
 
 // ErrInvalidRunOptions identifies invalid module run invocation
 // options, distinct from the linter's option category.
-var ErrInvalidRunOptions = stderrors.New("invalid run options")
+var ErrInvalidRunOptions = stderrors.New(
+	"invalid run options",
+)
 
 // ErrStageSequence identifies an invalid stage call on a run:
 // out-of-order, repeated, or issued after a failed stage.
-var ErrStageSequence = stderrors.New("invalid runner stage sequence")
+var ErrStageSequence = stderrors.New(
+	"invalid runner stage sequence",
+)
 
 // ErrWaitTargetMissing identifies a requested wait whose rendered
 // payload contains no controller Deployment matching the configured
 // target.
 var ErrWaitTargetMissing = stderrors.New(
-	"no rendered controller deployment matched the wait target")
+	"no rendered controller deployment matched the wait target",
+)
 
 // ErrReservedResource identifies rendered objects a module run must
 // never deploy.
-var ErrReservedResource = stderrors.New("reserved rendered resource")
+var ErrReservedResource = stderrors.New(
+	"reserved rendered resource",
+)
 
 // ErrImageSource identifies an unreadable or malformed related images
 // file. Messages in this category name the file, never its contents.
-var ErrImageSource = stderrors.New("invalid related images file")
+var ErrImageSource = stderrors.New(
+	"invalid related images file",
+)
 
 // ErrOwnerPreparation identifies a failure preparing the module's
 // persisted owner: the definition custom resource definition or the
 // definition itself.
-var ErrOwnerPreparation = stderrors.New("module owner preparation failed")
+var ErrOwnerPreparation = stderrors.New(
+	"module owner preparation failed",
+)
 
 // ErrDeployPrepare identifies a failure in the checks made before the
 // deploy action runs.
-var ErrDeployPrepare = stderrors.New("preparing the module deployment failed")
+var ErrDeployPrepare = stderrors.New(
+	"preparing the module deployment failed",
+)
 
 // ErrDeployApply identifies a failure of the deploy action itself.
-var ErrDeployApply = stderrors.New("applying the module resources failed")
+var ErrDeployApply = stderrors.New(
+	"applying the module resources failed",
+)
 
 // ErrRolloutWait identifies a failure waiting for the module
 // controller Deployment rollout.
 var ErrRolloutWait = stderrors.New(
-	"waiting for module controller rollout failed")
+	"waiting for module controller rollout failed",
+)
 
 // ModuleError is the shared wrapper for module domain failures: one
 // central category sentinel, one explicitly composed public message,
@@ -152,17 +171,4 @@ func (e *ModuleError) Unwrap() error {
 // full-chain classification.
 func (e *ModuleError) Is(target error) bool {
 	return target == e.category
-}
-
-// NewDefinitionError wraps err as a definition configuration failure.
-// The cause stays reachable through errors.Is and errors.As, so
-// cancellation and other sentinel identities survive wrapping.
-func NewDefinitionError(err error) error {
-	return fmt.Errorf("%w: %w", ErrInvalidDefinition, err)
-}
-
-// NewDefinitionErrorf is NewDefinitionError with fmt.Errorf-style
-// formatting.
-func NewDefinitionErrorf(format string, args ...any) error {
-	return NewDefinitionError(fmt.Errorf(format, args...))
 }

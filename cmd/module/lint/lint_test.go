@@ -167,17 +167,53 @@ func TestLintCommandClassification(t *testing.T) {
 		},
 		{
 			name:     "invalid options",
-			err:      fmt.Errorf("lint: %w", linter.ErrInvalidOptions),
+			err:      fmt.Errorf("lint: %w", moduleerrors.ErrInvalidLintOptions),
 			exitCode: ExitUsage,
 			status:   StatusFailed,
 			category: FailureInvalidOptions,
 		},
 		{
-			name:     "definition error",
-			err:      moduleerrors.NewDefinitionError(errors.New(`unknown object member name "type"`)),
+			name: "lint options wrapper",
+			err: moduleerrors.New(moduleerrors.ErrInvalidLintOptions,
+				"invalid lint options: DefinitionFile is required"),
+			exitCode: ExitUsage,
+			status:   StatusFailed,
+			category: FailureInvalidOptions,
+		},
+		{
+			name: "run options wrapper is not a lint usage failure",
+			err: moduleerrors.New(moduleerrors.ErrInvalidRunOptions,
+				"invalid run options: DefinitionFile is required"),
+			exitCode: ExitFailure,
+			status:   StatusFailed,
+			category: FailureRender,
+		},
+		{
+			name: "definition wrapper",
+			err: moduleerrors.New(moduleerrors.ErrInvalidDefinition,
+				"invalid module definition: bad spec",
+				moduleerrors.WithCause(errors.New("bad spec"))),
 			exitCode: ExitUsage,
 			status:   StatusFailed,
 			category: FailureDefinition,
+		},
+		{
+			name: "definition wrapper carrying cancellation",
+			err: moduleerrors.New(moduleerrors.ErrInvalidDefinition,
+				"invalid module definition: cancelled",
+				moduleerrors.WithCause(context.Canceled)),
+			exitCode: ExitFailure,
+			status:   StatusFailed,
+			category: FailureCancelled,
+		},
+		{
+			name: "definition wrapper carrying deadline",
+			err: moduleerrors.New(moduleerrors.ErrInvalidDefinition,
+				"invalid module definition: deadline",
+				moduleerrors.WithCause(context.DeadlineExceeded)),
+			exitCode: ExitFailure,
+			status:   StatusFailed,
+			category: FailureCancelled,
 		},
 		{
 			name:     "render error",
@@ -294,7 +330,9 @@ warning RESOURCE_KIND_DISALLOWED v1, Kind=Namespace/synthetic/odh-applications/m
 		g := NewWithT(t)
 
 		recorder := &recordingRun{
-			err: moduleerrors.NewDefinitionError(errors.New(`unknown object member name "type"`)),
+			err: moduleerrors.New(moduleerrors.ErrInvalidDefinition,
+				"invalid module definition: unknown object member name \"type\"",
+				moduleerrors.WithCause(errors.New(`unknown object member name "type"`))),
 		}
 
 		stdout, stderr, err := executeLint(t.Context(), t, recorder.run,
@@ -505,7 +543,9 @@ func TestLintCommandWriteFailuresExitAsExecutionFailures(t *testing.T) {
 
 		g := NewWithT(t)
 
-		definitionFailure := moduleerrors.NewDefinitionError(errors.New("bad spec"))
+		definitionFailure := moduleerrors.New(moduleerrors.ErrInvalidDefinition,
+			"invalid module definition: bad spec",
+			moduleerrors.WithCause(errors.New("bad spec")))
 
 		recorder := &recordingRun{err: definitionFailure}
 

@@ -11,28 +11,39 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/util/option"
 )
 
-func TestNewDefinitionErrorPreservesCause(t *testing.T) {
+// TestDefinitionCategoryPreservesCause mirrors the retired
+// NewDefinitionError contract through the shared constructor: a
+// definition-category wrapper keeps both the category and the raw
+// cancellation identity reachable.
+func TestDefinitionCategoryPreservesCause(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	err := NewDefinitionError(context.Canceled)
+	err := New(ErrInvalidDefinition, "invalid module definition: cancelled",
+		WithCause(context.Canceled))
 
 	g.Expect(errors.Is(err, ErrInvalidDefinition)).To(BeTrue())
 	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
 }
 
-func TestNewDefinitionErrorfPreservesCause(t *testing.T) {
+// TestDefinitionCategoryComposesDetailText mirrors the retired
+// NewDefinitionErrorf contract: the caller composes the definition
+// detail text — here keeping a contextual wrapper as the cause — and
+// the public message carries the category prefix exactly once.
+func TestDefinitionCategoryComposesDetailText(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
 	cause := errors.New("boom")
-	err := NewDefinitionErrorf("read %s: %w", "definition.yaml", cause)
+	detail := fmt.Errorf("read %s: %w", "definition.yaml", cause)
+	err := New(ErrInvalidDefinition, "invalid module definition: "+detail.Error(),
+		WithCause(detail))
 
 	g.Expect(errors.Is(err, ErrInvalidDefinition)).To(BeTrue())
 	g.Expect(errors.Is(err, cause)).To(BeTrue())
-	g.Expect(err.Error()).To(ContainSubstring("definition.yaml"))
+	g.Expect(err.Error()).To(Equal("invalid module definition: read definition.yaml: boom"))
 }
 
 // allCategories lists every central category sentinel, in the order

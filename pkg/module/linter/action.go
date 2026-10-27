@@ -66,8 +66,9 @@ func NewAction(
 //
 // Execution errors follow the error-category contract: a cancelled
 // context keeps its cancellation identity and takes precedence over
-// invalid options; invalid options match ErrInvalidOptions; loader,
-// source, and renderer errors are forwarded without recategorizing
+// invalid options; invalid options match
+// moduleerrors.ErrInvalidLintOptions; loader, source, and renderer
+// errors are forwarded without recategorizing
 // (a failed phase never yields a partial object set as success).
 // A validation function that fails to evaluate is an execution error
 // like the others. Manifest defects are not execution errors: they
