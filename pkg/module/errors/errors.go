@@ -44,16 +44,16 @@ var ErrInvalidLintOptions = stderrors.New(
 	"invalid lint options",
 )
 
-// ErrInvalidRunOptions identifies invalid module run invocation
+// ErrInvalidDeployOptions identifies invalid module deploy invocation
 // options, distinct from the linter's option category.
-var ErrInvalidRunOptions = stderrors.New(
-	"invalid run options",
+var ErrInvalidDeployOptions = stderrors.New(
+	"invalid deploy options",
 )
 
-// ErrStageSequence identifies an invalid stage call on a run:
+// ErrStageSequence identifies an invalid stage call on a deploy:
 // out-of-order, repeated, or issued after a failed stage.
 var ErrStageSequence = stderrors.New(
-	"invalid runner stage sequence",
+	"invalid deployer stage sequence",
 )
 
 // ErrWaitTargetMissing identifies a requested wait whose rendered
@@ -63,7 +63,7 @@ var ErrWaitTargetMissing = stderrors.New(
 	"no rendered controller deployment matched the wait target",
 )
 
-// ErrReservedResource identifies rendered objects a module run must
+// ErrReservedResource identifies rendered objects a module deploy must
 // never deploy.
 var ErrReservedResource = stderrors.New(
 	"reserved rendered resource",

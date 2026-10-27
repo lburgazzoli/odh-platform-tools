@@ -16,8 +16,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package e2e is the live end-to-end suite: the module run CLI and
-// runner chain against a real cluster managed by the test-only
+// Package e2e is the live end-to-end suite: the module deploy CLI and
+// deployer chain against a real cluster managed by the test-only
 // cluster engines (tests/support/cluster). The engine bootstraps
 // lazily on first use and fails hard — never skips — when the live
 // prerequisites are missing.

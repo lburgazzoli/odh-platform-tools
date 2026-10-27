@@ -9,10 +9,10 @@ import (
 
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
+	"github.com/lburgazzoli/odh-platform-tools/cmd/module/deploy"
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
-	"github.com/lburgazzoli/odh-platform-tools/cmd/module/run"
+	deployer "github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner"
 )
 
 // recordingRun is a fake lint action boundary recording every
@@ -30,25 +30,25 @@ func (r *recordingRun) run(_ context.Context, options linter.Options) (linter.Re
 	return linter.Result{}, nil
 }
 
-// recordingModuleRun is a fake run action boundary recording every
+// recordingModuleDeploy is a fake deploy action boundary recording every
 // invocation, including the getter it received.
-type recordingModuleRun struct {
+type recordingModuleDeploy struct {
 	calls   int
 	getters []genericclioptions.RESTClientGetter
-	options []runner.Options
+	options []deployer.Options
 }
 
-// run records one invocation and returns a successful empty result.
-func (r *recordingModuleRun) run(
+// deploy records one invocation and returns a successful empty result.
+func (r *recordingModuleDeploy) deploy(
 	_ context.Context,
 	getter genericclioptions.RESTClientGetter,
-	options runner.Options,
-) (runner.Result, error) {
+	options deployer.Options,
+) (deployer.Result, error) {
 	r.calls++
 	r.getters = append(r.getters, getter)
 	r.options = append(r.options, options)
 
-	return runner.Result{}, nil
+	return deployer.Result{}, nil
 }
 
 // execute runs one module group execution with captured streams.
@@ -56,13 +56,13 @@ func execute(
 	ctx context.Context,
 	t *testing.T,
 	lintRun lint.Run,
-	runRun run.Run,
+	deployAction deploy.Deploy,
 	getter genericclioptions.RESTClientGetter,
 	args ...string,
 ) (string, error) {
 	t.Helper()
 
-	group := NewModuleCommand(lintRun, runRun, getter)
+	group := NewModuleCommand(lintRun, deployAction, getter)
 
 	var stdout, stderr bytes.Buffer
 	group.SetOut(&stdout)
@@ -80,14 +80,14 @@ func TestModuleCommandShowsHelp(t *testing.T) {
 	g := NewWithT(t)
 
 	lintRecorder := &recordingRun{}
-	runRecorder := &recordingModuleRun{}
+	runRecorder := &recordingModuleDeploy{}
 
-	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.run,
+	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
 		genericclioptions.NewConfigFlags(true))
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(stdout).To(ContainSubstring("lint"))
-	g.Expect(stdout).To(ContainSubstring("run"))
+	g.Expect(stdout).To(ContainSubstring("deploy"))
 	g.Expect(lintRecorder.calls).To(Equal(0))
 	g.Expect(runRecorder.calls).To(Equal(0))
 }
@@ -98,9 +98,9 @@ func TestModuleCommandRejectsUnknownCommands(t *testing.T) {
 	g := NewWithT(t)
 
 	lintRecorder := &recordingRun{}
-	runRecorder := &recordingModuleRun{}
+	runRecorder := &recordingModuleDeploy{}
 
-	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.run,
+	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
 		genericclioptions.NewConfigFlags(true),
 		"frobnicate", "--config", "definition.yaml")
 
@@ -118,9 +118,9 @@ func TestModuleCommandRunsLint(t *testing.T) {
 	g := NewWithT(t)
 
 	lintRecorder := &recordingRun{}
-	runRecorder := &recordingModuleRun{}
+	runRecorder := &recordingModuleDeploy{}
 
-	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.run,
+	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
 		genericclioptions.NewConfigFlags(true),
 		"lint", "--config", "definition.yaml")
 
@@ -130,18 +130,18 @@ func TestModuleCommandRunsLint(t *testing.T) {
 	g.Expect(lintRecorder.options[0].DefinitionFile).To(Equal("definition.yaml"))
 }
 
-func TestModuleCommandRunsRun(t *testing.T) {
+func TestModuleCommandRunsDeploy(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
 	lintRecorder := &recordingRun{}
-	runRecorder := &recordingModuleRun{}
+	runRecorder := &recordingModuleDeploy{}
 
 	getter := genericclioptions.NewConfigFlags(true)
 
-	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.run, getter,
-		"run",
+	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, getter,
+		"deploy",
 		"--config", "definition.yaml",
 		"--platform-version", "2.19.0")
 

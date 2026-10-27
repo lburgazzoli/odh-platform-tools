@@ -2,7 +2,7 @@
 
 Offline tooling for OpenDataHub platform module definitions: `module
 lint` validates a definition's rendered manifests against the
-packaging rules the ODH operator enforces, and `module run` renders
+packaging rules the ODH operator enforces, and `module deploy` renders
 and applies a definition to a real cluster with the operator's own
 rendering and deployment framework — both without external renderer
 binaries, containers, or credentials beyond the cluster connection.
@@ -94,11 +94,11 @@ definition file's own directory:
 | `spec.manifests.helm.path` | Optional chart directory relative to the definition file. Must contain `Chart.yaml`. Omitted or empty — or the whole `helm` block omitted — defaults to the definition file's own directory (the co-located layout). The release name is `metadata.name`; no repositories or credentials are involved. Chart dependencies must be vendored under `charts/`. |
 | `spec.manifests.helm.values` | Optional literal Helm values, merged over the chart defaults with the definition winning. No interpolation: `{{NAME}}`-looking text stays literal, like env values. Validated against the chart's `values.schema.json` when present. |
 | `spec.manifests.kustomize.path` | Optional directory containing `kustomization.yaml` (or `.yml`), relative to the definition file. Omitted or empty — or the whole `kustomize` block omitted — defaults to the definition file's own directory. Sibling bases and resource files are allowed; there is no `default/` fallback. |
-| `spec.controller.deployment.name` | The controller Deployment. When omitted, `module run` falls back to the module's `metadata.name` when selecting the controller Deployment for injection and waiting. |
-| `spec.controller.deployment.container` | The main container. `name` defaults to `manager` when omitted, and a fully omitted block is materialized as the default-named block (loader defaults); `image` may be a literal or a whole-value `{{VARIABLE}}` reference resolved only by `module run`, and it must resolve — the render fails otherwise. |
+| `spec.controller.deployment.name` | The controller Deployment. When omitted, `module deploy` falls back to the module's `metadata.name` when selecting the controller Deployment for injection and waiting. |
+| `spec.controller.deployment.container` | The main container. `name` defaults to `manager` when omitted, and a fully omitted block is materialized as the default-named block (loader defaults); `image` may be a literal or a whole-value `{{VARIABLE}}` reference resolved only by `module deploy`, and it must resolve — the render fails otherwise. |
 | `spec.controller.deployment.initContainer` | Optional init container, selected by `name`, carrying an optional `image` of its own. The main image overrides the named init container when no init-specific image is declared; the effective image must resolve. The injected env vars land on the init container too. |
 | `spec.controller.deployment.container.env` | Explicit environment variables for the main container only. An explicit empty string is a valid value. |
-| `spec.relatedImages` | Optional list of portable environment-variable-style names. `module run` resolves them from the file or environment and injects them into the main container only; lint neither resolves nor injects them. |
+| `spec.relatedImages` | Optional list of portable environment-variable-style names. `module deploy` resolves them from the file or environment and injects them into the main container only; lint neither resolves nor injects them. |
 
 The instance identity is descriptive data: nothing in this tooling
 creates or looks up the custom resource, and rendering never uses
@@ -167,10 +167,10 @@ process signals are handled through the command context.
 when empty; `failure` (with `category` and `message`) is present only
 when execution did not complete.
 
-### `module run`
+### `module deploy`
 
 ```
-module run --config <definition.yaml> --platform-version <version> \
+module deploy --config <definition.yaml> --platform-version <version> \
   [--kubeconfig <path>] [--context <name>] [--namespace <namespace>] [options]
 ```
 
@@ -190,17 +190,17 @@ module run --config <definition.yaml> --platform-version <version> \
 
 | Exit code | Meaning |
 | --- | --- |
-| 0 | The run applied successfully (apply completion; with `--wait`, the wait also completed). |
+| 0 | The deploy applied successfully (apply completion; with `--wait`, the wait also completed). |
 | 1 | Classified runtime failure — render, connection, owner preparation, apply, or wait — or cancellation. |
 | 2 | Usage, invalid options, definition configuration errors, or an unreadable related-images file. |
 
-## Run semantics
+## Deploy semantics
 
-`module run` composes three explicit stages — **Load**, **Render**,
+`module deploy` composes three explicit stages — **Load**, **Render**,
 **Deploy** — plus the optional **Wait**, and reports exactly how far
 it got (`attemptedStage`/`completedStage` in the JSON report).
 
-**Settings and flags.** The run resolves one REST configuration from
+**Settings and flags.** The deploy resolves one REST configuration from
 the standard inherited flags — the kubeconfig file, the explicit
 context, and the effective installation namespace — through one
 `ConfigFlags` getter. The effective installation namespace is where
@@ -208,7 +208,7 @@ the controller package renders; `--applications-namespace` overrides
 it for the controller package only. Payload resources that author
 their own namespace keep it.
 
-**Rendering.** The run and lint share one centralized rendering
+**Rendering.** The deploy and lint share one centralized rendering
 service, `renderer.Render`, which selects the native backend from the
 definition's manifest format and drives it through the shared
 manifest-kit engine. Rendering is cooperative and has no hard render
@@ -276,7 +276,7 @@ The platform config ConfigMap follows the same split through
 `Remove` options to the data block, and the injector decides which
 keys those are.
 
-**Platform config.** The run creates or merges the
+**Platform config.** The deploy creates or merges the
 `odh-<module>-config` ConfigMap carrying the `--platform-version`. An
 existing match is selected by the full object identity — exact core/v1
 ConfigMap group/version/kind, namespace, and name, with the last exact
@@ -287,7 +287,7 @@ foreign namespace keeps its own ConfigMap untouched, and a missing
 config is appended in the applications namespace.
 
 **Default success means apply completion.** Without `--wait`, a
-successful run means the payload apply returned success — nothing
+successful deploy means the payload apply returned success — nothing
 more. A pending, absent, or never-converging workload causes no
 failure, no monitoring call, and no readiness claim. `--wait=false`
 is the default.
@@ -301,7 +301,7 @@ raised (`--wait-timeout=5m`); the first deadline wins, so a longer
 wait budget never extends the remaining overall `--timeout`. A
 successful wait reports the rollout completion and the exact targets
 (`wait.targets` in the JSON report); a failed or timed-out wait fails
-the run as a runtime failure while the applied state, the confirmed
+the deploy as a runtime failure while the applied state, the confirmed
 owner, and the completed deploy stage are retained — the wait is
 explicit, not part of Deploy.
 
@@ -335,12 +335,12 @@ appears only when the wait was requested.
 
 ## The owner lifecycle
 
-The run's persisted owner is the module definition itself: the single
+The deploy's persisted owner is the module definition itself: the single
 generated `config.opendatahub.io/v1alpha1`
 `PlatformModuleDefinition` CRD, cluster-scoped, carried in the CLI's
 embedded CRD set.
 
-- **Preparation and privileges.** Every run applies the embedded
+- **Preparation and privileges.** Every deploy applies the embedded
   definition CRD — create-or-update server-side apply, the same path
   whether the server holds it or not, so an existing shared CRD is
   updated — waits for its establishment, then applies the definition
@@ -355,7 +355,7 @@ embedded CRD set.
   normalized placement defaults applied, references unexpanded: the
   stored spec keeps `{{VARIABLE}}` image references and literal Helm
   values as authored, never rendered output or source snapshots.
-  Re-running with an updated definition updates the stored spec under
+  Re-deploying with an updated definition updates the stored spec under
   the same identity.
 - **Ownership.** Payload objects (except Namespaces, CRDs, and the
   cluster-scoped definition itself) receive an owner reference to
@@ -370,11 +370,11 @@ embedded CRD set.
   rejected before any write.
 - **Partial failure, no rollback, no pruning.** A failed apply
   leaves the writes that preceded the failure standing as partial
-  state; there is no rollback. Re-running into a different namespace
+  state; there is no rollback. Re-deploying into a different namespace
   renders and applies there without pruning or migrating the old
   one. Cleanup is manual: deleting the persisted definition (or the
   namespace) is the operator's garbage-collection path.
-- **No module CR or operands.** The run never creates or looks up
+- **No module CR or operands.** The deploy never creates or looks up
   the module's own custom resource and never touches operands: it
   applies the rendered package and, when asked, waits for the
   controller Deployment rollout. Nothing else observes or reports
@@ -396,7 +396,7 @@ reference:
 then resolve it from a dotenv file:
 
 ```sh
-go run github.com/lburgazzoli/odh-platform-tools/cmd module run \
+go run github.com/lburgazzoli/odh-platform-tools/cmd module deploy \
   --config examples/helm/chart/module.yaml \
   --platform-version 2.19.0 \
   --namespace odh-example \
@@ -407,7 +407,7 @@ or from the environment, which wins over the file:
 
 ```sh
 RELATED_IMAGE_EXAMPLE_CONTROLLER=quay.io/example/example-controller:v1.0.0 \
-  go run github.com/lburgazzoli/odh-platform-tools/cmd module run …
+  go run github.com/lburgazzoli/odh-platform-tools/cmd module deploy …
 ```
 
 `examples/images.env` carries the non-sensitive placeholder. There are
@@ -452,7 +452,7 @@ metadata.
 Checks evaluate their objects with jq expressions through
 `pkg/util/jq` (`Matchesf`, `Countf`): a missing field is a clean
 non-match, while a malformed object is an evaluation error — never a
-silent zero. A check that fails to evaluate aborts the run as an
+silent zero. A check that fails to evaluate aborts the deploy as an
 execution error instead of reporting a finding.
 
 ## Architecture
@@ -463,18 +463,18 @@ execution error instead of reporting a finding.
              └───────────────────────────────┬───────────────────────────────────┘
                                              │
              ┌──────────────────── cmd/module (command group) ───────────────────┐
-             │  `module` group: attaches the lint and run subcommands            │
+             │  `module` group: attaches the lint and deploy subcommands          │
              └───────────────┬───────────────────────────────┬───────────────────┘
                              │                               │
         ┌────────────────────▼───────────────┐  ┌────────────▼─────────────────────┐
-        │ cmd/module/lint                    │  │ cmd/module/run                    │
-        │ --config/--output → linter.Options │  │ flags → runner.Options, report,   │
-        │ report formatting, exit codes      │  │ exit classification               │
+        │ cmd/module/lint                    │  │ cmd/module/deploy                │
+        │ --config/--output → linter.Options │  │ flags → deployer.Options, report,│
+        │ report formatting, exit codes      │  │ exit classification              │
         └────────────────────┬───────────────┘  └────────────┬─────────────────────┘
-                             │ linter.Run                    │ runner.Run (Load → Render
+                             │ linter.Run                    │ deployer.Apply (Load → Render
                              │                               │ → Deploy → optional Wait)
         ┌────────────────────▼───────────────┐  ┌────────────▼─────────────────────┐
-        │ pkg/module/loader                  │  │ pkg/module/runner                │
+        │ pkg/module/loader                  │  │ pkg/module/deployer              │
         │ YAML → typed definition,           │  │ owner preparation, connection,   │
         │ placement defaults                 │  │ deploy, images, wait             │
         └────────────────────────────────────┘  └────────────┬─────────────────────┘
@@ -499,7 +499,7 @@ execution error instead of reporting a finding.
   generated deepcopy. The persisted owner type is the generated
   v1alpha1 definition with its embedded CRD.
 - **Services stay reusable.** The loader and the centralized
-  rendering service remain independently callable; the runner's owner
+  rendering service remain independently callable; the deployer's owner
   preparation, connection, deploy, image, and wait stages compose
   behind one action.
 - **Engine-faithful rendering.** The centralized rendering service
@@ -514,7 +514,7 @@ execution error instead of reporting a finding.
 
 ## Parity boundaries
 
-The run shares the ODH operator's rendering and deployment machinery
+The deploy shares the ODH operator's rendering and deployment machinery
 — recorded at `odh-platform-utilities/framework
 v0.2.1-0.20261021162150-201e66e4e90a`, `k8s-manifest-kit/engine
 v0.2.1-0.20260909120554-85414598bec8`, `renderer-helm v0.4.0`,
@@ -524,7 +524,7 @@ and ApplyOrder. It is deliberately not the operator:
 
 - No config-hash restart: applied Deployments carry no injected
   checksum annotation and no rollout restart is forced.
-- No automatic lint: `module run` does not run the lint checks.
+- No automatic lint: `module deploy` does not run the lint checks.
 - No gate handling: upgrade-gate labels in the payload are ordinary
   labels.
 - No xKS bootstrap and no out-of-band namespace or dependency
@@ -615,7 +615,7 @@ make vulncheck          # vulnerability check
 Layout: all code lives under `pkg/` with a singular `module` package
 tree (`api/v1alpha1`, `loader`, `renderer` with the `helm` and
 `kustomize` backend constructors and the `source` entry resolver,
-`linter`, `runner`); the parent `pkg/module` is the composition
+`linter`, `deployer`); the parent `pkg/module` is the composition
 facade;
 `cmd/main.go` is only the executable entrypoint. The offline
 integration suite lives under `tests/integration` behind the

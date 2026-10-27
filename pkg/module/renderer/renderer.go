@@ -23,7 +23,7 @@ limitations under the License.
 // and the reserved-resource policy live.
 //
 // Render is the one public entrypoint. Lint calls it with no options,
-// so its output matches offline rendering exactly; run calls it with
+// so its output matches offline rendering exactly; deploy calls it with
 // the installation namespace and its adaptation injectors as caller
 // post-renderers.
 package renderer

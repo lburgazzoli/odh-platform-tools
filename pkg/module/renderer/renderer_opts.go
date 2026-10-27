@@ -25,7 +25,7 @@ import (
 // RenderOptions holds the runtime rendering inputs that offline lint
 // rendering does not have.
 //
-// Namespace is the installation namespace a run renders into: for the
+// Namespace is the installation namespace a deploy renders into: for the
 // Helm backend it becomes the release namespace — .Release.Namespace
 // for chart templates — without filling metadata.namespace itself, and
 // for the Kustomize backend the engine's real namespace transformer
@@ -35,10 +35,10 @@ import (
 //
 // PostRenderers are caller-supplied post-renderers the shared engine
 // applies after the library apply-order post-renderer. Lint supplies
-// none; run registers the adaptation injectors here so ordering is
+// none; deploy registers the adaptation injectors here so ordering is
 // enforced once, at engine level, instead of per backend.
 type RenderOptions struct {
-	// Namespace is the installation namespace a run renders into;
+	// Namespace is the installation namespace a deploy renders into;
 	// the zero value leaves rendering untouched.
 	Namespace string
 
@@ -64,7 +64,7 @@ func (opts RenderOptions) ApplyTo(target *RenderOptions) {
 // defaults; a nil option is ignored.
 type RenderOption = option.Option[RenderOptions]
 
-// WithNamespace sets the installation namespace a run renders into,
+// WithNamespace sets the installation namespace a deploy renders into,
 // replacing any earlier namespace option. An empty namespace leaves
 // rendering untouched, matching offline lint output exactly.
 func WithNamespace(namespace string) RenderOption {

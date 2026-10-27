@@ -123,7 +123,7 @@ func guardResource(t *testing.T, document string) unstructured.Unstructured {
 }
 
 // TestCheckReservedRejectsReservedIdentities proves the shared payload
-// guard rejects the objects a module run must never deploy — the
+// guard rejects the objects a module deploy must never apply — the
 // configured module type's own instances at any version, any
 // config.opendatahub.io PlatformModuleDefinition, and the reserved
 // definition CRD — with the exact identity text, the central sentinel
@@ -321,7 +321,7 @@ func newGuardNativeKustomize(t *testing.T, resource string) (enginetypes.Rendere
 
 // TestRenderHelmRejectsReservedResourcesOnEveryPath proves the shared
 // payload guard fails both Helm render paths — lint's zero options and
-// run's namespace option — on reserved objects: the definition's own
+// deploy's namespace option — on reserved objects: the definition's own
 // module type at any version, any PlatformModuleDefinition, and the
 // reserved definition CRD. Rejection is a render error carrying the
 // sentinel, never a silent drop.

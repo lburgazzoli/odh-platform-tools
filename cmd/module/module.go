@@ -1,5 +1,5 @@
 // Package module wires the `module` command group of the binary. It
-// owns the group command only: the `lint` and `run` subcommands live
+// owns the group command only: the `lint` and `deploy` subcommands live
 // in their own packages, and every business execution goes through
 // the injected action boundaries.
 package module
@@ -9,17 +9,17 @@ import (
 
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
+	"github.com/lburgazzoli/odh-platform-tools/cmd/module/deploy"
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
-	"github.com/lburgazzoli/odh-platform-tools/cmd/module/run"
 )
 
 // NewModuleCommand returns the `module` command group with its two
-// registered subcommands, `lint` and `run`. The standard getter the
-// root registered is forwarded to the run composition; lint is
+// registered subcommands, `lint` and `deploy`. The standard getter the
+// root registered is forwarded to the deploy composition; lint is
 // offline and never resolves it.
 func NewModuleCommand(
 	lintRun lint.Run,
-	runRun run.Run,
+	deployAction deploy.Deploy,
 	getter genericclioptions.RESTClientGetter,
 ) *cobra.Command {
 	group := &cobra.Command{
@@ -27,7 +27,7 @@ func NewModuleCommand(
 		Short: "Offline platform module tooling",
 		Long: "Offline tooling for platform module definitions: lint " +
 			"checks a module definition and its rendered manifests " +
-			"without a cluster, and run installs one module definition " +
+			"without a cluster, and deploy installs one module definition " +
 			"and its controller package onto a cluster.",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
@@ -38,7 +38,7 @@ func NewModuleCommand(
 	}
 
 	group.AddCommand(lint.NewLintCommand(lintRun))
-	group.AddCommand(run.NewRunCommand(runRun, getter))
+	group.AddCommand(deploy.NewDeployCommand(deployAction, getter))
 
 	return group
 }

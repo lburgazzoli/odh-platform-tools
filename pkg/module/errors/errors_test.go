@@ -51,7 +51,7 @@ func TestDefinitionCategoryComposesDetailText(t *testing.T) {
 var allCategories = []error{
 	ErrInvalidDefinition,
 	ErrInvalidLintOptions,
-	ErrInvalidRunOptions,
+	ErrInvalidDeployOptions,
 	ErrStageSequence,
 	ErrWaitTargetMissing,
 	ErrReservedResource,
@@ -103,7 +103,7 @@ func TestModuleErrorRejectsEqualTextSentinels(t *testing.T) {
 
 	g := NewWithT(t)
 
-	err := New(ErrStageSequence, "Run requires a fresh runner")
+	err := New(ErrStageSequence, "Apply requires a fresh deployer")
 	impostor := errors.New(ErrStageSequence.Error())
 
 	g.Expect(errors.Is(err, impostor)).To(BeFalse())
@@ -160,7 +160,7 @@ func TestModuleErrorWithoutCauseIsStillError(t *testing.T) {
 
 	g := NewWithT(t)
 
-	err := New(ErrStageSequence, "Run requires a fresh runner")
+	err := New(ErrStageSequence, "Apply requires a fresh deployer")
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Unwrap(err)).To(BeNil())

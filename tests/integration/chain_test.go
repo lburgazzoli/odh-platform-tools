@@ -123,7 +123,7 @@ func TestLintChainInvalidOptions(t *testing.T) {
 	result, err := module.NewLinter().Run(t.Context(), linter.Options{})
 
 	g.Expect(errors.Is(err, moduleerrors.ErrInvalidLintOptions)).To(BeTrue())
-	g.Expect(errors.Is(err, moduleerrors.ErrInvalidRunOptions)).To(BeFalse())
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDeployOptions)).To(BeFalse())
 	g.Expect(result.Diagnostics).To(BeEmpty())
 }
 

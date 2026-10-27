@@ -28,8 +28,8 @@ import (
 )
 
 // CheckReserved is the shared payload guard every render path — lint
-// and run alike — applies to its own output: it rejects the objects a
-// module run must never deploy, whatever backend rendered them.
+// and deploy alike — applies to its own output: it rejects the objects a
+// module deploy must never apply, whatever backend rendered them.
 //
 // Reserved are instances of the definition's configured module type
 // (any version), any config.opendatahub.io PlatformModuleDefinition,

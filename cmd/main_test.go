@@ -13,10 +13,10 @@ import (
 
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
+	deploycli "github.com/lburgazzoli/odh-platform-tools/cmd/module/deploy"
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
-	runcli "github.com/lburgazzoli/odh-platform-tools/cmd/module/run"
+	deployer "github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/runner"
 )
 
 // rootKubeconfigYAML is a standalone kubeconfig whose context carries
@@ -55,23 +55,23 @@ func (r *recordingRun) run(_ context.Context, options linter.Options) (linter.Re
 	return linter.Result{}, nil
 }
 
-// recordingModuleRun is a fake run action boundary recording every
+// recordingModuleDeploy is a fake deploy action boundary recording every
 // invocation, the context it received, and the namespace the standard
 // getter resolves to.
-type recordingModuleRun struct {
+type recordingModuleDeploy struct {
 	calls      int
 	contexts   []context.Context
 	getters    []genericclioptions.RESTClientGetter
-	options    []runner.Options
+	options    []deployer.Options
 	namespaces []string
 }
 
-// run records one invocation and returns a successful empty result.
-func (r *recordingModuleRun) run(
+// deploy records one invocation and returns a successful empty result.
+func (r *recordingModuleDeploy) deploy(
 	ctx context.Context,
 	getter genericclioptions.RESTClientGetter,
-	options runner.Options,
-) (runner.Result, error) {
+	options deployer.Options,
+) (deployer.Result, error) {
 	r.calls++
 	r.contexts = append(r.contexts, ctx)
 	r.getters = append(r.getters, getter)
@@ -79,11 +79,11 @@ func (r *recordingModuleRun) run(
 
 	namespace, _, err := getter.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
-		return runner.Result{}, err
+		return deployer.Result{}, err
 	}
 	r.namespaces = append(r.namespaces, namespace)
 
-	return runner.Result{}, nil
+	return deployer.Result{}, nil
 }
 
 // execute runs one root command execution with captured streams.
@@ -91,12 +91,12 @@ func execute(
 	ctx context.Context,
 	t *testing.T,
 	lintRun lint.Run,
-	runRun runcli.Run,
+	deployAction deploycli.Deploy,
 	args ...string,
 ) (string, error) {
 	t.Helper()
 
-	root := NewRootCommand(lintRun, runRun)
+	root := NewRootCommand(lintRun, deployAction)
 
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
@@ -130,9 +130,9 @@ func TestRootCommandHelp(t *testing.T) {
 		g := NewWithT(t)
 
 		lintRecorder := &recordingRun{}
-		runRecorder := &recordingModuleRun{}
+		runRecorder := &recordingModuleDeploy{}
 
-		stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.run, "--help")
+		stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, "--help")
 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(stdout).To(ContainSubstring("Offline platform module tooling"))
@@ -147,9 +147,9 @@ func TestRootCommandHelp(t *testing.T) {
 		g := NewWithT(t)
 
 		lintRecorder := &recordingRun{}
-		runRecorder := &recordingModuleRun{}
+		runRecorder := &recordingModuleDeploy{}
 
-		stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.run,
+		stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
 			"module", "lint", "--help")
 
 		g.Expect(err).NotTo(HaveOccurred())
@@ -164,10 +164,10 @@ func TestRootCommandHelp(t *testing.T) {
 		g := NewWithT(t)
 
 		lintRecorder := &recordingRun{}
-		runRecorder := &recordingModuleRun{}
+		runRecorder := &recordingModuleDeploy{}
 
-		stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.run,
-			"module", "run", "--help")
+		stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
+			"module", "deploy", "--help")
 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(stdout).To(ContainSubstring("--config"))
@@ -188,14 +188,37 @@ func TestRootCommandRejectsUnknownCommands(t *testing.T) {
 	g := NewWithT(t)
 
 	lintRecorder := &recordingRun{}
-	runRecorder := &recordingModuleRun{}
+	runRecorder := &recordingModuleDeploy{}
 
-	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.run,
+	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
 		"frobnicate", "--config", "definition.yaml")
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(ExitCode(err)).To(Equal(lint.ExitUsage))
 	// The unknown command is rejected, never stubbed.
+	g.Expect(err.Error()).To(ContainSubstring("unknown"))
+	g.Expect(lintRecorder.calls).To(Equal(0))
+	g.Expect(runRecorder.calls).To(Equal(0))
+	g.Expect(stdout).To(BeEmpty())
+}
+
+func TestRootCommandRejectsOldRunCommand(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	lintRecorder := &recordingRun{}
+	runRecorder := &recordingModuleDeploy{}
+
+	// The old command name is unknown, not an alias: it fails as a
+	// usage error before any action, report, or cluster access.
+	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
+		"module", "run",
+		"--config", "definition.yaml",
+		"--platform-version", "2.19.0")
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(ExitCode(err)).To(Equal(lint.ExitUsage))
 	g.Expect(err.Error()).To(ContainSubstring("unknown"))
 	g.Expect(lintRecorder.calls).To(Equal(0))
 	g.Expect(runRecorder.calls).To(Equal(0))
@@ -208,9 +231,9 @@ func TestRootCommandRegistersStandardFlagsOnce(t *testing.T) {
 	g := NewWithT(t)
 
 	lintRecorder := &recordingRun{}
-	runRecorder := &recordingModuleRun{}
+	runRecorder := &recordingModuleDeploy{}
 
-	root := NewRootCommand(lintRecorder.run, runRecorder.run)
+	root := NewRootCommand(lintRecorder.run, runRecorder.deploy)
 
 	// The standard flags exist exactly once, on the root's persistent
 	// flag set.
@@ -222,12 +245,12 @@ func TestRootCommandRegistersStandardFlagsOnce(t *testing.T) {
 			"root persistent flag %s", name)
 	}
 
-	// The run command registers none of them itself.
-	runCommand, _, err := root.Find([]string{"module", "run"})
+	// The deploy command registers none of them itself.
+	runCommand, _, err := root.Find([]string{"module", "deploy"})
 	g.Expect(err).NotTo(HaveOccurred())
 	for _, name := range []string{"kubeconfig", "context", "cluster", "namespace", "server"} {
 		g.Expect(runCommand.Flags().Lookup(name)).To(BeNil(),
-			"run-local flag %s", name)
+			"deploy-local flag %s", name)
 	}
 
 	// The lint command registers none of them either.
@@ -239,24 +262,24 @@ func TestRootCommandRegistersStandardFlagsOnce(t *testing.T) {
 	}
 }
 
-func TestRootCommandRunForwardsStandardGetterAndContext(t *testing.T) {
+func TestRootCommandDeployForwardsStandardGetterAndContext(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
 	lintRecorder := &recordingRun{}
-	runRecorder := &recordingModuleRun{}
+	runRecorder := &recordingModuleDeploy{}
 
 	ctx := t.Context()
 
-	_, err := execute(ctx, t, lintRecorder.run, runRecorder.run,
-		"module", "run",
+	_, err := execute(ctx, t, lintRecorder.run, runRecorder.deploy,
+		"module", "deploy",
 		"--config", "definition.yaml",
 		"--platform-version", "2.19.0",
 		"--kubeconfig", kubeconfigFile(t))
 	g.Expect(err).NotTo(HaveOccurred())
 
-	// Exactly one run action call, with the caller's context, the
+	// Exactly one deploy action call, with the caller's context, the
 	// root's standard getter, and the kubeconfig context's namespace.
 	g.Expect(runRecorder.calls).To(Equal(1))
 	g.Expect(runRecorder.contexts).To(HaveLen(1))
@@ -272,10 +295,10 @@ func TestRootCommandNamespaceOverrideWins(t *testing.T) {
 	g := NewWithT(t)
 
 	lintRecorder := &recordingRun{}
-	runRecorder := &recordingModuleRun{}
+	runRecorder := &recordingModuleDeploy{}
 
-	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.run,
-		"module", "run",
+	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
+		"module", "deploy",
 		"--config", "definition.yaml",
 		"--platform-version", "2.19.0",
 		"--kubeconfig", kubeconfigFile(t),
@@ -293,11 +316,11 @@ func TestRootCommandLintNeverResolvesKubeconfig(t *testing.T) {
 	g := NewWithT(t)
 
 	lintRecorder := &recordingRun{}
-	runRecorder := &recordingModuleRun{}
+	runRecorder := &recordingModuleDeploy{}
 
 	// The inherited --kubeconfig flag is parsed but never loaded:
 	// the lint action runs against a nonexistent file.
-	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.run,
+	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
 		"module", "lint",
 		"--config", "definition.yaml",
 		"--kubeconfig", "/nonexistent/kubeconfig")
@@ -306,16 +329,16 @@ func TestRootCommandLintNeverResolvesKubeconfig(t *testing.T) {
 	g.Expect(runRecorder.calls).To(Equal(0))
 }
 
-func TestRootCommandRunHelpNeverResolvesKubeconfig(t *testing.T) {
+func TestRootCommandDeployHelpNeverResolvesKubeconfig(t *testing.T) {
 	g := NewWithT(t)
 
 	lintRecorder := &recordingRun{}
-	runRecorder := &recordingModuleRun{}
+	runRecorder := &recordingModuleDeploy{}
 
 	t.Setenv("KUBECONFIG", "/nonexistent/kubeconfig")
 
-	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.run,
-		"module", "run", "--help")
+	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
+		"module", "deploy", "--help")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(runRecorder.calls).To(Equal(0))
 }
@@ -330,7 +353,7 @@ func TestExitCode(t *testing.T) {
 	g.Expect(ExitCode(fmt.Errorf("wrapped: %w",
 		&lint.ExitError{Code: lint.ExitFailure, Err: errors.New("render")}))).To(Equal(lint.ExitFailure))
 	g.Expect(ExitCode(fmt.Errorf("wrapped: %w",
-		&runcli.ExitError{Code: runcli.ExitUsage, Err: errors.New("invalid options")}))).To(Equal(runcli.ExitUsage))
+		&deploycli.ExitError{Code: deploycli.ExitUsage, Err: errors.New("invalid options")}))).To(Equal(deploycli.ExitUsage))
 	g.Expect(ExitCode(fmt.Errorf("wrapped: %w",
-		&runcli.ExitError{Code: runcli.ExitFailure, Err: context.Canceled}))).To(Equal(runcli.ExitFailure))
+		&deploycli.ExitError{Code: deploycli.ExitFailure, Err: context.Canceled}))).To(Equal(deploycli.ExitFailure))
 }

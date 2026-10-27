@@ -14,8 +14,8 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
 	climodule "github.com/lburgazzoli/odh-platform-tools/cmd/module"
+	deploycli "github.com/lburgazzoli/odh-platform-tools/cmd/module/deploy"
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
-	runcli "github.com/lburgazzoli/odh-platform-tools/cmd/module/run"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module"
 )
 
@@ -25,7 +25,7 @@ func main() {
 
 // exitCoder is the command-neutral exit-code contract: any command
 // error exposing the process exit status of its classified outcome.
-// Both lint's and run's ExitError implement it, so the root never
+// Both lint's and deploy's ExitError implement it, so the root never
 // inspects a command-specific type.
 type exitCoder interface {
 	ExitCode() int
@@ -34,11 +34,11 @@ type exitCoder interface {
 // run executes the command and returns its process exit status.
 func run() int {
 	// Process signals become context cancellation so an interrupted
-	// lint or run is classified as cancellation, not a crash.
+	// lint or deploy is classified as cancellation, not a crash.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	command := NewRootCommand(module.NewLinter().Run, runcli.Action)
+	command := NewRootCommand(module.NewLinter().Run, deploycli.Action)
 
 	if err := command.ExecuteContext(ctx); err != nil {
 		// Classified outcomes already wrote their report; every
@@ -57,13 +57,13 @@ func run() int {
 }
 
 // NewRootCommand returns the binary root command with exactly one
-// registered command tree, `module lint` and `module run`. The
+// registered command tree, `module lint` and `module deploy`. The
 // standard Kubernetes ConfigFlags are registered once here, on the
 // root's persistent flags, and the same getter is forwarded to the
-// run composition: subcommands never register their own
+// deploy composition: subcommands never register their own
 // kubeconfig/context/namespace/auth flags. Legacy descriptor
 // override flags are rejected as unknown flags.
-func NewRootCommand(lintRun lint.Run, runRun runcli.Run) *cobra.Command {
+func NewRootCommand(lintRun lint.Run, deployAction deploycli.Deploy) *cobra.Command {
 	flags := genericclioptions.NewConfigFlags(true)
 
 	root := &cobra.Command{
@@ -80,7 +80,7 @@ func NewRootCommand(lintRun lint.Run, runRun runcli.Run) *cobra.Command {
 	// --user, --token, --tls-* and friends.
 	flags.AddFlags(root.PersistentFlags())
 
-	root.AddCommand(climodule.NewModuleCommand(lintRun, runRun, flags))
+	root.AddCommand(climodule.NewModuleCommand(lintRun, deployAction, flags))
 
 	return root
 }

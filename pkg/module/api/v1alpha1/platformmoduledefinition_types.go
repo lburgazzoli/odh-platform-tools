@@ -234,7 +234,7 @@ type Controller struct {
 type ControllerDeployment struct {
 	// Name is the controller Deployment name. It is empty when the
 	// definition omits it or authors an explicit empty string; both
-	// are equivalent here, and the run then falls back to the
+	// are equivalent here, and the deploy then falls back to the
 	// module's metadata.name when selecting the controller
 	// Deployment.
 	//
@@ -268,7 +268,7 @@ type ContainerDefinition struct {
 
 	// Image is the main container image. It may be a literal or a
 	// whole-value {{VARIABLE}} reference; its contents stay opaque
-	// here and are resolved by the runner, never by lint. An image
+	// here and are resolved by the deployer, never by lint. An image
 	// that does not resolve fails the render; the chart default is
 	// never kept silently.
 	//
@@ -299,7 +299,7 @@ type ContainerTarget struct {
 	// Image is the init container image, distinct from the main
 	// container's. It may be a literal or a whole-value {{VARIABLE}}
 	// reference; its contents stay opaque here and are resolved by the
-	// runner, never by lint. When it is empty, the main container's
+	// deployer, never by lint. When it is empty, the main container's
 	// image applies instead; the effective image must resolve, and an
 	// unresolved one fails the render.
 	//

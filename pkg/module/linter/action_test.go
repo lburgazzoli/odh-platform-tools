@@ -125,7 +125,7 @@ func TestActionRunValidatesOptions(t *testing.T) {
 	result, err := action.Run(t.Context(), Options{})
 
 	g.Expect(errors.Is(err, moduleerrors.ErrInvalidLintOptions)).To(BeTrue())
-	g.Expect(errors.Is(err, moduleerrors.ErrInvalidRunOptions)).To(BeFalse())
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDeployOptions)).To(BeFalse())
 	g.Expect(err.Error()).To(Equal("invalid lint options: DefinitionFile is required"))
 	g.Expect(result.Diagnostics).To(BeEmpty())
 	g.Expect(calls.sequence).To(BeEmpty())

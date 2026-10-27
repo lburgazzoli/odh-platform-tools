@@ -182,8 +182,8 @@ func TestLintCommandClassification(t *testing.T) {
 		},
 		{
 			name: "run options wrapper is not a lint usage failure",
-			err: moduleerrors.New(moduleerrors.ErrInvalidRunOptions,
-				"invalid run options: DefinitionFile is required"),
+			err: moduleerrors.New(moduleerrors.ErrInvalidDeployOptions,
+				"invalid deploy options: DefinitionFile is required"),
 			exitCode: ExitFailure,
 			status:   StatusFailed,
 			category: FailureRender,
