@@ -89,6 +89,64 @@ func TestApplyRejectsInvalidOptionsBeforeTimer(t *testing.T) {
 	g.Expect(*stub.calls).To(BeEmpty())
 }
 
+// TestApplyRejectsInvalidFieldManagerBeforeTimer proves an invalid
+// field manager fails the complete invocation as an options error
+// before the invocation timer or any service runs.
+func TestApplyRejectsInvalidFieldManagerBeforeTimer(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	options := testOptions()
+	options.FieldManager = "team/manager"
+
+	stub := newStubDeployer(t, options)
+
+	result, err := stub.target.Apply(t.Context())
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(Equal(
+		"invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters"))
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDeployOptions)).To(BeTrue())
+	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeFalse())
+
+	g.Expect(result).To(Equal(Result{}))
+	g.Expect(*stub.calls).To(BeEmpty())
+}
+
+// TestApplyAcceptsBoundaryFieldManagers proves the boundary cases the
+// strict label-value contract allows: the dotted default, one
+// character, the full 63 characters, and internal dots, underscores,
+// hyphens, and uppercase.
+func TestApplyAcceptsBoundaryFieldManagers(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		manager string
+	}{
+		{"dotted platform default", "platform.opendatahub.io"},
+		{"one character", "a"},
+		{"sixty-three characters", strings.Repeat("a", 63)},
+		{"uppercase and underscore", "Team_Example.Deployer-1"},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := NewWithT(t)
+
+			options := testOptions()
+			options.FieldManager = testCase.manager
+
+			stub := newStubDeployer(t, options)
+
+			g.Expect(stub.target.Load(t.Context())).To(Succeed())
+			g.Expect(stub.target.fieldManager).To(Equal(testCase.manager))
+		})
+	}
+}
+
 // TestRunHonorsCallerCancellation proves an already-cancelled caller
 // fails with its own cancellation identity before the invocation
 // timer exists and no stage runs.

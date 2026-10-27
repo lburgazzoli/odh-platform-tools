@@ -81,13 +81,16 @@ type ManifestRender func(
 type Connect func(ctx context.Context, getter genericclioptions.RESTClientGetter) (*cluster.Connection, error)
 
 // ApplyPayload applies the rendered payload through the framework
-// deploy action. The deploy service is the concrete implementation.
+// deploy action under the invocation's effective field manager,
+// already resolved and validated by the caller. The deploy service
+// is the concrete implementation.
 type ApplyPayload func(
 	ctx context.Context,
 	connection *cluster.Connection,
 	owner *toolApi.PlatformModuleDefinition,
 	release api.Release,
 	resources []unstructured.Unstructured,
+	fieldManager string,
 ) error
 
 // stage is the deployer's position in the Load → Render → Deploy
@@ -129,6 +132,8 @@ type Deployer struct {
 
 	owner   *toolApi.PlatformModuleDefinition
 	applied bool
+
+	fieldManager string
 
 	waited           bool
 	waitCompleted    bool
@@ -232,6 +237,10 @@ func (r *Deployer) Load(ctx context.Context) error {
 	r.platformType = r.options.PlatformType
 	if r.platformType == "" {
 		r.platformType = DefaultPlatformType
+	}
+	r.fieldManager = r.options.FieldManager
+	if r.fieldManager == "" {
+		r.fieldManager = DefaultFieldManager
 	}
 	r.stage = stageLoaded
 
@@ -340,7 +349,7 @@ func (r *Deployer) Deploy(ctx context.Context) error {
 		return err
 	}
 
-	owner, err := prepareOwner(ctx, connection, *r.definition)
+	owner, err := prepareOwner(ctx, connection, *r.definition, r.fieldManager)
 	if err != nil {
 		r.fail()
 		return err
@@ -352,7 +361,7 @@ func (r *Deployer) Deploy(ctx context.Context) error {
 		return err
 	}
 
-	if err := r.apply(ctx, connection, r.owner, r.release, r.resources); err != nil {
+	if err := r.apply(ctx, connection, r.owner, r.release, r.resources, r.fieldManager); err != nil {
 		r.fail()
 		return err
 	}

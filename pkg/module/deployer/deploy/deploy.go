@@ -21,7 +21,8 @@ import (
 
 // Apply installs the rendered module resources through the actual
 // framework deploy action, with the persisted definition as the live
-// owner. It never publishes an owner itself and never prunes.
+// owner, under the given field manager. It never publishes an owner
+// itself and never prunes.
 //
 // The flow is minimal: normalize the persisted owner's runtime type,
 // then invoke the action once with the whole payload. The action's
@@ -37,6 +38,19 @@ import (
 // does not serve fails through the action's own error after earlier
 // writes, reported as partial state, and there is no rollback.
 //
+// fieldManager is the invocation's effective server-side-apply field
+// manager, already resolved and validated by the caller: the
+// production caller passes Options.FieldManager defaulted to
+// deployer.DefaultFieldManager, and this service adds no defaulting
+// of its own. It reaches the framework through WithFieldOwner, so it
+// covers the ordinary payload apply — including the manager-derived
+// fallback part-of label on objects that author none and the
+// framework's deploy metric label — while bundled payload CRDs keep
+// the framework's own fixed manager and fallback label. An empty
+// argument is rejected here as a safe preparation failure before any
+// client access, never silently reverting to the framework's
+// owner-kind default.
+//
 // The framework's continue-on-error first report is the stage's error
 // contract, exactly as in the operator, and its force-SSA adoption
 // semantics govern foreign-owned objects. The returned error is a
@@ -51,6 +65,7 @@ func Apply(
 	owner *toolApi.PlatformModuleDefinition,
 	release api.Release,
 	resources []unstructured.Unstructured,
+	fieldManager string,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return moduleerrors.New(moduleerrors.ErrDeployPrepare,
@@ -61,6 +76,15 @@ func Apply(
 		return moduleerrors.New(moduleerrors.ErrDeployPrepare,
 			prepareFailureMessage,
 			moduleerrors.WithCause(fmt.Errorf("%w: connection and owner must not be nil", errNilArgument)))
+	}
+
+	// The service receives its configuration prevalidated; an empty
+	// manager is a caller defect, never a request for the framework's
+	// own default. It fails before any client access.
+	if fieldManager == "" {
+		return moduleerrors.New(moduleerrors.ErrDeployPrepare,
+			prepareFailureMessage,
+			moduleerrors.WithCause(fmt.Errorf("%w: field manager must not be empty", errNilArgument)))
 	}
 
 	client := connection.Client()
@@ -84,10 +108,14 @@ func Apply(
 	// One invocation-local action carries the whole payload. Defaults
 	// keep the framework field ownership, metadata, customizers, SSA
 	// mode, the default apply-order sort (Namespaces and CRDs first),
-	// and the CRD field owner with ForceOwnership.
+	// and the CRD field owner with ForceOwnership; WithFieldOwner
+	// names this invocation's manager for the ordinary payload apply
+	// and its fallback part-of label, leaving the bundled-CRD path on
+	// the framework's fixed manager.
 	action := fwdeploy.NewAction(
 		fwdeploy.WithCache(),
 		fwdeploy.WithContinueOnError(),
+		fwdeploy.WithFieldOwner(fieldManager),
 	)
 
 	// The action's own logs can echo server-returned error text, so

@@ -182,6 +182,7 @@ module deploy --config <definition.yaml> --platform-version <version> \
 | `--applications-namespace` | effective installation namespace | Namespace the module controller package renders into. |
 | `--monitoring-namespace` | none | Monitoring namespace injected as `MONITORING_NAMESPACE`. |
 | `--platform-type` | `OpenDataHub` | Platform identity injected as `ODH_MODULE_OPERATOR_PLATFORM_TYPE`. |
+| `--field-manager` | `platform.opendatahub.io` | Server-side-apply field manager for the definition and ordinary payload writes; a nonempty Kubernetes label value of at most 63 characters (see field ownership below). |
 | `--timeout` | `5m` | Overall invocation budget; a longer `--wait-timeout` is capped by the remaining overall time (first deadline wins). |
 | `--wait` | `false` | Wait for the module controller Deployment rollout after the apply. |
 | `--wait-timeout` | `30s` | Shared rollout wait budget when `--wait` is enabled; positive, and never extending the remaining `--timeout`. |
@@ -286,6 +287,25 @@ cert-manager keys are removed. A chart that renders the name into a
 foreign namespace keeps its own ConfigMap untouched, and a missing
 config is appended in the applications namespace.
 
+**Field ownership.** The definition preparation writes — the embedded
+definition CRD and the definition itself — and the ordinary payload
+apply claim their fields under one server-side-apply field manager,
+selected by `--field-manager` and defaulting to
+`platform.opendatahub.io`. The manager identifies field ownership
+only, never a controller owner reference: the payload's owner
+references come from the persisted definition regardless of the
+manager. A custom value must be a nonempty Kubernetes label value of
+at most 63 characters — stricter than a raw SSA manager string
+(`kubectl apply` accepts prefixed names like `team/manager`; this
+tool does not), because the framework also uses the resolved name as
+the fallback `platform.opendatahub.io/part-of` label value on payload
+objects that author none; an authored nonempty part-of label is
+preserved. One exception is fixed: bundled payload CRDs always keep
+the framework's own manager (`platform.opendatahub.io`), so a custom
+manager never claims them. An explicitly empty `--field-manager` is a
+usage error; re-deploying under a different manager adds the new
+manager's claims without removing the old ones.
+
 **Default success means apply completion.** Without `--wait`, a
 successful deploy means the payload apply returned success — nothing
 more. A pending, absent, or never-converging workload causes no
@@ -344,7 +364,9 @@ embedded CRD set.
   definition CRD — create-or-update server-side apply, the same path
   whether the server holds it or not, so an existing shared CRD is
   updated — waits for its establishment, then applies the definition
-  itself the same way and uses the server-returned identity. It needs
+  itself the same way and uses the server-returned identity. Both
+  preparation writes claim their fields under the invocation's
+  `--field-manager` (see field ownership above). It needs
   no namespace prechecks: a payload-supplied `Namespace` that does not
   exist is created by the framework apply before the namespaced
   resources; any other missing namespace fails through normal API

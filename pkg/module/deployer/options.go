@@ -19,6 +19,8 @@ package deployer
 import (
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/validate/content"
+
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
@@ -26,6 +28,13 @@ import (
 // invocation sets none, matching the operator's Open Data Hub
 // fallback.
 const DefaultPlatformType = "OpenDataHub"
+
+// DefaultFieldManager is the server-side-apply field manager the
+// preparation writes — the embedded definition CRD and the definition
+// itself — and the ordinary payload apply use when the invocation
+// sets none. It shares the platform identity the framework itself
+// uses for bundled payload CRDs.
+const DefaultFieldManager = "platform.opendatahub.io"
 
 // DefaultWaitTimeout is the shared rollout-wait budget applied when
 // the invocation requests the wait without an explicit budget.
@@ -83,6 +92,16 @@ type Options struct {
 	// is a child of the overall invocation deadline and can never
 	// extend the remaining overall timeout.
 	WaitTimeout time.Duration
+
+	// FieldManager is the server-side-apply field manager the
+	// preparation writes and the ordinary payload apply claim their
+	// fields under. Empty means DefaultFieldManager. A nonempty value
+	// must be a valid Kubernetes label value of at most 63
+	// characters — stricter than a raw SSA manager string, because
+	// the framework also uses the resolved name as a fallback
+	// part-of label value. It identifies field ownership only, never
+	// a controller owner reference.
+	FieldManager string
 }
 
 // validate reports whether the options are usable. Every failure is
@@ -108,6 +127,18 @@ func (o Options) validate() error {
 	if o.Wait && o.WaitTimeout < 0 {
 		return moduleerrors.New(moduleerrors.ErrInvalidDeployOptions,
 			"invalid deploy options: WaitTimeout must not be negative")
+	}
+
+	if o.FieldManager != "" {
+		// The empty value is the default request, not an error; any
+		// nonempty value must be a valid nonempty Kubernetes label
+		// value of at most 63 characters. The constraint is stated
+		// statically: the value itself and the validator's own
+		// output never reach the message.
+		if len(o.FieldManager) > content.LabelValueMaxLength || len(content.IsLabelValue(o.FieldManager)) != 0 {
+			return moduleerrors.New(moduleerrors.ErrInvalidDeployOptions,
+				"invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters")
+		}
 	}
 
 	return nil

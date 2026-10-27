@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io/fs"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,7 +35,120 @@ const runControllerWrite = "run-namespace/synthetic-controller"
 // of the controller Deployment.
 const runControllerObservation = "apps/v1, Kind=Deployment run-namespace/synthetic-controller"
 
-// TestRunChainHelmComposesStages runs the complete Helm chain —
+// TestDeployChainFieldManagerCoversPreparationAndPayload proves the
+// production wiring — the real loader, renderers, deployer, owner
+// preparation, and framework payload action — sends the invocation's
+// field manager on both preparation writes and every ordinary payload
+// apply, while the bundled payload CRD keeps the framework's fixed
+// platform manager; the empty Go option resolves to the platform
+// identity, and separate invocations with different managers stay
+// isolated.
+func TestDeployChainFieldManagerCoversPreparationAndPayload(t *testing.T) {
+	t.Run("custom manager reaches preparation and ordinary payload", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		root := t.TempDir()
+		writeDeployHelmModule(t, root)
+
+		harness := newDeployHarness(t)
+
+		options := deployOptions(root)
+		options.FieldManager = "team.example.deployer"
+
+		_, err := harness.deploy(t.Context(), options)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		// Both owner-preparation writes carry the custom manager.
+		g.Expect(harness.managersOf("platformmoduledefinitions")).
+			To(Equal([]string{"team.example.deployer"}))
+		g.Expect(harness.managersOf(runDefinitionWrite)).
+			To(Equal([]string{"team.example.deployer"}))
+
+		// The bundled payload CRD keeps the framework's fixed
+		// platform manager; every other payload apply — the ordinary
+		// writes and the rendered Namespace — carries the custom one.
+		g.Expect(harness.managersOf("syntheticmodules")).
+			To(Equal([]string{"platform.opendatahub.io"}))
+		for _, captured := range harness.applyManagers {
+			if strings.Contains(captured.id, "syntheticmodules") {
+				continue
+			}
+			if strings.Contains(captured.id, "platformmoduledefinitions") ||
+				strings.Contains(captured.id, runDefinitionWrite) {
+				continue
+			}
+			g.Expect(captured.manager).To(Equal("team.example.deployer"),
+				"payload write %s", captured.id)
+		}
+	})
+
+	t.Run("empty option means the platform default", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		root := t.TempDir()
+		writeDeployHelmModule(t, root)
+
+		harness := newDeployHarness(t)
+
+		_, err := harness.deploy(t.Context(), deployOptions(root))
+		g.Expect(err).NotTo(HaveOccurred())
+
+		for _, captured := range harness.applyManagers {
+			g.Expect(captured.manager).To(Equal("platform.opendatahub.io"),
+				"write %s", captured.id)
+		}
+	})
+
+	t.Run("repeated custom use keeps invocations isolated", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		root := t.TempDir()
+		writeDeployHelmModule(t, root)
+
+		first := newDeployHarness(t)
+		firstOptions := deployOptions(root)
+		firstOptions.FieldManager = "first.example"
+		_, err := first.deploy(t.Context(), firstOptions)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(first.managersOf(runDefinitionWrite)).To(Equal([]string{"first.example"}))
+
+		second := newDeployHarness(t)
+		secondOptions := deployOptions(root)
+		secondOptions.FieldManager = "second.example"
+		_, err = second.deploy(t.Context(), secondOptions)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(second.managersOf(runDefinitionWrite)).To(Equal([]string{"second.example"}))
+		g.Expect(first.managersOf(runDefinitionWrite)).To(Equal([]string{"first.example"}))
+	})
+
+	t.Run("invalid manager fails before any cluster access", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		root := t.TempDir()
+		writeDeployHelmModule(t, root)
+
+		harness := newDeployHarness(t)
+
+		options := deployOptions(root)
+		options.FieldManager = "team/manager"
+
+		result, err := harness.deploy(t.Context(), options)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(errors.Is(err, moduleerrors.ErrInvalidDeployOptions)).To(BeTrue())
+		g.Expect(result).To(Equal(deployer.Result{}))
+		g.Expect(harness.connected).To(BeFalse())
+		g.Expect(harness.writes).To(BeEmpty())
+	})
+}
+
 // loader, Viper file images, the shared Helm engine with the library
 // apply-order post-renderer ahead of both struct injectors, the
 // deployer-internal owner preparation, and the real framework deploy
@@ -43,7 +157,7 @@ const runControllerObservation = "apps/v1, Kind=Deployment run-namespace/synthet
 // injection lands on the main container alone, the platform ConfigMap
 // participates in the framework's enriched sort, authored values reach
 // templates, and the write order is the pre-migration apply order.
-func TestRunChainHelmComposesStages(t *testing.T) {
+func TestDeployChainHelmComposesStages(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -148,7 +262,7 @@ func TestRunChainHelmComposesStages(t *testing.T) {
 // places unset namespaces into the applications namespace, the same
 // controller contract is injected, and the excluded core/v1
 // Namespace applies without controller references.
-func TestRunChainKustomizeComposesStages(t *testing.T) {
+func TestDeployChainKustomizeComposesStages(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -199,7 +313,7 @@ func TestRunChainKustomizeComposesStages(t *testing.T) {
 // environment variable masks the file value and the unresolved
 // controller image fails the deploy, and the file alone resolves when no
 // variable is set.
-func TestRunChainImageSourceResolution(t *testing.T) {
+func TestDeployChainImageSourceResolution(t *testing.T) {
 	root := t.TempDir()
 	writeDeployHelmVariant(t, root, runHelmSourceImageDefinitionYAML, runDeploymentTemplateYAML)
 
@@ -261,7 +375,7 @@ func TestRunChainImageSourceResolution(t *testing.T) {
 // TestRunChainUnrequestedAmbientVariablesNotInjected proves ambient
 // image sources the definition does not declare never reach the
 // rendered controller.
-func TestRunChainUnrequestedAmbientVariablesNotInjected(t *testing.T) {
+func TestDeployChainUnrequestedAmbientVariablesNotInjected(t *testing.T) {
 	g := NewWithT(t)
 
 	t.Setenv("RELATED_IMAGE_BETA", "quay.io/example/beta:v1")
@@ -291,7 +405,7 @@ func TestRunChainUnrequestedAmbientVariablesNotInjected(t *testing.T) {
 // TestRunChainMissingImagesFileFailsBeforeCluster proves an explicit
 // but unreadable related-images file is an image-source input error
 // that stops the chain before any client operation.
-func TestRunChainMissingImagesFileFailsBeforeCluster(t *testing.T) {
+func TestDeployChainMissingImagesFileFailsBeforeCluster(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -325,7 +439,7 @@ func TestRunChainMissingImagesFileFailsBeforeCluster(t *testing.T) {
 // preparation failures — an invalid definition, a render failure, and
 // an expired invocation — stop the chain before any client operation
 // or write.
-func TestRunChainLocalFailuresStopBeforeClientOperations(t *testing.T) {
+func TestDeployChainLocalFailuresStopBeforeClientOperations(t *testing.T) {
 	t.Parallel()
 
 	t.Run("invalid definition", func(t *testing.T) {
@@ -398,7 +512,7 @@ func TestRunChainLocalFailuresStopBeforeClientOperations(t *testing.T) {
 // owner, and no payload write; a definition CRD that never serves
 // stops the deploy the same way; and a failed payload apply keeps the
 // confirmed owner.
-func TestRunChainPreparationFailures(t *testing.T) {
+func TestDeployChainPreparationFailures(t *testing.T) {
 	t.Parallel()
 
 	t.Run("definition apply failure is safe and cause-preserving", func(t *testing.T) {
@@ -493,7 +607,7 @@ func TestRunChainPreparationFailures(t *testing.T) {
 // run performs exactly the deploy action's own pre-apply lookup on
 // the controller Deployment — no workload observation, no readiness
 // claim — and its report makes no wait claim.
-func TestRunChainDefaultMakesNoWorkloadObservations(t *testing.T) {
+func TestDeployChainDefaultMakesNoWorkloadObservations(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -519,7 +633,7 @@ func TestRunChainDefaultMakesNoWorkloadObservations(t *testing.T) {
 // the matched controller Deployment — never the unrelated one —
 // through the real public status helper, completing once the scripted
 // rollout reports done, with the override budget forwarded.
-func TestRunChainWaitCompletion(t *testing.T) {
+func TestDeployChainWaitCompletion(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -558,7 +672,7 @@ func TestRunChainWaitCompletion(t *testing.T) {
 // TestRunChainWaitShortBudgetTimesOut proves an expiring wait budget
 // fails as a runtime deadline error while the report retains the
 // confirmed owner and apply completion.
-func TestRunChainWaitShortBudgetTimesOut(t *testing.T) {
+func TestDeployChainWaitShortBudgetTimesOut(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -596,7 +710,7 @@ func TestRunChainWaitShortBudgetTimesOut(t *testing.T) {
 // TestRunChainWaitOverallDeadlineWins proves the wait budget is a
 // child of the overall invocation deadline: a short overall timeout
 // caps a much longer wait budget.
-func TestRunChainWaitOverallDeadlineWins(t *testing.T) {
+func TestDeployChainWaitOverallDeadlineWins(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -633,7 +747,7 @@ func TestRunChainWaitOverallDeadlineWins(t *testing.T) {
 // server reuses the persisted identity: the owner UID is stable, the
 // definition CRD takes the same server-side-apply path on both runs,
 // and every stage completes again.
-func TestRunChainIdempotentRerun(t *testing.T) {
+func TestDeployChainIdempotentRerun(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -665,7 +779,7 @@ func TestRunChainIdempotentRerun(t *testing.T) {
 // deployment name falls back to the module's metadata.name — the
 // operator's deploymentNameFor release-name fallback — with the env
 // injection landing on the fallback target.
-func TestRunChainHelmFallbackDeploymentName(t *testing.T) {
+func TestDeployChainHelmFallbackDeploymentName(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -689,7 +803,7 @@ func TestRunChainHelmFallbackDeploymentName(t *testing.T) {
 // boundary through the real chain: a chart-rendered controller
 // Deployment with a malformed env field fails the render stage before
 // any connection or write, instead of being repaired.
-func TestRunChainHelmMalformedEnvFailsRender(t *testing.T) {
+func TestDeployChainHelmMalformedEnvFailsRender(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)

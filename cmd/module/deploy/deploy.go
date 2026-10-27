@@ -123,6 +123,7 @@ type deployOptions struct {
 	applicationsNamespace string
 	monitoringNamespace   string
 	platformType          string
+	fieldManager          string
 	timeout               time.Duration
 	wait                  bool
 	waitTimeout           time.Duration
@@ -175,6 +176,8 @@ func NewDeployCommand(action Deploy, getter genericclioptions.RESTClientGetter) 
 		"monitoring namespace injected as MONITORING_NAMESPACE")
 	flags.StringVar(&options.platformType, "platform-type", "",
 		"platform identity injected as ODH_MODULE_OPERATOR_PLATFORM_TYPE (default: OpenDataHub)")
+	flags.StringVar(&options.fieldManager, "field-manager", deployer.DefaultFieldManager,
+		"server-side-apply field manager for the definition and ordinary payload writes; a nonempty Kubernetes label value of at most 63 characters")
 	flags.DurationVar(&options.timeout, "timeout", DefaultTimeout,
 		"overall invocation budget; a longer --wait-timeout is capped by the remaining overall time (first deadline wins)")
 	flags.BoolVar(&options.wait, "wait", false,
@@ -204,17 +207,32 @@ func (o deployOptions) execute(
 	action Deploy,
 	getter genericclioptions.RESTClientGetter,
 ) error {
-	result, err := action(command.Context(), getter, deployer.Options{
-		DefinitionFile:        o.config,
-		RelatedImagesFile:     o.relatedImagesFile,
-		ApplicationsNamespace: o.applicationsNamespace,
-		MonitoringNamespace:   o.monitoringNamespace,
-		PlatformType:          o.platformType,
-		PlatformVersion:       o.platformVersion,
-		Timeout:               o.timeout,
-		Wait:                  o.wait,
-		WaitTimeout:           o.waitTimeout,
-	})
+	var result deployer.Result
+
+	var err error
+
+	// The flag's default is the canonical manager, so an empty value
+	// can only be explicit input. It is rejected here, before the
+	// injected action runs, through the same classification and
+	// report path as every other options failure: the Go option
+	// itself treats empty as the default request.
+	if o.fieldManager == "" {
+		err = moduleerrors.New(moduleerrors.ErrInvalidDeployOptions,
+			"invalid deploy options: FieldManager must not be empty")
+	} else {
+		result, err = action(command.Context(), getter, deployer.Options{
+			DefinitionFile:        o.config,
+			RelatedImagesFile:     o.relatedImagesFile,
+			ApplicationsNamespace: o.applicationsNamespace,
+			MonitoringNamespace:   o.monitoringNamespace,
+			PlatformType:          o.platformType,
+			PlatformVersion:       o.platformVersion,
+			FieldManager:          o.fieldManager,
+			Timeout:               o.timeout,
+			Wait:                  o.wait,
+			WaitTimeout:           o.waitTimeout,
+		})
+	}
 
 	category, code := classify(err)
 

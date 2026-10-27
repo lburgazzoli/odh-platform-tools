@@ -129,6 +129,7 @@ func TestDeployCommandForwardsOptionsContextAndGetter(t *testing.T) {
 		"--applications-namespace", "applications",
 		"--monitoring-namespace", "monitoring",
 		"--platform-type", "OpenDataHub",
+		"--field-manager", "team.example.deployer",
 		"--timeout", "90s",
 		"--wait",
 		"--wait-timeout", "45s",
@@ -149,6 +150,7 @@ func TestDeployCommandForwardsOptionsContextAndGetter(t *testing.T) {
 		MonitoringNamespace:   "monitoring",
 		PlatformType:          "OpenDataHub",
 		PlatformVersion:       "v2.19.0+dev",
+		FieldManager:          "team.example.deployer",
 		Timeout:               90 * time.Second,
 		Wait:                  true,
 		WaitTimeout:           45 * time.Second,
@@ -169,14 +171,70 @@ func TestDeployCommandDefaults(t *testing.T) {
 	_, _, err := executeDeploy(t.Context(), t, recorder.deploy, deployFlags...)
 	g.Expect(err).NotTo(HaveOccurred())
 
-	// No wait by default, the standard budgets, and text output.
+	// No wait by default, the standard budgets, the canonical field
+	// manager, and text output.
 	g.Expect(recorder.options).To(Equal([]deployer.Options{{
 		DefinitionFile:  "definition.yaml",
 		PlatformVersion: "2.19.0",
+		FieldManager:    deployer.DefaultFieldManager,
 		Timeout:         DefaultTimeout,
 		Wait:            false,
 		WaitTimeout:     DefaultWaitTimeout,
 	}}))
+}
+
+// TestDeployCommandRejectsEmptyFieldManager proves an explicitly
+// empty --field-manager never reaches the injected action: it fails
+// as a usage-classified options error with a zero-state report and
+// the safe static message.
+func TestDeployCommandRejectsEmptyFieldManager(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	recorder := &recordingDeploy{}
+
+	stdout, _, err := executeDeploy(t.Context(), t, recorder.deploy,
+		append(slicesClone(deployFlags), "--field-manager", "")...)
+
+	g.Expect(recorder.calls).To(Equal(0))
+
+	g.Expect(exitCode(err)).To(Equal(ExitUsage))
+	var exitErr *ExitError
+	g.Expect(errors.As(err, &exitErr)).To(BeTrue())
+	g.Expect(errors.Is(exitErr.Err, moduleerrors.ErrInvalidDeployOptions)).To(BeTrue())
+	g.Expect(exitErr.Err.Error()).To(Equal("invalid deploy options: FieldManager must not be empty"))
+
+	// The report is the zero-state options failure: no attempted
+	// stage, no owner, no apply claim.
+	g.Expect(stdout).To(Equal(`module deploy definition.yaml: failed
+invalid-options: invalid deploy options: FieldManager must not be empty
+`))
+}
+
+// TestDeployCommandRejectsInvalidFieldManager proves an invalid
+// nonempty --field-manager fails as a usage-classified options error
+// through the real production action wiring — the deployer validates
+// before any cluster access — and the rejected value appears in
+// neither the report nor the failure summary.
+func TestDeployCommandRejectsInvalidFieldManager(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	stdout, stderr, err := executeDeploy(t.Context(), t, Action,
+		append(slicesClone(deployFlags), "--field-manager", "team/manager")...)
+
+	g.Expect(exitCode(err)).To(Equal(ExitUsage))
+	var exitErr *ExitError
+	g.Expect(errors.As(err, &exitErr)).To(BeTrue())
+	g.Expect(errors.Is(exitErr.Err, moduleerrors.ErrInvalidDeployOptions)).To(BeTrue())
+	g.Expect(exitErr.Err.Error()).To(Equal(
+		"invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters"))
+
+	g.Expect(stdout).NotTo(ContainSubstring("team/manager"))
+	g.Expect(stderr).NotTo(ContainSubstring("team/manager"))
+	g.Expect(stdout).To(ContainSubstring(FailureInvalidOptions))
 }
 
 func TestDeployCommandClassification(t *testing.T) {

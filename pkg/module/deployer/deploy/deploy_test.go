@@ -58,6 +58,11 @@ import (
 // persisted owner.
 const definitionUID = "definition-uid"
 
+// defaultFieldManager is the canonical application field manager the
+// production caller passes; the service adds no defaulting of its
+// own.
+const defaultFieldManager = "platform.opendatahub.io"
+
 // payloadCRDYAML is a bundled CRD establishing the synthetic module
 // type.
 const payloadCRDYAML = `apiVersion: apiextensions.k8s.io/v1
@@ -269,6 +274,7 @@ func liveTunedDeployment() *appsv1.Deployment {
 type writeLog struct {
 	mu      sync.Mutex
 	entries []string
+	applies []applyOption
 }
 
 // record appends one recorded operation.
@@ -285,6 +291,31 @@ func (l *writeLog) snapshot() []string {
 	defer l.mu.Unlock()
 
 	return append([]string(nil), l.entries...)
+}
+
+// applyOption is one captured mutating write's effective request
+// options: the recorded operation identity with the field manager and
+// force flag the interceptor observed before delegation.
+type applyOption struct {
+	id      string
+	manager string
+	force   bool
+}
+
+// applyOptions returns the captured apply request options in order.
+func (l *writeLog) applyOptions() []applyOption {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return append([]applyOption(nil), l.applies...)
+}
+
+// recordApply appends one captured apply with its effective options.
+func (l *writeLog) recordApply(option applyOption) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.applies = append(l.applies, option)
 }
 
 // count returns how many recorded operations mention the value.
@@ -361,7 +392,18 @@ func (f *fakeCluster) connect(t *testing.T) (*cluster.Connection, *writeLog) {
 			opts ...crclient.ApplyOption,
 		) error {
 			id := applyIdentity(obj)
+
+			// The effective request options are captured before
+			// delegation: the field manager and force flag the
+			// framework action actually sent.
+			effective := &crclient.ApplyOptions{}
+			for _, opt := range opts {
+				opt.ApplyToApply(effective)
+			}
+			force := effective.Force != nil && *effective.Force
 			log.record("apply " + id)
+			log.recordApply(applyOption{id: id, manager: effective.FieldManager, force: force})
+
 			if err, injected := f.applyErrors[id]; injected {
 				return err
 			}
@@ -467,7 +509,7 @@ func TestApplyAppliesWholePayloadThroughFrameworkDefaults(t *testing.T) {
 	// own sort, not input order, drives the writes.
 	resources := payload(t, g, configMapYAML, payloadCRDYAML)
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources)).To(Succeed())
+	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
 
 	g.Expect(writes.snapshot()).To(Equal([]string{
 		"apply " + payloadCRDIdentity(),
@@ -480,7 +522,7 @@ func TestApplyAppliesWholePayloadThroughFrameworkDefaults(t *testing.T) {
 		jq.Match(`.metadata.annotations["platform.opendatahub.io/instance.uid"] == "definition-uid"`),
 		jq.Match(`.metadata.annotations["platform.opendatahub.io/type"] == "platform"`),
 		jq.Match(`.metadata.annotations["platform.opendatahub.io/version"] == "2.19.0"`),
-		jq.Match(`.metadata.labels["platform.opendatahub.io/part-of"] == "platformmoduledefinition"`),
+		jq.Match(`.metadata.labels["platform.opendatahub.io/part-of"] == "platform.opendatahub.io"`),
 		jq.Match(`.metadata.ownerReferences[0].kind == "PlatformModuleDefinition"`),
 		jq.Match(`.metadata.ownerReferences[0].uid == "definition-uid"`),
 		jq.Match(`.metadata.ownerReferences[0].controller == true`),
@@ -492,6 +534,142 @@ func TestApplyAppliesWholePayloadThroughFrameworkDefaults(t *testing.T) {
 		jq.Match(`.metadata.labels["platform.opendatahub.io/part-of"] == "platform"`),
 		jq.Match(`.metadata | has("ownerReferences") | not`),
 	))
+}
+
+// TestApplyUsesGivenFieldManagerOnOrdinaryPayloadOnly proves the
+// captured request options carry the invocation's manager with force
+// ownership on the ordinary payload apply, while the bundled payload
+// CRD keeps the framework's fixed platform manager — and that the
+// manager-derived fallback part-of label lands only on the ordinary
+// object, the CRD keeping its own fallback.
+func TestApplyUsesGivenFieldManagerOnOrdinaryPayloadOnly(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	harness := &fakeCluster{
+		scheme:  testScheme(t),
+		objects: []crclient.Object{liveNamespace()},
+	}
+	connection, writes := harness.connect(t)
+
+	resources := payload(t, g, configMapYAML, payloadCRDYAML)
+
+	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, "team.example.deployer")).
+		To(Succeed())
+
+	g.Expect(writes.applyOptions()).To(Equal([]applyOption{
+		{id: payloadCRDIdentity(), manager: "platform.opendatahub.io", force: true},
+		{id: moduleConfigMapIdentity(), manager: "team.example.deployer", force: true},
+	}))
+
+	configMap := stored(t, connection, gvkConfigMap, "modules", "module-config")
+	g.Expect(configMap.Object).To(SatisfyAll(
+		jq.Match(`.metadata.labels["platform.opendatahub.io/part-of"] == "team.example.deployer"`),
+		jq.Match(`.metadata.ownerReferences[0].controller == true`),
+	))
+
+	crd := stored(t, connection, gvkCRD, "", "syntheticmodules.components.platform.opendatahub.io")
+	g.Expect(crd.Object).To(SatisfyAll(
+		jq.Match(`.metadata.labels["platform.opendatahub.io/part-of"] == "platform"`),
+		jq.Match(`.metadata | has("ownerReferences") | not`),
+	))
+}
+
+// TestApplyPreservesAuthoredPartOfLabel proves a nonempty authored
+// part-of label survives the manager-derived fallback: the fallback
+// applies only when the label is absent or empty.
+func TestApplyPreservesAuthoredPartOfLabel(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	harness := &fakeCluster{
+		scheme:  testScheme(t),
+		objects: []crclient.Object{liveNamespace()},
+	}
+	connection, _ := harness.connect(t)
+
+	authored := `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: module-config
+  namespace: modules
+  labels:
+    platform.opendatahub.io/part-of: authored-value
+data:
+  key: value
+`
+
+	empty := `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: empty-label
+  namespace: modules
+  labels:
+    platform.opendatahub.io/part-of: ""
+data:
+  key: value
+`
+
+	resources := payload(t, g, authored, empty)
+
+	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, "team.example.deployer")).
+		To(Succeed())
+
+	authoredMap := stored(t, connection, gvkConfigMap, "modules", "module-config")
+	g.Expect(authoredMap.Object).To(
+		jq.Match(`.metadata.labels["platform.opendatahub.io/part-of"] == "authored-value"`))
+
+	emptyMap := stored(t, connection, gvkConfigMap, "modules", "empty-label")
+	g.Expect(emptyMap.Object).To(
+		jq.Match(`.metadata.labels["platform.opendatahub.io/part-of"] == "team.example.deployer"`))
+}
+
+// TestApplyRequiresFieldManager proves an empty service argument is a
+// rejected preflight — the safe preparation sentinel with the cause
+// reachable — before any client access, never a silent fallback to
+// the framework's owner-kind default.
+func TestApplyRequiresFieldManager(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	harness := &fakeCluster{scheme: testScheme(t)}
+	connection, writes := harness.connect(t)
+
+	err := Apply(t.Context(), connection, newDefinition(), newRelease(), payload(t, g, configMapYAML), "")
+
+	typed := applyError(g, err)
+	g.Expect(errors.Is(typed, moduleerrors.ErrDeployPrepare)).To(BeTrue())
+	g.Expect(errors.Is(typed, moduleerrors.ErrDeployApply)).To(BeFalse())
+	g.Expect(typed.Error()).To(Equal(prepareFailureMessage))
+	g.Expect(errors.Is(typed.Unwrap(), errNilArgument)).To(BeTrue())
+	g.Expect(writes.snapshot()).To(BeEmpty())
+}
+
+// TestApplyFieldManagerIsPerInvocation proves two invocations over
+// separate connections with different managers each send their own
+// manager: no action state leaks between invocations.
+func TestApplyFieldManagerIsPerInvocation(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	first := &fakeCluster{scheme: testScheme(t), objects: []crclient.Object{liveNamespace()}}
+	firstConnection, firstWrites := first.connect(t)
+	g.Expect(Apply(t.Context(), firstConnection, newDefinition(), newRelease(),
+		payload(t, g, configMapYAML), "first.example")).To(Succeed())
+
+	second := &fakeCluster{scheme: testScheme(t), objects: []crclient.Object{liveNamespace()}}
+	secondConnection, secondWrites := second.connect(t)
+	g.Expect(Apply(t.Context(), secondConnection, newDefinition(), newRelease(),
+		payload(t, g, configMapYAML), "second.example")).To(Succeed())
+
+	g.Expect(firstWrites.applyOptions()).To(ContainElement(
+		applyOption{id: moduleConfigMapIdentity(), manager: "first.example", force: true}))
+	g.Expect(secondWrites.applyOptions()).To(ContainElement(
+		applyOption{id: moduleConfigMapIdentity(), manager: "second.example", force: true}))
 }
 
 // TestApplyNormalizesOwnerRuntimeType proves an owner whose TypeMeta
@@ -512,7 +690,7 @@ func TestApplyNormalizesOwnerRuntimeType(t *testing.T) {
 	owner := newDefinition()
 	owner.TypeMeta = metav1.TypeMeta{}
 
-	g.Expect(Apply(t.Context(), connection, owner, newRelease(), payload(t, g, configMapYAML))).To(Succeed())
+	g.Expect(Apply(t.Context(), connection, owner, newRelease(), payload(t, g, configMapYAML), defaultFieldManager)).To(Succeed())
 
 	configMap := stored(t, connection, gvkConfigMap, "modules", "module-config")
 	g.Expect(configMap.Object).To(SatisfyAll(
@@ -539,7 +717,7 @@ func TestApplyNeverOwnsNamespaces(t *testing.T) {
 
 	resources := payload(t, g, payloadCRDYAML, namespaceYAML)
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources)).To(Succeed())
+	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
 
 	// The action's sort places the Namespace first.
 	g.Expect(writes.snapshot()).To(Equal([]string{
@@ -571,7 +749,7 @@ func TestApplyCreatesAbsentRenderedNamespace(t *testing.T) {
 	// the action's own sort, not input order, drives the writes.
 	resources := payload(t, g, configMapYAML, payloadCRDYAML, namespaceYAML)
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources)).To(Succeed())
+	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
 
 	g.Expect(writes.snapshot()).To(Equal([]string{
 		"apply " + identity(schema.GroupVersionKind{Version: "v1", Kind: "Namespace"}, "", "modules"),
@@ -611,7 +789,7 @@ func TestApplyApplyErrorFailsStageWithFirstReport(t *testing.T) {
 
 	resources := payload(t, g, payloadCRDYAML, configMapYAML)
 
-	err := Apply(t.Context(), connection, newDefinition(), newRelease(), resources)
+	err := Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)
 
 	typed := applyError(g, err)
 	g.Expect(errors.Is(typed, moduleerrors.ErrDeployApply)).To(BeTrue())
@@ -647,7 +825,7 @@ func TestApplyLookupErrorFailsStageWithFirstReport(t *testing.T) {
 
 	resources := payload(t, g, payloadCRDYAML, configMapYAML)
 
-	err := Apply(t.Context(), connection, newDefinition(), newRelease(), resources)
+	err := Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)
 
 	typed := applyError(g, err)
 	g.Expect(errors.Is(typed, moduleerrors.ErrDeployApply)).To(BeTrue())
@@ -674,7 +852,7 @@ func TestApplyPreservesLiveDeploymentTuning(t *testing.T) {
 
 	resources := payload(t, g, payloadCRDYAML, deploymentYAML)
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources)).To(Succeed())
+	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
 
 	deployment := stored(
 		t,
@@ -711,7 +889,7 @@ func TestApplySkipsUnmanagedResources(t *testing.T) {
 
 	resources := payload(t, g, payloadCRDYAML, unmanagedConfigMapYAML)
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources)).To(Succeed())
+	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
 
 	// No write touched the unmanaged object; only the CRD applied.
 	g.Expect(writes.count("unmanaged-config")).To(Equal(0))
@@ -740,7 +918,7 @@ func TestApplyStripsForeignOwnerReferences(t *testing.T) {
 
 	resources := payload(t, g, payloadCRDYAML, foreignOwnedConfigMapYAML)
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources)).To(Succeed())
+	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
 
 	// The foreign reference was stripped through an update, then the
 	// object was adopted through the apply.
@@ -772,10 +950,10 @@ func TestApplySecondInvocationRewrites(t *testing.T) {
 
 	resources := payload(t, g, payloadCRDYAML, configMapYAML)
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources)).To(Succeed())
+	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
 	firstWrites := writes.count("apply " + moduleConfigMapIdentity())
 
-	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources)).To(Succeed())
+	g.Expect(Apply(t.Context(), connection, newDefinition(), newRelease(), resources, defaultFieldManager)).To(Succeed())
 
 	g.Expect(writes.count("apply " + moduleConfigMapIdentity())).To(Equal(2 * firstWrites))
 }
@@ -787,7 +965,7 @@ func TestApplyRequiresLiveOwner(t *testing.T) {
 
 	g := NewWithT(t)
 
-	err := Apply(t.Context(), nil, nil, newRelease(), nil)
+	err := Apply(t.Context(), nil, nil, newRelease(), nil, defaultFieldManager)
 
 	typed := applyError(g, err)
 	g.Expect(errors.Is(typed, moduleerrors.ErrDeployPrepare)).To(BeTrue())
@@ -810,7 +988,7 @@ func TestApplyCancelledInvocationIsNotAttempted(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := Apply(ctx, connection, newDefinition(), newRelease(), payload(t, g, configMapYAML))
+	err := Apply(ctx, connection, newDefinition(), newRelease(), payload(t, g, configMapYAML), defaultFieldManager)
 
 	typed := applyError(g, err)
 	g.Expect(errors.Is(typed, moduleerrors.ErrDeployPrepare)).To(BeTrue())

@@ -133,6 +133,11 @@ type deployHarness struct {
 	writes []string
 	gets   []string
 
+	// applyManagers records, in write order, the effective field
+	// manager of every intercepted apply, paired with its write
+	// identity.
+	applyManagers []applyManager
+
 	// frames maps one identity to its scripted observation sequence.
 	frames map[string][]runFrame
 
@@ -277,7 +282,17 @@ func newDeployHarness(t *testing.T) *deployHarness {
 			opts ...crclient.ApplyOption,
 		) error {
 			id, probe := applyIdentity(obj)
+
+			// The effective request options are captured before
+			// delegation: the field manager the caller actually sent.
+			effective := &crclient.ApplyOptions{}
+			for _, opt := range opts {
+				opt.ApplyToApply(effective)
+			}
+
 			harness.writes = append(harness.writes, "apply "+id)
+			harness.applyManagers = append(harness.applyManagers,
+				applyManager{id: id, manager: effective.FieldManager})
 
 			for key, injected := range harness.failApply {
 				if strings.Contains(id, key) {
@@ -460,6 +475,27 @@ func runImagesFile(t *testing.T, root string, content string) string {
 	}
 
 	return path
+}
+
+// runIdentity renders one recorded operation identity.
+// applyManager is one intercepted apply's captured effective field
+// manager, paired with its recorded write identity.
+type applyManager struct {
+	id      string
+	manager string
+}
+
+// managersOf returns the captured field managers of every recorded
+// apply whose identity contains the given substring, in order.
+func (h *deployHarness) managersOf(substr string) []string {
+	managers := []string{}
+	for _, captured := range h.applyManagers {
+		if strings.Contains(captured.id, substr) {
+			managers = append(managers, captured.manager)
+		}
+	}
+
+	return managers
 }
 
 // runIdentity renders one recorded operation identity.

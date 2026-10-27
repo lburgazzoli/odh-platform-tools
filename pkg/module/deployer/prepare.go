@@ -34,14 +34,6 @@ import (
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
-// fieldOwner is the server-side-apply field manager the preparation
-// writes under — the embedded definition CRD and the definition itself
-// alike. One manager owns the authored spec and the whole authored
-// labels and annotations maps, so a re-run replaces keys it no longer
-// authors; live status and fields owned by other field managers are
-// never claimed.
-const fieldOwner = "platform.opendatahub.io/module-run"
-
 // prepareOwner is the single preparation step ahead of the payload
 // apply: apply the embedded definition CRD, wait until the server
 // serves it, then apply the definition itself and return the
@@ -49,11 +41,17 @@ const fieldOwner = "platform.opendatahub.io/module-run"
 // server-side applies through the framework helper — the same path
 // whether the server holds the object or not, with no pre-write read
 // and no local compatibility or live-state policy: the API validates
-// the result and refuses what it must refuse.
+// the result and refuses what it must refuse. Both writes claim their
+// fields under fieldManager, the invocation's effective manager: one
+// manager owns the authored spec and the whole authored labels and
+// annotations maps, so a re-run replaces keys it no longer authors;
+// live status and fields owned by other field managers are never
+// claimed.
 func prepareOwner(
 	ctx context.Context,
 	connection *cluster.Connection,
 	definition toolApi.PlatformModuleDefinition,
+	fieldManager string,
 ) (*toolApi.PlatformModuleDefinition, error) {
 	client := connection.Client()
 
@@ -63,7 +61,7 @@ func prepareOwner(
 	}
 
 	if err := fwresources.Apply(ctx, client, crd,
-		crclient.FieldOwner(fieldOwner), crclient.ForceOwnership); err != nil {
+		crclient.FieldOwner(fieldManager), crclient.ForceOwnership); err != nil {
 		return nil, prepareFail("applying the definition custom resource definition", err)
 	}
 
@@ -84,7 +82,7 @@ func prepareOwner(
 	desired := &definition
 
 	if err := fwresources.Apply(ctx, client, desired,
-		crclient.FieldOwner(fieldOwner), crclient.ForceOwnership); err != nil {
+		crclient.FieldOwner(fieldManager), crclient.ForceOwnership); err != nil {
 		return nil, prepareFail("applying the module definition", err)
 	}
 

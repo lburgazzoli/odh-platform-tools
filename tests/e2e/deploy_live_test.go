@@ -26,19 +26,37 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	deploycli "github.com/lburgazzoli/odh-platform-tools/cmd/module/deploy"
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer"
 )
+
+// applyManagers lists the field managers holding Apply-operation
+// managed-fields entries on one live object, as the real server
+// recorded them.
+func applyManagers(t *testing.T, object metav1.Object) []string {
+	t.Helper()
+
+	managers := []string{}
+	for _, entry := range object.GetManagedFields() {
+		if entry.Operation == metav1.ManagedFieldsOperationApply {
+			managers = append(managers, entry.Manager)
+		}
+	}
+
+	return managers
+}
 
 // The live scenarios are sequential by design: they share one engine
 // cluster, and every test relies on the fail-closed precheck over its
 // own fresh unique identities.
 
-// TestRunLiveHelmAppliesAndOwns proves the complete Helm chain on a
+// TestDeployLiveHelmAppliesAndOwns proves the complete Helm chain on a
 // real server: the bootstrapped definition CRD, the persisted owner
 // with a stable server identity and a normalized unexpanded spec, the
 // payload with real placement, references, co-located entries,
@@ -46,7 +64,7 @@ import (
 // with the valueFrom removed, the platform config map, and the
 // payload-supplied Namespace created by the framework apply without
 // owner references — plus the idempotent rerun keeping the owner.
-func TestRunLiveHelmAppliesAndOwns(t *testing.T) {
+func TestDeployLiveHelmAppliesAndOwns(t *testing.T) {
 	g := NewWithT(t)
 
 	s := newScenario(t)
@@ -169,12 +187,76 @@ func TestRunLiveHelmAppliesAndOwns(t *testing.T) {
 	g.Expect(s.definition(t).UID).To(Equal(definition.UID))
 }
 
-// TestRunLiveHelmSpecUpdateAcrossNamespaces proves the persisted
+// TestDeployLiveFieldManagerClaimsManagedFields proves the
+// field-manager contract on a real server: the default invocation
+// claims the persisted definition and one ordinary payload object
+// under the platform manager, a custom --field-manager claims the
+// same objects under itself while the bundled payload CRD stays on
+// the framework's fixed manager, and repeated applies — across and
+// within managers — keep the server identities.
+func TestDeployLiveFieldManagerClaimsManagedFields(t *testing.T) {
+	g := NewWithT(t)
+
+	s := newScenario(t)
+	s.failClosed(t)
+	s.createNamespace(t, s.targetNS)
+	s.writeHelmModule(t, workloadImage, nil)
+
+	custom := "e2e" + s.suffix + ".example"
+
+	first, _, exitCode := s.runCLI(t)
+	g.Expect(exitCode).To(Equal(deploycli.ExitSuccess))
+	g.Expect(first.Status).To(Equal(deploycli.StatusApplied))
+	g.Expect(first.Owner).NotTo(BeNil())
+
+	s.trackRunObjects(t)
+
+	// The default invocation claims the definition and the ordinary
+	// payload under the canonical platform manager, as the server
+	// recorded it.
+	g.Expect(applyManagers(t, s.definition(t))).
+		To(ContainElement(deployer.DefaultFieldManager))
+	g.Expect(applyManagers(t, s.configMap(t, s.targetNS, "values-cm"))).
+		To(ContainElement(deployer.DefaultFieldManager))
+
+	definitionUID := s.definition(t).UID
+
+	// The custom manager claims the same application-owned objects.
+	second, _, exitCode := s.runCLI(t, "--field-manager", custom)
+	g.Expect(exitCode).To(Equal(deploycli.ExitSuccess))
+	g.Expect(second.Status).To(Equal(deploycli.StatusApplied))
+	g.Expect(second.Owner.UID).To(Equal(first.Owner.UID))
+
+	g.Expect(applyManagers(t, s.definition(t))).To(ContainElement(custom))
+	g.Expect(applyManagers(t, s.configMap(t, s.targetNS, "values-cm"))).
+		To(ContainElement(custom))
+
+	// The bundled payload CRD stays on the framework's fixed platform
+	// manager: the custom invocation never claims it. The CRD is
+	// scenario-local, but no exclusivity is claimed beyond the custom
+	// manager's absence.
+	crdManagers := applyManagers(t, s.payloadCRD(t))
+	g.Expect(crdManagers).To(ContainElement("platform.opendatahub.io"))
+	g.Expect(crdManagers).NotTo(ContainElement(custom))
+
+	payloadUID := s.configMap(t, s.targetNS, "values-cm").UID
+
+	// Reapplying under the same custom manager keeps the server
+	// identities.
+	third, _, exitCode := s.runCLI(t, "--field-manager", custom)
+	g.Expect(exitCode).To(Equal(deploycli.ExitSuccess))
+	g.Expect(third.Status).To(Equal(deploycli.StatusApplied))
+	g.Expect(third.Owner.UID).To(Equal(first.Owner.UID))
+	g.Expect(s.definition(t).UID).To(Equal(definitionUID))
+	g.Expect(s.configMap(t, s.targetNS, "values-cm").UID).To(Equal(payloadUID))
+}
+
+// TestDeployLiveHelmSpecUpdateAcrossNamespaces proves the persisted
 // owner survives spec updates and target namespace changes: the
 // definition keeps its identity, the new namespace carries the
 // updated workload, and the old namespace is never pruned or
 // migrated.
-func TestRunLiveHelmSpecUpdateAcrossNamespaces(t *testing.T) {
+func TestDeployLiveHelmSpecUpdateAcrossNamespaces(t *testing.T) {
 	g := NewWithT(t)
 
 	s := newScenario(t)
@@ -219,9 +301,9 @@ func TestRunLiveHelmSpecUpdateAcrossNamespaces(t *testing.T) {
 	g.Expect(s.configMap(t, s.targetNS, "values-cm").Data["message"]).To(Equal("authored-value"))
 }
 
-// TestRunLiveImageSourcePrecedence proves the related-image source
+// TestDeployLiveImageSourcePrecedence proves the related-image source
 // contract on the real chain: the environment wins over the file.
-func TestRunLiveImageSourcePrecedence(t *testing.T) {
+func TestDeployLiveImageSourcePrecedence(t *testing.T) {
 	g := NewWithT(t)
 
 	s := newScenario(t)
@@ -248,11 +330,11 @@ func TestRunLiveImageSourcePrecedence(t *testing.T) {
 	g.Expect(manager.Image).To(Equal("quay.io/example/alpha:env"))
 }
 
-// TestRunLiveKustomizeApplies proves the Kustomize chain on a real
+// TestDeployLiveKustomizeApplies proves the Kustomize chain on a real
 // server: the engine's namespace plugin places the payload, the
 // RoleBinding subject's namespace is really rewritten, and the
 // payload-supplied Namespace is created unowned.
-func TestRunLiveKustomizeApplies(t *testing.T) {
+func TestDeployLiveKustomizeApplies(t *testing.T) {
 	g := NewWithT(t)
 
 	s := newScenario(t)
@@ -296,11 +378,11 @@ func TestRunLiveKustomizeApplies(t *testing.T) {
 	g.Expect(s.namespace(t, s.auxNS).OwnerReferences).To(BeEmpty())
 }
 
-// TestRunLiveForeignAdoption proves the approved production
+// TestDeployLiveForeignAdoption proves the approved production
 // behavior over a foreign, unowned object: the force apply lands the
 // payload data, merges with the foreign fields, and adopts the
 // object under the definition owner.
-func TestRunLiveForeignAdoption(t *testing.T) {
+func TestDeployLiveForeignAdoption(t *testing.T) {
 	g := NewWithT(t)
 
 	s := newScenario(t)
@@ -336,11 +418,11 @@ func TestRunLiveForeignAdoption(t *testing.T) {
 	g.Expect(adopted.OwnerReferences[0].UID).To(Equal(types.UID(report.Owner.UID)))
 }
 
-// TestRunLiveReservedPayloadRejectedAtRender proves the reserved
+// TestDeployLiveReservedPayloadRejectedAtRender proves the reserved
 // resource guard on the real chain: rendering the configured module
 // type's own kind is rejected before any write, with the definition
 // never persisted.
-func TestRunLiveReservedPayloadRejectedAtRender(t *testing.T) {
+func TestDeployLiveReservedPayloadRejectedAtRender(t *testing.T) {
 	g := NewWithT(t)
 
 	s := newScenario(t)
@@ -367,12 +449,12 @@ func TestRunLiveReservedPayloadRejectedAtRender(t *testing.T) {
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
 }
 
-// TestRunLiveInvalidPayloadRetainsOwner proves a real admission
+// TestDeployLiveInvalidPayloadRetainsOwner proves a real admission
 // failure is bounded and reported as partial state: the owner stays
 // confirmed, the payload applies continue past the rejected object
 // (the framework deploys with continue-on-error), the valid objects
 // stand, and only the object the server rejected is absent.
-func TestRunLiveInvalidPayloadRetainsOwner(t *testing.T) {
+func TestDeployLiveInvalidPayloadRetainsOwner(t *testing.T) {
 	g := NewWithT(t)
 
 	s := newScenario(t)
@@ -415,10 +497,10 @@ func TestRunLiveInvalidPayloadRetainsOwner(t *testing.T) {
 	g.Expect(manager.Image).To(Equal(workloadImage))
 }
 
-// TestRunLiveDefaultDoesNotWaitForWorkload proves default command
+// TestDeployLiveDefaultDoesNotWaitForWorkload proves default command
 // success is apply completion alone: an intentionally nonconverged
 // workload never blocks the deploy and the report claims no wait.
-func TestRunLiveDefaultDoesNotWaitForWorkload(t *testing.T) {
+func TestDeployLiveDefaultDoesNotWaitForWorkload(t *testing.T) {
 	g := NewWithT(t)
 
 	s := newScenario(t)
@@ -445,11 +527,11 @@ func TestRunLiveDefaultDoesNotWaitForWorkload(t *testing.T) {
 	g.Expect(manager.Image).To(Equal(unpullableImage))
 }
 
-// TestRunLiveWaitCompletesRollout proves the opt-in wait observes
+// TestDeployLiveWaitCompletesRollout proves the opt-in wait observes
 // the real controller rollout — with a file-resolved image source
 // converging through the pinned generic image — and reports exactly
 // the selected controller Deployment as its target.
-func TestRunLiveWaitCompletesRollout(t *testing.T) {
+func TestDeployLiveWaitCompletesRollout(t *testing.T) {
 	g := NewWithT(t)
 
 	s := newScenario(t)
@@ -486,11 +568,11 @@ func TestRunLiveWaitCompletesRollout(t *testing.T) {
 	g.Expect(manager.Image).To(Equal(workloadImage))
 }
 
-// TestRunLiveWaitShortTimeoutRetainsOwner proves a wait that cannot
+// TestDeployLiveWaitShortTimeoutRetainsOwner proves a wait that cannot
 // complete within its explicit budget fails the command — the
 // deadline classifies as a cancellation, which always wins — while
 // the owner and the apply completion stay confirmed.
-func TestRunLiveWaitShortTimeoutRetainsOwner(t *testing.T) {
+func TestDeployLiveWaitShortTimeoutRetainsOwner(t *testing.T) {
 	g := NewWithT(t)
 
 	s := newScenario(t)
@@ -529,9 +611,9 @@ func TestRunLiveWaitShortTimeoutRetainsOwner(t *testing.T) {
 	s.trackRunObjects(t)
 }
 
-// TestRunLiveWaitOverallDeadlineWins proves the requested wait
+// TestDeployLiveWaitOverallDeadlineWins proves the requested wait
 // budget can never extend the overall invocation deadline.
-func TestRunLiveWaitOverallDeadlineWins(t *testing.T) {
+func TestDeployLiveWaitOverallDeadlineWins(t *testing.T) {
 	g := NewWithT(t)
 
 	s := newScenario(t)

@@ -51,6 +51,15 @@ import (
 const prepareEstablishedStatusJSON = `{"conditions":[{"type":"Established","status":"True"},{"type":"NamesAccepted","status":"True"}]}
 `
 
+// prepareApplyOption is one captured preparation apply's effective
+// request options: the recorded write identity with the field manager
+// and force flag observed before delegation.
+type prepareApplyOption struct {
+	id      string
+	manager string
+	force   bool
+}
+
 // Recorded apply-identity substrings of the two preparation writes.
 const (
 	prepareCRDWrite        = "Kind=CustomResourceDefinition"
@@ -72,14 +81,15 @@ type waitFrame struct {
 
 // prepareCluster is the fake-client connection the deployer tests drive
 // the owner preparation and the rollout wait through: every apply is
-// recorded in order with its request body, a served CRD receives the
-// establishment status a real server maintains, newly created objects
-// receive deterministic server UIDs stamped into the apply response —
-// which the framework helper converts back into the typed object,
-// exactly as a server echoes its assigned identity — and scripted GET
-// frames replace live lookups of the waited workload. Fake-client
-// results exercise the preparation's request sequence and identity
-// rules, not real SSA admission semantics.
+// recorded in order with its request body and effective request
+// options, a served CRD receives the establishment status a real
+// server maintains, newly created objects receive deterministic
+// server UIDs stamped into the apply response — which the framework
+// helper converts back into the typed object, exactly as a server
+// echoes its assigned identity — and scripted GET frames replace live
+// lookups of the waited workload. Fake-client results exercise the
+// preparation's request sequence and identity rules, not real SSA
+// admission semantics.
 type prepareCluster struct {
 	connection *cluster.Connection
 
@@ -87,6 +97,10 @@ type prepareCluster struct {
 	requests []map[string]any
 	gets     []string
 	getCtxs  []context.Context
+
+	// applyOptions captures each recorded apply's effective field
+	// manager and force flag, in order, before delegation.
+	applyOptions []prepareApplyOption
 
 	// frames maps one object key to its scripted observation
 	// sequence for unstructured lookups.
@@ -212,6 +226,17 @@ func newPrepareCluster(t *testing.T) *prepareCluster {
 			id, probe, request := applyIdentity(obj)
 			fixture.applies = append(fixture.applies, id)
 			fixture.requests = append(fixture.requests, request)
+
+			// The effective request options are captured before
+			// delegation: the field manager and force flag the
+			// preparation actually sent.
+			effective := &crclient.ApplyOptions{}
+			for _, opt := range opts {
+				opt.ApplyToApply(effective)
+			}
+			force := effective.Force != nil && *effective.Force
+			fixture.applyOptions = append(fixture.applyOptions,
+				prepareApplyOption{id: id, manager: effective.FieldManager, force: force})
 
 			for key, injected := range fixture.failApply {
 				if strings.Contains(id, key) {
@@ -382,7 +407,7 @@ func TestPrepareOwnerAppliesCRDThenDefinition(t *testing.T) {
 
 	fixture := newPrepareCluster(t)
 
-	owner, err := prepareOwner(t.Context(), fixture.connection, testDefinition())
+	owner, err := prepareOwner(t.Context(), fixture.connection, testDefinition(), DefaultFieldManager)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	crdApplies, crdFirst := fixture.applyIndex(prepareCRDWrite)
@@ -409,6 +434,47 @@ func TestPrepareOwnerAppliesCRDThenDefinition(t *testing.T) {
 	))
 }
 
+// TestPrepareOwnerUsesGivenFieldManager proves both preparation
+// writes — the embedded definition CRD and the definition itself —
+// claim their fields under the invocation's manager with force
+// ownership, whatever that manager is.
+func TestPrepareOwnerUsesGivenFieldManager(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	fixture := newPrepareCluster(t)
+
+	_, err := prepareOwner(t.Context(), fixture.connection, testDefinition(), "team.example.deployer")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(fixture.applyOptions).To(HaveLen(2))
+	for _, captured := range fixture.applyOptions {
+		g.Expect(captured.manager).To(Equal("team.example.deployer"))
+		g.Expect(captured.force).To(BeTrue())
+	}
+}
+
+// TestPrepareOwnerDefaultManagerIsPlatformIdentity proves the default
+// request resolves to the canonical platform manager on both
+// preparation writes.
+func TestPrepareOwnerDefaultManagerIsPlatformIdentity(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	fixture := newPrepareCluster(t)
+
+	_, err := prepareOwner(t.Context(), fixture.connection, testDefinition(), DefaultFieldManager)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(fixture.applyOptions).To(HaveLen(2))
+	for _, captured := range fixture.applyOptions {
+		g.Expect(captured.manager).To(Equal("platform.opendatahub.io"))
+		g.Expect(captured.force).To(BeTrue())
+	}
+}
+
 // TestPrepareOwnerSanitizesDefinitionApply proves forged authority
 // fields never reach the definition apply request: only the authored
 // name, labels, annotations, and spec are submitted — no UID,
@@ -433,7 +499,7 @@ func TestPrepareOwnerSanitizesDefinitionApply(t *testing.T) {
 		Status: api.Status{Phase: "forged", ObservedGeneration: 7},
 	}
 
-	_, err := prepareOwner(t.Context(), fixture.connection, definition)
+	_, err := prepareOwner(t.Context(), fixture.connection, definition, DefaultFieldManager)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	_, definitionFirst := fixture.applyIndex(prepareDefinitionWrite)
@@ -468,7 +534,7 @@ func TestPrepareOwnerWaitsForEstablishment(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 
-	owner, err := prepareOwner(ctx, fixture.connection, testDefinition())
+	owner, err := prepareOwner(ctx, fixture.connection, testDefinition(), DefaultFieldManager)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
 	g.Expect(owner).To(BeNil())
@@ -498,7 +564,7 @@ func TestPrepareOwnerFailuresAreSafeAndBounded(t *testing.T) {
 		fixture := newPrepareCluster(t)
 		fixture.failApply[prepareCRDWrite] = cause
 
-		owner, err := prepareOwner(t.Context(), fixture.connection, testDefinition())
+		owner, err := prepareOwner(t.Context(), fixture.connection, testDefinition(), DefaultFieldManager)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(owner).To(BeNil())
 
@@ -527,7 +593,7 @@ func TestPrepareOwnerFailuresAreSafeAndBounded(t *testing.T) {
 		fixture := newPrepareCluster(t)
 		fixture.failApply[prepareDefinitionWrite] = cause
 
-		owner, err := prepareOwner(t.Context(), fixture.connection, testDefinition())
+		owner, err := prepareOwner(t.Context(), fixture.connection, testDefinition(), DefaultFieldManager)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(owner).To(BeNil())
 

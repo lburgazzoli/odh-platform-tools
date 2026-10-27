@@ -229,7 +229,7 @@ func TestApplyDefaultMakesNoWaitGet(t *testing.T) {
 // TestRunRequestedWaitReportsCompletion proves a requested wait
 // completes over the live observation and the report carries the
 // safe target identity beside the retained deploy facts.
-func TestRunRequestedWaitReportsCompletion(t *testing.T) {
+func TestApplyRequestedWaitReportsCompletion(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -802,7 +802,7 @@ func TestWaitErrorIsSafeText(t *testing.T) {
 // TestRunRejectsNegativeWaitTimeout proves a negative wait budget on
 // a requested wait is an options error before any stage or service
 // runs.
-func TestRunRejectsNegativeWaitTimeout(t *testing.T) {
+func TestApplyRejectsNegativeWaitTimeout(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)

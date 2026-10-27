@@ -21,6 +21,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -216,15 +217,16 @@ type stubDeployer struct {
 	renderOptions *renderer.RenderOptions
 
 	// loadError, renderError, connectError, and applyError drive the
-	// stub behavior; appliedOwner, appliedRelease, and
-	// appliedResources capture what apply received.
-	loadError        error
-	renderError      error
-	connectError     error
-	applyError       error
-	appliedOwner     *toolApi.PlatformModuleDefinition
-	appliedRelease   api.Release
-	appliedResources []unstructured.Unstructured
+	// stub behavior; appliedOwner, appliedRelease,
+	// appliedResources, and appliedFieldManager capture what apply
+	loadError           error
+	renderError         error
+	connectError        error
+	applyError          error
+	appliedOwner        *toolApi.PlatformModuleDefinition
+	appliedRelease      api.Release
+	appliedResources    []unstructured.Unstructured
+	appliedFieldManager string
 
 	// renderCtx and connectCtx capture the invocation contexts the
 	// stages passed to the seams.
@@ -340,11 +342,13 @@ func (s *stubDeployer) apply(
 	owner *toolApi.PlatformModuleDefinition,
 	release api.Release,
 	resources []unstructured.Unstructured,
+	fieldManager string,
 ) error {
 	s.record("apply")
 
 	s.appliedOwner = owner
 	s.appliedRelease = release
+	s.appliedFieldManager = fieldManager
 	s.appliedResources = resources
 
 	return s.applyError
@@ -385,6 +389,46 @@ func TestLoadRejectsInvalidOptions(t *testing.T) {
 		{"unparsable platform version", "invalid deploy options: parsing platform version:", true, func() Options {
 			options := testOptions()
 			options.PlatformVersion = "not-a-version"
+			return options
+		}},
+		{"empty-ish whitespace field manager", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, func() Options {
+			options := testOptions()
+			options.FieldManager = " "
+			return options
+		}},
+		{"oversized field manager", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, func() Options {
+			options := testOptions()
+			options.FieldManager = strings.Repeat("a", 64)
+			return options
+		}},
+		{"field manager with slash", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, func() Options {
+			options := testOptions()
+			options.FieldManager = "example.com/team/manager"
+			return options
+		}},
+		{"field manager with space", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, func() Options {
+			options := testOptions()
+			options.FieldManager = "team manager"
+			return options
+		}},
+		{"field manager with control character", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, func() Options {
+			options := testOptions()
+			options.FieldManager = "team\x09manager"
+			return options
+		}},
+		{"field manager with unicode", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, func() Options {
+			options := testOptions()
+			options.FieldManager = "tëam-manager"
+			return options
+		}},
+		{"field manager with leading punctuation", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, func() Options {
+			options := testOptions()
+			options.FieldManager = "-team-manager"
+			return options
+		}},
+		{"field manager with trailing punctuation", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, func() Options {
+			options := testOptions()
+			options.FieldManager = "team-manager."
 			return options
 		}},
 	}
@@ -673,6 +717,54 @@ func TestDeploySequencesConnectPrepareApply(t *testing.T) {
 	g.Expect(string(stub.appliedOwner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
 	g.Expect(stub.appliedRelease.Version.String()).To(Equal("2.19.0"))
 	g.Expect(stub.appliedRelease.Name).To(Equal(api.Platform(api.ReleasePlatform)))
+}
+
+// TestDeployForwardsEffectiveFieldManager proves the invocation's
+// field manager — the custom value, or the canonical platform default
+// when the option is empty — reaches both the owner preparation and
+// the payload apply seam as one resolved value.
+func TestDeployForwardsEffectiveFieldManager(t *testing.T) {
+	t.Parallel()
+
+	t.Run("custom manager", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		options := testOptions()
+		options.FieldManager = "team.example.deployer"
+
+		stub := newStubDeployer(t, options)
+
+		g.Expect(stub.target.Load(t.Context())).To(Succeed())
+		g.Expect(stub.target.Render(t.Context())).To(Succeed())
+		g.Expect(stub.target.Deploy(t.Context())).To(Succeed())
+
+		g.Expect(stub.appliedFieldManager).To(Equal("team.example.deployer"))
+		g.Expect(stub.cluster.applyOptions).To(HaveLen(2))
+		for _, captured := range stub.cluster.applyOptions {
+			g.Expect(captured.manager).To(Equal("team.example.deployer"))
+			g.Expect(captured.force).To(BeTrue())
+		}
+	})
+
+	t.Run("empty option means the platform default", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		stub := newStubDeployer(t, testOptions())
+
+		g.Expect(stub.target.Load(t.Context())).To(Succeed())
+		g.Expect(stub.target.Render(t.Context())).To(Succeed())
+		g.Expect(stub.target.Deploy(t.Context())).To(Succeed())
+
+		g.Expect(stub.appliedFieldManager).To(Equal(DefaultFieldManager))
+		g.Expect(stub.cluster.applyOptions).To(HaveLen(2))
+		for _, captured := range stub.cluster.applyOptions {
+			g.Expect(captured.manager).To(Equal(DefaultFieldManager))
+		}
+	})
 }
 
 // TestDeployPreparationFailureStopsBeforePayload proves a preparation

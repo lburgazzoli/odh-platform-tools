@@ -67,6 +67,8 @@ func TestCLIDeployHelp(t *testing.T) {
 		ContainSubstring("--config"),
 		ContainSubstring("--platform-version"),
 		ContainSubstring("--wait"),
+		ContainSubstring("--field-manager"),
+		ContainSubstring("platform.opendatahub.io"),
 	))
 	g.Expect(stderr.String()).To(BeEmpty())
 }
@@ -182,6 +184,83 @@ func TestCLIDeployImageFileFailure(t *testing.T) {
 	g.Expect(report.Failure).NotTo(BeNil())
 	g.Expect(report.Failure.Category).To(Equal(deploy.FailureImageFile))
 	g.Expect(report.Owner).To(BeNil())
+}
+
+// TestCLIDeployFieldManagerValidation proves the real binary's
+// field-manager contract: a valid custom manager passes the options
+// validation and fails only at the unreachable cluster (runtime
+// classification), an invalid nonempty value is rejected locally as a
+// usage-classified options failure before any cluster contact, and an
+// explicitly empty value is rejected the same way. Rejected values
+// appear in neither stream.
+func TestCLIDeployFieldManagerValidation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid custom manager reaches the cluster phase", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		root := t.TempDir()
+		writeDeployHelmModule(t, root)
+
+		stdout, stderr, exitCode := runCLIDeploy(root,
+			"--output", "json",
+			"--field-manager", "team.example.deployer")
+
+		g.Expect(exitCode).To(Equal(deploy.ExitFailure))
+		g.Expect(stderr).To(ContainSubstring(deploy.FailureRuntime))
+
+		var report deploy.Report
+		g.Expect(json.Unmarshal([]byte(stdout), &report)).To(Succeed())
+		g.Expect(report.Status).To(Equal(deploy.StatusFailed))
+		g.Expect(report.Failure.Category).To(Equal(deploy.FailureRuntime))
+	})
+
+	t.Run("invalid value is a local usage failure", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		root := t.TempDir()
+		writeDeployHelmModule(t, root)
+
+		stdout, stderr, exitCode := runCLIDeploy(root,
+			"--output", "json",
+			"--field-manager", "team/manager")
+
+		g.Expect(exitCode).To(Equal(deploy.ExitUsage))
+		g.Expect(stderr).To(ContainSubstring(deploy.FailureInvalidOptions))
+		g.Expect(stdout).NotTo(ContainSubstring("team/manager"))
+		g.Expect(stderr).NotTo(ContainSubstring("team/manager"))
+
+		var report deploy.Report
+		g.Expect(json.Unmarshal([]byte(stdout), &report)).To(Succeed())
+		g.Expect(report.Status).To(Equal(deploy.StatusFailed))
+		g.Expect(report.Failure.Category).To(Equal(deploy.FailureInvalidOptions))
+		g.Expect(report.Owner).To(BeNil())
+	})
+
+	t.Run("explicitly empty value is a local usage failure", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		root := t.TempDir()
+		writeDeployHelmModule(t, root)
+
+		stdout, stderr, exitCode := runCLIDeploy(root,
+			"--output", "json",
+			"--field-manager", "")
+
+		g.Expect(exitCode).To(Equal(deploy.ExitUsage))
+		g.Expect(stderr).To(ContainSubstring(deploy.FailureInvalidOptions))
+
+		var report deploy.Report
+		g.Expect(json.Unmarshal([]byte(stdout), &report)).To(Succeed())
+		g.Expect(report.Failure.Category).To(Equal(deploy.FailureInvalidOptions))
+		g.Expect(report.Owner).To(BeNil())
+	})
 }
 
 // TestCLIDeployRejectsOldRunCommand proves the real binary treats the
