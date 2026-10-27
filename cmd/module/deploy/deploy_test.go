@@ -11,6 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
 	deployer "github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer"
@@ -393,7 +394,7 @@ apply: completed
 			ApplyCompleted: true,
 			WaitRequested:  true,
 			WaitCompleted:  true,
-			WaitTargets: []deployer.Target{
+			WaitTargets: []types.NamespacedName{
 				{Namespace: "run-namespace", Name: "synthetic-controller"},
 			},
 		}}
@@ -423,7 +424,7 @@ wait: completed (run-namespace/synthetic-controller)
 				ApplyCompleted: true,
 				WaitRequested:  true,
 				WaitCompleted:  false,
-				WaitTargets: []deployer.Target{
+				WaitTargets: []types.NamespacedName{
 					{Namespace: "run-namespace", Name: "synthetic-controller"},
 				},
 			},
@@ -516,7 +517,7 @@ func TestDeployCommandJSONReportGolden(t *testing.T) {
 			ApplyCompleted: true,
 			WaitRequested:  true,
 			WaitCompleted:  true,
-			WaitTargets: []deployer.Target{
+			WaitTargets: []types.NamespacedName{
 				{Namespace: "run-namespace", Name: "synthetic-controller"},
 			},
 		}}

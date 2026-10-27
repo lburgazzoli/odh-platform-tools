@@ -17,6 +17,8 @@ limitations under the License.
 package deployer
 
 import (
+	"k8s.io/apimachinery/pkg/types"
+
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
@@ -47,16 +49,6 @@ func (s Stage) preceding() Stage {
 	default:
 		return ""
 	}
-}
-
-// Target is the safe identity of one waited controller Deployment:
-// namespace and name only, never spec, status, or image values.
-type Target struct {
-	// Namespace is the actual rendered namespace of the Deployment.
-	Namespace string
-
-	// Name is the Deployment's metadata.name.
-	Name string
 }
 
 // Result is the honest, apply-only outcome of one Run invocation. It
@@ -106,7 +98,8 @@ type Result struct {
 	WaitCompleted bool
 
 	// WaitTargets lists the safe identities of the controller
-	// Deployments the requested wait covered. It is empty when no
+	// Deployments the requested wait covered — namespace and name
+	// only, never spec, status, or image values. It is empty when no
 	// wait ran or the payload matched no target.
-	WaitTargets []Target
+	WaitTargets []types.NamespacedName
 }

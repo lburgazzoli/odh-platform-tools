@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
 	"github.com/blang/semver/v4"
@@ -137,7 +138,7 @@ type Deployer struct {
 
 	waited           bool
 	waitCompleted    bool
-	waitTargets      []Target
+	waitTargets      []types.NamespacedName
 	waitPollInterval time.Duration
 }
 

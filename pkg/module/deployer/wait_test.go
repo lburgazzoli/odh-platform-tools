@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
@@ -253,7 +254,7 @@ func TestApplyRequestedWaitReportsCompletion(t *testing.T) {
 		HaveField("ApplyCompleted", BeTrue()),
 		HaveField("WaitRequested", BeTrue()),
 		HaveField("WaitCompleted", BeTrue()),
-		HaveField("WaitTargets", Equal([]Target{{Namespace: "run-namespace", Name: "synthetic-controller"}})),
+		HaveField("WaitTargets", Equal([]types.NamespacedName{{Namespace: "run-namespace", Name: "synthetic-controller"}})),
 	))
 	g.Expect(result.Owner.Name).To(Equal("synthetic"))
 	g.Expect(string(result.Owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
@@ -296,7 +297,7 @@ func TestWaitTargetSelectionAndDedup(t *testing.T) {
 
 	g.Expect(stub.target.Wait(t.Context())).To(Succeed())
 
-	g.Expect(stub.target.waitTargets).To(Equal([]Target{
+	g.Expect(stub.target.waitTargets).To(Equal([]types.NamespacedName{
 		{Namespace: "ns-a", Name: "synthetic-controller"},
 		{Namespace: "ns-b", Name: "synthetic-controller"},
 	}))
@@ -335,7 +336,7 @@ func TestWaitConfiguredNameFallback(t *testing.T) {
 	deployed(t, stub)
 
 	g.Expect(stub.target.Wait(t.Context())).To(Succeed())
-	g.Expect(stub.target.waitTargets).To(Equal([]Target{
+	g.Expect(stub.target.waitTargets).To(Equal([]types.NamespacedName{
 		{Namespace: "run-namespace", Name: "synthetic"},
 	}))
 }
@@ -721,7 +722,7 @@ func TestWaitTimeoutIsRuntimeError(t *testing.T) {
 		HaveField("ApplyCompleted", BeTrue()),
 		HaveField("WaitRequested", BeTrue()),
 		HaveField("WaitCompleted", BeFalse()),
-		HaveField("WaitTargets", Equal([]Target{{Namespace: "run-namespace", Name: "synthetic-controller"}})),
+		HaveField("WaitTargets", Equal([]types.NamespacedName{{Namespace: "run-namespace", Name: "synthetic-controller"}})),
 	))
 	g.Expect(result.Owner.Name).To(Equal("synthetic"))
 	g.Expect(string(result.Owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))

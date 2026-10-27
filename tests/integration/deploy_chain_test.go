@@ -14,6 +14,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 
 	. "github.com/onsi/gomega"
 
@@ -659,7 +660,7 @@ func TestDeployChainWaitCompletion(t *testing.T) {
 
 	g.Expect(result.WaitRequested).To(BeTrue())
 	g.Expect(result.WaitCompleted).To(BeTrue())
-	g.Expect(result.WaitTargets).To(Equal([]deployer.Target{
+	g.Expect(result.WaitTargets).To(Equal([]types.NamespacedName{
 		{Namespace: "run-namespace", Name: "synthetic-controller"},
 	}))
 
@@ -702,7 +703,7 @@ func TestDeployChainWaitShortBudgetTimesOut(t *testing.T) {
 	g.Expect(result.ApplyCompleted).To(BeTrue())
 	g.Expect(result.WaitRequested).To(BeTrue())
 	g.Expect(result.WaitCompleted).To(BeFalse())
-	g.Expect(result.WaitTargets).To(Equal([]deployer.Target{
+	g.Expect(result.WaitTargets).To(Equal([]types.NamespacedName{
 		{Namespace: "run-namespace", Name: "synthetic-controller"},
 	}))
 }

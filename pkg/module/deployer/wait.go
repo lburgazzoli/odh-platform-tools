@@ -22,20 +22,15 @@ import (
 	"fmt"
 	"time"
 
+	gvk "github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/kubectl/pkg/polymorphichelpers"
-	crclient "sigs.k8s.io/controller-runtime/pkg/client"
-
-	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
-
-// deploymentGVK is the only workload kind the opt-in wait covers:
-// rendered apps/v1 Deployments. Non-controller workloads are out of
-// scope by standing rule.
-var deploymentGVK = schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}
 
 // waitPollInterval is the pause between observation rounds. It is
 // unexported test state, not a public knob: the wait budget, not the
@@ -100,12 +95,15 @@ func (r *Deployer) Wait(ctx context.Context) error {
 
 	if len(targets) == 0 {
 		r.fail()
-		return moduleerrors.New(moduleerrors.ErrWaitTargetMissing,
+		return moduleerrors.New(
+			moduleerrors.ErrWaitTargetMissing,
 			fmt.Sprintf("no rendered controller deployment matched the wait target: module %s controller deployment %q",
-				r.definition.Name, r.controllerDeploymentName()))
+				r.definition.Name,
+				r.controllerDeploymentName()),
+		)
 	}
 
-	if err := r.observeUntilRolledOut(ctx, targets); err != nil {
+	if err := r.observeUntilRolledOut(ctx); err != nil {
 		r.fail()
 		return err
 	}
@@ -139,16 +137,16 @@ func (r *Deployer) controllerDeploymentName() string {
 // selectWaitTargets picks the wait's targets out of the rendered
 // payload: apps/v1 Deployments whose name matches the configured
 // controller deployment name, deduplicated by namespace and name.
-func (r *Deployer) selectWaitTargets() []Target {
+func (r *Deployer) selectWaitTargets() []types.NamespacedName {
 	name := r.controllerDeploymentName()
 
-	var targets []Target
-	seen := make(map[Target]struct{})
+	var targets []types.NamespacedName
+	seen := sets.New[types.NamespacedName]()
 
 	for i := range r.resources {
 		resource := &r.resources[i]
 
-		if resource.GroupVersionKind() != deploymentGVK {
+		if resource.GroupVersionKind() != gvk.Deployment {
 			continue
 		}
 
@@ -156,12 +154,12 @@ func (r *Deployer) selectWaitTargets() []Target {
 			continue
 		}
 
-		target := Target{Namespace: resource.GetNamespace(), Name: resource.GetName()}
-		if _, duplicate := seen[target]; duplicate {
+		target := types.NamespacedName{Namespace: resource.GetNamespace(), Name: resource.GetName()}
+		if seen.Has(target) {
 			continue
 		}
 
-		seen[target] = struct{}{}
+		seen.Insert(target)
 		targets = append(targets, target)
 	}
 
@@ -172,60 +170,14 @@ func (r *Deployer) selectWaitTargets() []Target {
 // Kubernetes wait helper until the public status helper reports every
 // one rolled out. The first observation is immediate and later rounds
 // follow the poll interval; the shared wait budget, derived from the
-// invocation context, bounds the whole poll. Targets are followed by
-// namespace and name only — an absent, terminating, or replaced
-// target is pending — and every failure is a safe shared
-// ErrRolloutWait error whose cause carries the raw API or helper
-// error.
-func (r *Deployer) observeUntilRolledOut(ctx context.Context, targets []Target) error {
-	viewer := &polymorphichelpers.DeploymentStatusViewer{}
-
+// invocation context, bounds the whole poll.
+func (r *Deployer) observeUntilRolledOut(ctx context.Context) error {
 	err := wait.PollUntilContextTimeout(
-		ctx, r.waitPollInterval, r.waitBudget(), true,
-		func(ctx context.Context) (bool, error) {
-			rolledOut := true
-
-			for _, target := range targets {
-				live := &unstructured.Unstructured{}
-				live.SetGroupVersionKind(deploymentGVK)
-
-				err := r.connection.Client().Get(ctx, crclient.ObjectKey{
-					Namespace: target.Namespace,
-					Name:      target.Name,
-				}, live)
-				if err != nil {
-					if apierrors.IsNotFound(err) {
-						// An absent target is pending whenever it
-						// happens: the wait follows the namespace
-						// and name, never one object instance.
-						rolledOut = false
-						continue
-					}
-
-					return false, waitTargetFailure(target, "the observation failed", err)
-				}
-
-				// A terminating target is pending — never done,
-				// never a failure on its own.
-				if live.GetDeletionTimestamp() != nil {
-					rolledOut = false
-					continue
-				}
-
-				// The public helper is the only rollout judge: live
-				// object, no revision constraint, no extra policy.
-				_, done, err := viewer.Status(live, 0)
-				if err != nil {
-					return false, waitTargetFailure(target, "the rollout status check failed", err)
-				}
-
-				if !done {
-					rolledOut = false
-				}
-			}
-
-			return rolledOut, nil
-		},
+		ctx,
+		r.waitPollInterval,
+		r.waitBudget(),
+		true,
+		r.observeRolledOut,
 	)
 	if err == nil {
 		return nil
@@ -234,27 +186,82 @@ func (r *Deployer) observeUntilRolledOut(ctx context.Context, targets []Target) 
 	// The poll's own termination — the budget expiring or the caller
 	// cancelling — becomes the shared wait-failure message with the
 	// context identity as its cause. A condition failure is already
-	// one of the safe target failures above and is returned as-is.
+	// one of the safe target failures and is returned as-is.
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return moduleerrors.New(moduleerrors.ErrRolloutWait,
+		return moduleerrors.New(
+			moduleerrors.ErrRolloutWait,
 			fmt.Sprintf("waiting for module %s controller rollout failed: the wait was cancelled or its budget expired",
 				r.definition.Name),
-			moduleerrors.WithCause(err))
+			moduleerrors.WithCause(err),
+		)
 	}
 
 	return err
 }
 
+// observeRolledOut is one wait observation round over the recorded
+// targets: every target is GET fresh, targets are followed by
+// namespace and name only — an absent, terminating, or replaced
+// target is pending — and live objects go to the public status
+// helper. It reports whether every target is rolled out, and every
+// failure is a safe shared ErrRolloutWait error whose cause carries
+// the raw API or helper error.
+func (r *Deployer) observeRolledOut(ctx context.Context) (bool, error) {
+	viewer := &polymorphichelpers.DeploymentStatusViewer{}
+
+	rolledOut := true
+
+	for _, target := range r.waitTargets {
+		live := &unstructured.Unstructured{}
+		live.SetGroupVersionKind(gvk.Deployment)
+
+		err := r.connection.Client().Get(ctx, target, live)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				// An absent target is pending whenever it
+				// happens: the wait follows the namespace
+				// and name, never one object instance.
+				rolledOut = false
+				continue
+			}
+
+			return false, waitTargetFailure(target, "the observation failed", err)
+		}
+
+		// A terminating target is pending — never done,
+		// never a failure on its own.
+		if live.GetDeletionTimestamp() != nil {
+			rolledOut = false
+			continue
+		}
+
+		// The public helper is the only rollout judge: live
+		// object, no revision constraint, no extra policy.
+		_, done, err := viewer.Status(live, 0)
+		if err != nil {
+			return false, waitTargetFailure(target, "the rollout status check failed", err)
+		}
+
+		if !done {
+			rolledOut = false
+		}
+	}
+
+	return rolledOut, nil
+}
+
 // waitTargetFailure builds the safe failure for one waited target:
 // safe identity and the failure's own words in the text, the raw
 // cause only under Unwrap.
-func waitTargetFailure(target Target, detail string, cause error) error {
+func waitTargetFailure(target types.NamespacedName, detail string, cause error) error {
 	message := fmt.Sprintf("waiting for deployment %s/%s failed: %s", target.Namespace, target.Name, detail)
 
 	if cause != nil {
-		return moduleerrors.New(moduleerrors.ErrRolloutWait,
+		return moduleerrors.New(
+			moduleerrors.ErrRolloutWait,
 			message+"; the raw cause remains reachable through errors.Is and errors.As",
-			moduleerrors.WithCause(cause))
+			moduleerrors.WithCause(cause),
+		)
 	}
 
 	return moduleerrors.New(moduleerrors.ErrRolloutWait, message)
