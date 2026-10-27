@@ -18,13 +18,14 @@ package deployer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/kubectl/pkg/polymorphichelpers"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -56,18 +57,17 @@ const defaultWaitPollInterval = time.Second
 // local definition validation.
 //
 // One shared budget starts when Wait runs, as a child of the given
-// context — the still-live invocation context when Run drives it —
+// context — the still-live invocation context when Apply drives it —
 // so an explicit WaitTimeout can never extend the remaining overall
-// timeout. Every observation is a fresh uncached GET; a target with
-// a deletionTimestamp fails on every observation including the
-// first, even when its replica counts look complete; the first live
-// UID is pinned and a replacement or later disappearance fails; an
-// initial NotFound may keep waiting. Live objects go straight to the
-// public helper with no revision constraint, so merged replicas,
-// generation lag, incomplete updates, old-replica termination,
-// availability, and the progress deadline are judged exactly as
-// kubectl judges them — no extra readiness, paused, or
-// ReplicaFailure policy exists here.
+// timeout. Every observation is a fresh uncached GET, and the wait
+// follows its targets by namespace and name only: a target that is
+// absent, terminating, or replaced by a new object stays pending
+// until a live object under that identity rolls out. Live objects go
+// straight to the public helper with no revision constraint, so
+// merged replicas, generation lag, incomplete updates,
+// old-replica termination, availability, and the progress deadline
+// are judged exactly as kubectl judges them — no extra readiness,
+// paused, or ReplicaFailure policy exists here.
 //
 // A wait failure is a runtime error: the published owner and apply
 // completion are retained, and the
@@ -104,9 +104,6 @@ func (r *Deployer) Wait(ctx context.Context) error {
 			fmt.Sprintf("no rendered controller deployment matched the wait target: module %s controller deployment %q",
 				r.definition.Name, r.controllerDeploymentName()))
 	}
-
-	ctx, cancel := context.WithTimeout(ctx, r.waitBudget())
-	defer cancel()
 
 	if err := r.observeUntilRolledOut(ctx, targets); err != nil {
 		r.fail()
@@ -171,85 +168,81 @@ func (r *Deployer) selectWaitTargets() []Target {
 	return targets
 }
 
-// observeUntilRolledOut polls the live targets until the public
-// status helper reports every one rolled out. Each round GETs every
-// target fresh, applies the termination and identity rules, and asks
-// the helper; the shared context bounds the whole loop. Every failure
-// is a safe shared ErrRolloutWait error whose cause carries the raw
-// API or helper error.
+// observeUntilRolledOut polls the live targets through the shared
+// Kubernetes wait helper until the public status helper reports every
+// one rolled out. The first observation is immediate and later rounds
+// follow the poll interval; the shared wait budget, derived from the
+// invocation context, bounds the whole poll. Targets are followed by
+// namespace and name only — an absent, terminating, or replaced
+// target is pending — and every failure is a safe shared
+// ErrRolloutWait error whose cause carries the raw API or helper
+// error.
 func (r *Deployer) observeUntilRolledOut(ctx context.Context, targets []Target) error {
 	viewer := &polymorphichelpers.DeploymentStatusViewer{}
-	pinned := make(map[Target]types.UID, len(targets))
 
-	ticker := time.NewTicker(r.waitPollInterval)
-	defer ticker.Stop()
+	err := wait.PollUntilContextTimeout(
+		ctx, r.waitPollInterval, r.waitBudget(), true,
+		func(ctx context.Context) (bool, error) {
+			rolledOut := true
 
-	for {
-		rolledOut := true
+			for _, target := range targets {
+				live := &unstructured.Unstructured{}
+				live.SetGroupVersionKind(deploymentGVK)
 
-		for _, target := range targets {
-			live := &unstructured.Unstructured{}
-			live.SetGroupVersionKind(deploymentGVK)
-
-			err := r.connection.Client().Get(ctx, crclient.ObjectKey{
-				Namespace: target.Namespace,
-				Name:      target.Name,
-			}, live)
-			if err != nil {
-				if apierrors.IsNotFound(err) {
-					// An initial NotFound may keep waiting; a target
-					// that was live and then vanished fails.
-					if _, wasLive := pinned[target]; wasLive {
-						return waitTargetFailure(target, "the deployment disappeared", err)
+				err := r.connection.Client().Get(ctx, crclient.ObjectKey{
+					Namespace: target.Namespace,
+					Name:      target.Name,
+				}, live)
+				if err != nil {
+					if apierrors.IsNotFound(err) {
+						// An absent target is pending whenever it
+						// happens: the wait follows the namespace
+						// and name, never one object instance.
+						rolledOut = false
+						continue
 					}
 
+					return false, waitTargetFailure(target, "the observation failed", err)
+				}
+
+				// A terminating target is pending — never done,
+				// never a failure on its own.
+				if live.GetDeletionTimestamp() != nil {
 					rolledOut = false
 					continue
 				}
 
-				return waitTargetFailure(target, "the observation failed", err)
-			}
-
-			// A terminating target fails on every observation,
-			// including the first, whatever its replica counts say.
-			if live.GetDeletionTimestamp() != nil {
-				return waitTargetFailure(target, "the deployment is terminating", nil)
-			}
-
-			// The first live UID is pinned; a replacement fails.
-			if uid, wasLive := pinned[target]; wasLive {
-				if live.GetUID() != uid {
-					return waitTargetFailure(target, "the deployment was replaced", nil)
+				// The public helper is the only rollout judge: live
+				// object, no revision constraint, no extra policy.
+				_, done, err := viewer.Status(live, 0)
+				if err != nil {
+					return false, waitTargetFailure(target, "the rollout status check failed", err)
 				}
-			} else {
-				pinned[target] = live.GetUID()
+
+				if !done {
+					rolledOut = false
+				}
 			}
 
-			// The public helper is the only rollout judge: live
-			// object, no revision constraint, no extra policy.
-			_, done, err := viewer.Status(live, 0)
-			if err != nil {
-				return waitTargetFailure(target, "the rollout status check failed", err)
-			}
-
-			if !done {
-				rolledOut = false
-			}
-		}
-
-		if rolledOut {
-			return nil
-		}
-
-		select {
-		case <-ctx.Done():
-			return moduleerrors.New(moduleerrors.ErrRolloutWait,
-				fmt.Sprintf("waiting for module %s controller rollout failed: the wait was cancelled or its budget expired",
-					r.definition.Name),
-				moduleerrors.WithCause(ctx.Err()))
-		case <-ticker.C:
-		}
+			return rolledOut, nil
+		},
+	)
+	if err == nil {
+		return nil
 	}
+
+	// The poll's own termination — the budget expiring or the caller
+	// cancelling — becomes the shared wait-failure message with the
+	// context identity as its cause. A condition failure is already
+	// one of the safe target failures above and is returned as-is.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return moduleerrors.New(moduleerrors.ErrRolloutWait,
+			fmt.Sprintf("waiting for module %s controller rollout failed: the wait was cancelled or its budget expired",
+				r.definition.Name),
+			moduleerrors.WithCause(err))
+	}
+
+	return err
 }
 
 // waitTargetFailure builds the safe failure for one waited target:

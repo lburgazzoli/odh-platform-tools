@@ -400,10 +400,11 @@ func TestWaitInitialNotFoundMayWait(t *testing.T) {
 	g.Expect(fixture.gets).To(HaveLen(2))
 }
 
-// TestWaitRejectsTerminatingFirstGet proves a target with a
-// deletionTimestamp fails on the very first observation even when its
-// replica counts look complete.
-func TestWaitRejectsTerminatingFirstGet(t *testing.T) {
+// TestWaitTerminatingTargetStaysPending proves a target with a
+// deletionTimestamp is pending — never done, never a failure — and
+// the wait completes once a live object under the same identity rolls
+// out.
+func TestWaitTerminatingTargetStaysPending(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -415,6 +416,7 @@ func TestWaitRejectsTerminatingFirstGet(t *testing.T) {
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.DeletionTimestamp = &now
 		}))},
+		{live: waitLive(t, waitDeployment(nil))},
 	}
 
 	stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
@@ -422,16 +424,16 @@ func TestWaitRejectsTerminatingFirstGet(t *testing.T) {
 	})
 	deployed(t, stub)
 
-	err := stub.target.Wait(t.Context())
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("terminating"))
-	g.Expect(stub.target.waitCompleted).To(BeFalse())
-	g.Expect(stub.target.applied).To(BeTrue())
+	g.Expect(stub.target.Wait(t.Context())).To(Succeed())
+	g.Expect(stub.target.waitCompleted).To(BeTrue())
+	g.Expect(fixture.gets).To(HaveLen(2))
 }
 
-// TestWaitRejectsUIDReplacement proves the first live UID is pinned
-// and a replacement object fails the wait.
-func TestWaitRejectsUIDReplacement(t *testing.T) {
+// TestWaitFollowsReplacedDeployment proves the wait follows its
+// targets by namespace and name only: a replacement object under the
+// same identity is waited on like any other, and a rolled-out
+// replacement completes the wait.
+func TestWaitFollowsReplacedDeployment(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -444,7 +446,6 @@ func TestWaitRejectsUIDReplacement(t *testing.T) {
 		}))},
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.UID = "deployment-uid-2"
-			d.Status.UpdatedReplicas = 0
 		}))},
 	}
 
@@ -453,15 +454,15 @@ func TestWaitRejectsUIDReplacement(t *testing.T) {
 	})
 	deployed(t, stub)
 
-	err := stub.target.Wait(t.Context())
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("replaced"))
+	g.Expect(stub.target.Wait(t.Context())).To(Succeed())
 	g.Expect(fixture.gets).To(HaveLen(2))
 }
 
-// TestWaitRejectsDisappearance proves a target that was live and then
-// vanishes fails the wait instead of waiting forever.
-func TestWaitRejectsDisappearance(t *testing.T) {
+// TestWaitDisappearanceStaysPending proves a target that was live and
+// then vanishes stays pending — the wait follows the identity, not
+// one object instance — and completes when a rolled-out object
+// returns under it.
+func TestWaitDisappearanceStaysPending(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -472,6 +473,7 @@ func TestWaitRejectsDisappearance(t *testing.T) {
 			d.Status.UpdatedReplicas = 0
 		}))},
 		{err: apierrors.NewNotFound(schema.GroupResource{Group: "apps", Resource: "deployments"}, "synthetic-controller")},
+		{live: waitLive(t, waitDeployment(nil))},
 	}
 
 	stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
@@ -479,9 +481,8 @@ func TestWaitRejectsDisappearance(t *testing.T) {
 	})
 	deployed(t, stub)
 
-	err := stub.target.Wait(t.Context())
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("disappeared"))
+	g.Expect(stub.target.Wait(t.Context())).To(Succeed())
+	g.Expect(fixture.gets).To(HaveLen(3))
 }
 
 // TestWaitProgressDeadlineFails proves the public helper's
