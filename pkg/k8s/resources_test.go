@@ -121,3 +121,95 @@ func TestIsRejectsKindAndVersionMismatches(t *testing.T) {
 	g.Expect(Is(v2, typedConfigMap(""))).
 		To(BeFalse(), "different version never matches")
 }
+
+// decodeStreamYAML holds two ConfigMaps around a comment-only document
+// and a kindless one, both skipped rather than failing the stream.
+const decodeStreamYAML = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: first
+---
+# comment-only document: skipped
+---
+metadata:
+  name: kindless
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: second
+`
+
+// decodeUnknownGroupYAML carries a group no scheme knows, standing in
+// for the unknown-GVK lookalikes the render output can hold.
+const decodeUnknownGroupYAML = `apiVersion: wrongplatform.example.com/v1
+kind: ConfigMap
+metadata:
+  name: odh-synthetic-config
+  namespace: opendatahub
+`
+
+// decodeMalformedYAML is not valid YAML: the flow sequence never
+// closes.
+const decodeMalformedYAML = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: broken
+  labels: [unterminated
+`
+
+// TestDecodeResources pins the stream semantics: documents decode in
+// order, and empty or kindless documents are skipped.
+func TestDecodeResources(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	resources, err := DecodeResources([]byte(decodeStreamYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(resources).To(HaveLen(2))
+	g.Expect(resources[0].GetName()).To(Equal("first"))
+	g.Expect(resources[1].GetName()).To(Equal("second"))
+}
+
+// TestDecodeResourcesAcceptsUnknownGroups pins that decoding targets
+// unstructured values only: a group absent from every scheme decodes
+// exactly like a core one.
+func TestDecodeResourcesAcceptsUnknownGroups(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	resources, err := DecodeResources([]byte(decodeUnknownGroupYAML))
+	g.Expect(err).To(Succeed())
+	g.Expect(resources).To(HaveLen(1))
+	g.Expect(resources[0].GroupVersionKind()).To(Equal(schema.GroupVersionKind{
+		Group:   "wrongplatform.example.com",
+		Version: "v1",
+		Kind:    "ConfigMap",
+	}))
+}
+
+// TestDecodeResourcesEmptyContent pins that empty input decodes to an
+// empty slice without error.
+func TestDecodeResourcesEmptyContent(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	resources, err := DecodeResources(nil)
+	g.Expect(err).To(Succeed())
+	g.Expect(resources).To(BeEmpty())
+}
+
+// TestDecodeResourcesRejectsMalformedYAML pins that a document that is
+// not valid YAML fails the stream instead of being skipped.
+func TestDecodeResourcesRejectsMalformedYAML(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	_, err := DecodeResources([]byte(decodeMalformedYAML))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("unable to decode"))
+}

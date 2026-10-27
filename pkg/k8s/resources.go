@@ -17,8 +17,29 @@ limitations under the License.
 package k8s
 
 import (
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
+
+	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// DecodeResources decodes a YAML stream — one or more documents
+// separated by --- — into unstructured resources, preserving document
+// order. Empty documents and documents without a kind are skipped;
+// anything undecodable fails. It delegates to the framework's shared
+// document decoder, the same resource decoding the render actions use.
+func DecodeResources(content []byte) ([]unstructured.Unstructured, error) {
+	// An empty scheme suffices: decoding into unstructured never
+	// consults the type registry, so any group/version/kind —
+	// including unknown ones — decodes exactly as it would with a
+	// populated scheme.
+	decoder := serializer.NewCodecFactory(runtime.NewScheme()).UniversalDeserializer()
+
+	return fwresources.Decode(decoder, content)
+}
 
 // Is reports whether candidate and target identify the same object:
 // equal group/version/kind, namespace, and name. An object carrying no
