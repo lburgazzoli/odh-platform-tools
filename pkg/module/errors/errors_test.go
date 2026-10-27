@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/option"
 )
 
 func TestNewDefinitionErrorPreservesCause(t *testing.T) {
@@ -154,9 +156,9 @@ func TestModuleErrorWithoutCauseIsStillError(t *testing.T) {
 	g.Expect(errors.Is(err, ErrStageSequence)).To(BeTrue())
 }
 
-// TestModuleErrorOptions proves the option machinery: a nil option is
-// ignored, a whole ModuleErrorOptions preset applies like WithCause,
-// and WithCause(nil) leaves the error without a cause.
+// TestModuleErrorOptions proves the option machinery: options target
+// the error directly, a nil option is ignored, and WithCause(nil)
+// leaves the error without a cause.
 func TestModuleErrorOptions(t *testing.T) {
 	t.Parallel()
 
@@ -166,7 +168,9 @@ func TestModuleErrorOptions(t *testing.T) {
 
 	err := New(ErrImageSource, "invalid related images file images.env",
 		nil,
-		ModuleErrorOptions{Cause: cause})
+		option.FunctionalOption[ModuleError](func(err *ModuleError) {
+			err.cause = cause
+		}))
 	g.Expect(errors.Unwrap(err)).To(BeIdenticalTo(cause))
 
 	err = New(ErrImageSource, "invalid related images file images.env",

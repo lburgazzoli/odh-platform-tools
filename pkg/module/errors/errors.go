@@ -103,29 +103,16 @@ type ModuleError struct {
 	cause    error
 }
 
-// ModuleErrorOptions holds the optional parts of a ModuleError.
-type ModuleErrorOptions struct {
-	// Cause is the raw underlying error, when there is one.
-	Cause error
-}
-
-// ApplyTo implements ModuleErrorOption, so a whole ModuleErrorOptions
-// can be passed to New as a preset; its zero value is a no-op.
-func (opts ModuleErrorOptions) ApplyTo(target *ModuleErrorOptions) {
-	if opts.Cause != nil {
-		target.Cause = opts.Cause
-	}
-}
-
-// ModuleErrorOption customizes one ModuleError. Options apply in
-// order over the defaults; a nil option is ignored.
-type ModuleErrorOption = option.Option[ModuleErrorOptions]
+// ModuleErrorOption customizes one ModuleError: options target the
+// error directly and apply in order inside New; a nil option is
+// ignored.
+type ModuleErrorOption = option.Option[ModuleError]
 
 // WithCause sets the raw underlying cause.
 func WithCause(cause error) ModuleErrorOption {
-	return option.FunctionalOption[ModuleErrorOptions](
-		func(opts *ModuleErrorOptions) {
-			opts.Cause = cause
+	return option.FunctionalOption[ModuleError](
+		func(err *ModuleError) {
+			err.cause = cause
 		})
 }
 
@@ -134,19 +121,18 @@ func WithCause(cause error) ModuleErrorOption {
 // underlying cause, through WithCause; an error without one simply
 // omits the option. category must be one of this package's sentinels.
 func New(category error, message string, opts ...ModuleErrorOption) *ModuleError {
-	options := ModuleErrorOptions{}
+	err := &ModuleError{
+		category: category,
+		message:  message,
+	}
 
 	for _, opt := range opts {
 		if opt != nil {
-			opt.ApplyTo(&options)
+			opt.ApplyTo(err)
 		}
 	}
 
-	return &ModuleError{
-		category: category,
-		message:  message,
-		cause:    options.Cause,
-	}
+	return err
 }
 
 // Error returns the message supplied to New, exactly.
