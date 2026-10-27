@@ -976,7 +976,6 @@ func TestEnvInjectorIgnoresNonDeploymentResources(t *testing.T) {
 
 	service := findResource(resources, toolk8s.Service, types.NamespacedName{Name: "synthetic-service"})
 	g.Expect(service).NotTo(BeNil(), "expected Service synthetic-service in the rendered output")
-	g.Expect(service).NotTo(BeNil(), "expected Service synthetic-service in the rendered output")
 	g.Expect(service.Object).To(jq.Match(`.spec.ports[0].port == 8080`))
 
 	lookalike := findResource(resources, schema.GroupVersionKind{Group: "apps", Version: "v1beta1", Kind: "Deployment"}, types.NamespacedName{Name: "synthetic-controller"})

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -142,6 +143,22 @@ func newPlatformConfigInjector() *PlatformConfigInjector {
 	}
 }
 
+// expectIdentityOrderPreserved pins that the rendered output keeps the
+// input batch's order: every output position carries the same
+// group/version/kind, namespace, and name as the corresponding input.
+// Content may change — the injector merges the platform config target —
+// identity and position must not. The table-driven lookalike batches
+// hold distinct identities, so the per-index sequence pins the full
+// order.
+func expectIdentityOrderPreserved(g *WithT, input []unstructured.Unstructured, resources []unstructured.Unstructured) {
+	g.Expect(resources).To(HaveLen(len(input)))
+	for i := range input {
+		g.Expect(resources[i].GroupVersionKind()).To(Equal(input[i].GroupVersionKind()), "batch order preserved at index %d", i)
+		g.Expect(resources[i].GetNamespace()).To(Equal(input[i].GetNamespace()), "batch order preserved at index %d", i)
+		g.Expect(resources[i].GetName()).To(Equal(input[i].GetName()), "batch order preserved at index %d", i)
+	}
+}
+
 // TestPlatformConfigInjectorCreates pins that the odh-<module>-config
 // ConfigMap is appended in the applications namespace with the
 // canonical runner-supplied platform version, and no rollout hash or
@@ -226,9 +243,9 @@ func TestPlatformConfigInjectorMergesExisting(t *testing.T) {
 // TestPlatformConfigInjectorIgnoresForeignNamespace pins that a
 // same-name ConfigMap explicitly rendered into a foreign namespace is
 // not the platform config's identity: wherever it sits in the batch it
-// passes through untouched while the real target is merged, and a
-// batch holding only the foreign lookalike still gets the platform
-// config ConfigMap appended.
+// passes through untouched while the real target is merged and the
+// batch order is preserved, and a batch holding only the foreign
+// lookalike still gets the platform config ConfigMap appended.
 func TestPlatformConfigInjectorIgnoresForeignNamespace(t *testing.T) {
 	t.Parallel()
 
@@ -251,6 +268,7 @@ func TestPlatformConfigInjectorIgnoresForeignNamespace(t *testing.T) {
 			g.Expect(err).To(Succeed())
 
 			g.Expect(resources).To(HaveLen(2))
+			expectIdentityOrderPreserved(g, input, resources)
 
 			configMap := findResource(resources, toolk8s.ConfigMap, platformConfigKey)
 			g.Expect(configMap).NotTo(BeNil(), "expected ConfigMap opendatahub/odh-synthetic-config in the rendered output")
@@ -402,6 +420,7 @@ func TestPlatformConfigInjectorExactGVKSelection(t *testing.T) {
 			g.Expect(err).To(Succeed())
 
 			g.Expect(resources).To(HaveLen(3))
+			expectIdentityOrderPreserved(g, input, resources)
 
 			configMap := findResource(resources, toolk8s.ConfigMap, platformConfigKey)
 			g.Expect(configMap).NotTo(BeNil(), "expected ConfigMap opendatahub/odh-synthetic-config in the rendered output")
