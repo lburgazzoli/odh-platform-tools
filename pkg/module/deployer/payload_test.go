@@ -996,37 +996,3 @@ func TestApplyCancelledInvocationIsNotAttempted(t *testing.T) {
 	g.Expect(errors.Is(typed.Unwrap(), context.Canceled)).To(BeTrue())
 	g.Expect(writes.snapshot()).To(BeEmpty())
 }
-
-// TestControllerBridgeMatchesOperatorOwnership proves the bridge
-// carries the operator's modules-controller ownership policy: no
-// static ownership, dynamic ownership enabled, core/v1 Namespaces and
-// CRDs excluded, and Owns answering from the dynamic-owned set the
-// action populates.
-func TestControllerBridgeMatchesOperatorOwnership(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	bridge := &controllerBridge{
-		dynamicOwned: map[schema.GroupVersionKind]struct{}{},
-	}
-
-	module := schema.GroupVersionKind{
-		Group:   "components.platform.opendatahub.io",
-		Version: "v1alpha1",
-		Kind:    "SyntheticModule",
-	}
-
-	g.Expect(bridge.Owns(module)).To(BeFalse())
-	g.Expect(bridge.IsDynamicOwnershipEnabled()).To(BeTrue())
-
-	bridge.AddDynamicOwnedType(module)
-	g.Expect(bridge.Owns(module)).To(BeTrue())
-
-	namespace := schema.GroupVersionKind{Version: "v1", Kind: "Namespace"}
-	crd := apiextensionsv1.SchemeGroupVersion.WithKind("CustomResourceDefinition")
-	deployment := appsv1.SchemeGroupVersion.WithKind("Deployment")
-	g.Expect(bridge.IsExcludedFromDynamicOwnership(namespace)).To(BeTrue())
-	g.Expect(bridge.IsExcludedFromDynamicOwnership(crd)).To(BeTrue())
-	g.Expect(bridge.IsExcludedFromDynamicOwnership(deployment)).To(BeFalse())
-}

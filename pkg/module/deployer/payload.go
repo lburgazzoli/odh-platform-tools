@@ -23,19 +23,15 @@ import (
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/discovery"
-	"k8s.io/client-go/dynamic"
-	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
-	fwgvk "github.com/opendatahub-io/odh-platform-utilities/framework/cluster/gvk"
 	fwdeploy "github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/deploy"
 	odhTypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/adapt"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/cluster"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
@@ -139,10 +135,7 @@ func DeployPayload(
 	// The plain connection client goes to the action: the framework's
 	// own ownership, unmanaged, and adoption semantics apply
 	// unchanged, matching the operator.
-	bridge := &controllerBridge{
-		client:       client,
-		dynamicOwned: map[schema.GroupVersionKind]struct{}{},
-	}
+	bridge := adapt.NewControllerBridge(client)
 
 	// One invocation-local action carries the whole payload. Defaults
 	// keep the framework field ownership, metadata, customizers, SSA
@@ -177,70 +170,4 @@ func DeployPayload(
 	}
 
 	return nil
-}
-
-// controllerBridge is the minimal concrete Controller the framework
-// deploy action reads, shaped after the operator's modules controller:
-// dynamic ownership with no statically owned types. It owns no
-// reconciler and no manager. The action populates the dynamic-owned
-// set as it decides to own rendered types; Owns answers from that
-// set. core/v1 Namespaces and CRDs stay excluded from ownership — the
-// never-own-namespaces policy the action's shouldOwn reads — so the
-// action never sets controller references on them (CRDs additionally
-// bypass shouldOwn entirely through the action's unowned deployCRD
-// path). Its client is the plain connection client; the discovery and
-// dynamic getters report nil, because only out-of-scope
-// garbage-collection and dynamic-ownership actions read them.
-type controllerBridge struct {
-	client       crclient.Client
-	dynamicOwned map[schema.GroupVersionKind]struct{}
-}
-
-// compile assertion: the bridge satisfies the framework Controller
-// contract.
-var _ odhTypes.Controller = (*controllerBridge)(nil)
-
-// Owns reports whether the type is in the dynamic-owned set the
-// action populated: a module deploy declares no statically owned types,
-// exactly like the operator's modules controller.
-func (b *controllerBridge) Owns(gvk schema.GroupVersionKind) bool {
-	_, owned := b.dynamicOwned[gvk]
-
-	return owned
-}
-
-// AddDynamicOwnedType records a type the action decided to own.
-func (b *controllerBridge) AddDynamicOwnedType(gvk schema.GroupVersionKind) {
-	b.dynamicOwned[gvk] = struct{}{}
-}
-
-// GetClient returns the plain connection client the action deploys
-// through.
-func (b *controllerBridge) GetClient() crclient.Client {
-	return b.client
-}
-
-// GetDiscoveryClient reports none: the deploy action reads no
-// discovery client.
-func (b *controllerBridge) GetDiscoveryClient() discovery.DiscoveryInterface {
-	return nil
-}
-
-// GetDynamicClient reports none: the deploy action reads no dynamic
-// client.
-func (b *controllerBridge) GetDynamicClient() dynamic.Interface {
-	return nil
-}
-
-// IsDynamicOwnershipEnabled keeps dynamic ownership on: rendered
-// ordinary resources receive controller references to the persisted
-// definition.
-func (b *controllerBridge) IsDynamicOwnershipEnabled() bool {
-	return true
-}
-
-// IsExcludedFromDynamicOwnership excludes core/v1 Namespaces and
-// CRDs, matching the upstream controller's exclusions.
-func (b *controllerBridge) IsExcludedFromDynamicOwnership(gvk schema.GroupVersionKind) bool {
-	return gvk == fwgvk.Namespace || gvk == fwgvk.CustomResourceDefinition
 }

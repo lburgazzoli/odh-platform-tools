@@ -1,14 +1,21 @@
-// Package adapt adapts rendered module resources before deployment.
+// Package adapt adapts the invocation to the platform framework at
+// both of its seams.
 //
-// It provides two engine post-renderers carrying the
-// engine types.PostRenderer signature, which the deployer registers on
-// the shared rendering engine after the library apply-order
-// post-renderer: EnvInjector injects the resolved controller image and
-// the module environment into the module's controller Deployment, and
-// PlatformConfigInjector creates or merges the per-module platform
-// config ConfigMap. Both read only the deployer-owned inputs — the
-// module definition, the resolved image snapshot, the target
-// namespaces, and the platform version — and do not modify them.
+// Before deployment, it provides two engine post-renderers carrying
+// the engine types.PostRenderer signature, which the deployer
+// registers on the shared rendering engine after the library
+// apply-order post-renderer: EnvInjector injects the resolved
+// controller image and the module environment into the module's
+// controller Deployment, and PlatformConfigInjector creates or merges
+// the per-module platform config ConfigMap. Both read only the
+// deployer-owned inputs — the module definition, the resolved image
+// snapshot, the target namespaces, and the platform version — and do
+// not modify them.
+//
+// During deployment, ControllerBridge adapts the invocation to the
+// framework's Controller contract for the deploy action: the
+// operator's modules-controller ownership policy over the plain
+// connection client, with no reconciler and no manager.
 package adapt
 
 import (
