@@ -17,15 +17,17 @@ limitations under the License.
 // Package errors carries the module domain error taxonomy shared by
 // the module services and the command layer: the central category
 // sentinels below, and ModuleError, the one wrapper that pairs a
-// category with an explicitly composed public message and a raw
-// cause. It is generic module support code: the API package stays
-// free of file-loading concerns, and this package depends only on
-// the standard library.
+// category with an explicitly composed public message and an optional
+// raw cause. It is generic module support code: the API package stays
+// free of file-loading concerns, and this package depends only on the
+// standard library and the shared generic option adapter.
 package errors
 
 import (
 	stderrors "errors"
 	"fmt"
+
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/option"
 )
 
 // ErrInvalidDefinition identifies configuration-level module definition
@@ -80,7 +82,7 @@ var ErrRolloutWait = stderrors.New(
 
 // ModuleError is the shared wrapper for module domain failures: one
 // central category sentinel, one explicitly composed public message,
-// and one raw underlying cause.
+// and one optional raw underlying cause.
 //
 // Classification uses errors.Is: the wrapper's own Is method matches
 // only its category, while the standard errors.Is also walks the
@@ -92,22 +94,58 @@ var ErrRolloutWait = stderrors.New(
 // never formats, prefixes, or appends the category or the cause, so
 // the caller keeps full responsibility for what its diagnostics
 // expose — never dotenv contents, server bodies, or other unsafe
-// detail. Unwrap returns the raw cause unchanged (possibly nil),
-// keeping cancellation, status, and sentinel identities reachable.
+// detail. Unwrap returns the raw cause unchanged (nil when none was
+// set), keeping cancellation, status, and sentinel identities
+// reachable.
 type ModuleError struct {
 	category error
 	message  string
 	cause    error
 }
 
+// ModuleErrorOptions holds the optional parts of a ModuleError.
+type ModuleErrorOptions struct {
+	// Cause is the raw underlying error, when there is one.
+	Cause error
+}
+
+// ApplyTo implements ModuleErrorOption, so a whole ModuleErrorOptions
+// can be passed to New as a preset; its zero value is a no-op.
+func (opts ModuleErrorOptions) ApplyTo(target *ModuleErrorOptions) {
+	if opts.Cause != nil {
+		target.Cause = opts.Cause
+	}
+}
+
+// ModuleErrorOption customizes one ModuleError. Options apply in
+// order over the defaults; a nil option is ignored.
+type ModuleErrorOption = option.Option[ModuleErrorOptions]
+
+// WithCause sets the raw underlying cause.
+func WithCause(cause error) ModuleErrorOption {
+	return option.FunctionalOption[ModuleErrorOptions](
+		func(opts *ModuleErrorOptions) {
+			opts.Cause = cause
+		})
+}
+
 // New returns a ModuleError classified by category, with message as
-// its exact public text and cause as its raw underlying error.
-// category must be one of this package's sentinels; cause may be nil.
-func New(category error, message string, cause error) *ModuleError {
+// its exact public text. Options carry the optional parts — the raw
+// underlying cause, through WithCause; an error without one simply
+// omits the option. category must be one of this package's sentinels.
+func New(category error, message string, opts ...ModuleErrorOption) *ModuleError {
+	options := ModuleErrorOptions{}
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt.ApplyTo(&options)
+		}
+	}
+
 	return &ModuleError{
 		category: category,
 		message:  message,
-		cause:    cause,
+		cause:    options.Cause,
 	}
 }
 
@@ -116,7 +154,7 @@ func (e *ModuleError) Error() string {
 	return e.message
 }
 
-// Unwrap returns the raw cause supplied to New, possibly nil.
+// Unwrap returns the raw cause, or nil when none was set.
 func (e *ModuleError) Unwrap() error {
 	return e.cause
 }

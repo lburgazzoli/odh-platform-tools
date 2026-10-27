@@ -68,7 +68,7 @@ func TestModuleErrorCategoryIdentity(t *testing.T) {
 
 			g := NewWithT(t)
 
-			err := New(category, "public message", errors.New("cause"))
+			err := New(category, "public message", WithCause(errors.New("cause")))
 
 			g.Expect(err).To(HaveOccurred())
 			g.Expect(errors.Is(err, category)).To(BeTrue())
@@ -90,7 +90,7 @@ func TestModuleErrorRejectsEqualTextSentinels(t *testing.T) {
 
 	g := NewWithT(t)
 
-	err := New(ErrStageSequence, "Run requires a fresh runner", nil)
+	err := New(ErrStageSequence, "Run requires a fresh runner")
 	impostor := errors.New(ErrStageSequence.Error())
 
 	g.Expect(errors.Is(err, impostor)).To(BeFalse())
@@ -104,8 +104,8 @@ func TestSeparateModuleErrorsAreNotEquivalent(t *testing.T) {
 
 	g := NewWithT(t)
 
-	first := New(ErrImageSource, "one", nil)
-	second := New(ErrImageSource, "two", nil)
+	first := New(ErrImageSource, "one")
+	second := New(ErrImageSource, "two")
 
 	g.Expect(errors.Is(first, second)).To(BeFalse())
 	g.Expect(errors.Is(second, first)).To(BeFalse())
@@ -121,7 +121,8 @@ func TestModuleErrorMessageAndCause(t *testing.T) {
 	g := NewWithT(t)
 
 	cause := &secretMarker{secret: "dotenv-secret-detail"}
-	err := New(ErrImageSource, "invalid related images file images.env", cause)
+	err := New(ErrImageSource, "invalid related images file images.env",
+		WithCause(cause))
 
 	g.Expect(err.Error()).To(Equal("invalid related images file images.env"))
 	g.Expect(err.Error()).NotTo(ContainSubstring("dotenv-secret-detail"))
@@ -138,18 +139,40 @@ func TestModuleErrorMessageAndCause(t *testing.T) {
 	g.Expect(typed).To(BeIdenticalTo(cause))
 }
 
-// TestModuleErrorNilCauseIsStillError proves a nil cause constructs a
-// real error whose category still matches.
-func TestModuleErrorNilCauseIsStillError(t *testing.T) {
+// TestModuleErrorWithoutCauseIsStillError proves an error constructed
+// with no cause option is a real error whose category still matches
+// and whose Unwrap is nil.
+func TestModuleErrorWithoutCauseIsStillError(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	err := New(ErrStageSequence, "Run requires a fresh runner", nil)
+	err := New(ErrStageSequence, "Run requires a fresh runner")
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Unwrap(err)).To(BeNil())
 	g.Expect(errors.Is(err, ErrStageSequence)).To(BeTrue())
+}
+
+// TestModuleErrorOptions proves the option machinery: a nil option is
+// ignored, a whole ModuleErrorOptions preset applies like WithCause,
+// and WithCause(nil) leaves the error without a cause.
+func TestModuleErrorOptions(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	cause := errors.New("boom")
+
+	err := New(ErrImageSource, "invalid related images file images.env",
+		nil,
+		ModuleErrorOptions{Cause: cause})
+	g.Expect(errors.Unwrap(err)).To(BeIdenticalTo(cause))
+
+	err = New(ErrImageSource, "invalid related images file images.env",
+		WithCause(nil))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Unwrap(err)).To(BeNil())
 }
 
 // TestModuleErrorTraversal proves category and cause identities
@@ -162,8 +185,8 @@ func TestModuleErrorTraversal(t *testing.T) {
 	g := NewWithT(t)
 
 	inner := New(ErrInvalidDefinition, "read definition.yaml failed",
-		context.Canceled)
-	outer := New(ErrRolloutWait, "waiting for rollout failed", inner)
+		WithCause(context.Canceled))
+	outer := New(ErrRolloutWait, "waiting for rollout failed", WithCause(inner))
 	wrapped := fmt.Errorf("run: %w", outer)
 	joined := errors.Join(wrapped, context.DeadlineExceeded)
 
@@ -199,7 +222,7 @@ func TestModuleErrorDeadlineCause(t *testing.T) {
 	g := NewWithT(t)
 
 	err := New(ErrRolloutWait, "the wait budget expired",
-		context.DeadlineExceeded)
+		WithCause(context.DeadlineExceeded))
 
 	g.Expect(errors.Is(err, ErrRolloutWait)).To(BeTrue())
 	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
