@@ -95,6 +95,10 @@ type Deployer struct {
 
 	fieldManager string
 
+	// payloadRetryBackoff is the pause between the payload action's
+	// attempts; nil means defaultPayloadRetryBackoff.
+	payloadRetryBackoff []time.Duration
+
 	waited        bool
 	waitCompleted bool
 	waitTargets   []types.NamespacedName

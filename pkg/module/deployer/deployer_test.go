@@ -825,6 +825,13 @@ func TestDeployApplyFailureRetainsOwner(t *testing.T) {
 
 	root := composeRoot(t, literalControllerDefinitionYAML, composeTemplateYAML)
 	target := newTestDeployer(t, testOptions(), fixture, root)
+	// A shortened schedule keeps the exhausted-retry path fast.
+	target.payloadRetryBackoff = []time.Duration{
+		time.Millisecond,
+		time.Millisecond,
+		time.Millisecond,
+		time.Millisecond,
+	}
 
 	g.Expect(target.Load(t.Context())).To(Succeed())
 	g.Expect(target.Render(t.Context())).To(Succeed())

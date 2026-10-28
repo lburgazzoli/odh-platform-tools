@@ -394,6 +394,10 @@ func TestApplyApplyFailureReports(t *testing.T) {
 
 	root := composeRoot(t, literalControllerDefinitionYAML, composeTemplateYAML)
 	target := newTestDeployer(t, testOptions(), fixture, root)
+	// The schedule is shortened to a single attempt so the test
+	// observes exactly the refused write as the framework's report;
+	// the retry behavior has its own tests.
+	target.payloadRetryBackoff = []time.Duration{}
 
 	result, err := target.Apply(t.Context())
 	g.Expect(err).To(HaveOccurred())
@@ -408,9 +412,8 @@ func TestApplyApplyFailureReports(t *testing.T) {
 	g.Expect(result.Owner.Name).To(Equal("synthetic"))
 	g.Expect(string(result.Owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
 
-	// The preparation wrote and the payload was attempted: the
-	// refused deployment apply stands as the framework's first
-	// report.
+	// The preparation wrote and the payload was attempted once: the
+	// refused deployment apply stands as the framework's report.
 	crdApplies, _ := fixture.applyIndex(prepareCRDWrite)
 	definitionApplies, _ := fixture.applyIndex(prepareDefinitionWrite)
 	payloadApplies, payloadFirst := fixture.applyIndex(preparePayloadDeploymentWrite)

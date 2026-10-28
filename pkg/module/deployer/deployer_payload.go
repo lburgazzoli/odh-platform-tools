@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -47,6 +48,18 @@ const (
 	applyFailureMessage   = "applying the module resources failed"
 )
 
+// defaultPayloadRetryBackoff is the settled pause between the payload
+// action's attempts: with it the action runs five times in total —
+// the first attempt plus one after each pause. It is a per-receiver
+// schedule so tests can shorten it per instance; an unset schedule
+// means this default.
+var defaultPayloadRetryBackoff = []time.Duration{
+	time.Second,
+	2 * time.Second,
+	4 * time.Second,
+	8 * time.Second,
+}
+
 // deployPayload applies the rendered module resources through the
 // actual framework deploy action, with the persisted definition as
 // the live owner, under the invocation's effective field manager, all
@@ -54,18 +67,27 @@ const (
 // never prunes.
 //
 // The flow is minimal: normalize the persisted owner's runtime type,
-// then invoke the action once with the whole payload. The action's
-// default SortByApplyOrder — the same engine apply-order post-renderer
-// the shared render pipeline uses — places Namespaces and CRDs first
-// and routes CRDs through its unowned CRD path, so no payload
-// partition or CRD establishment wait exists here: a bundled custom
-// resource whose CRD was just created may fail on the first run and
-// succeed on a re-run, exactly as the operator behaves. CRD
-// establishment waiting stays only in the deployer's definition-CRD
-// preparation. Rendered Namespaces follow normal framework create/update
-// behavior and stay unowned; a payload referencing an API the server
-// does not serve fails through the action's own error after earlier
-// writes, reported as partial state, and there is no rollback.
+// then invoke the action with the whole payload, retrying the whole
+// action on failure. The action's default SortByApplyOrder — the
+// same engine apply-order post-renderer the shared render pipeline
+// uses — places Namespaces and CRDs first and routes CRDs through
+// its unowned CRD path, so no payload partition or CRD
+// establishment wait exists here: a bundled custom resource whose
+// CRD was just created may fail on the first attempt and succeed on
+// a retry, exactly as the operator behaves. CRD establishment
+// waiting stays only in the deployer's definition-CRD preparation.
+// Rendered Namespaces follow normal framework create/update behavior
+// and stay unowned; a payload referencing an API the server does not
+// serve fails through the action's own error after earlier writes,
+// reported as partial state, and there is no rollback.
+//
+// The action runs without the deploy cache and is retried with the
+// settled backoff: five total attempts, stopping on success, on the
+// invocation's cancellation or deadline, or on exhaustion. Retries
+// reapply already-successful resources — the writes are idempotent
+// server-side applies and there is no rollback — and only the
+// payload action retries: load, render, validation, and preparation
+// failures are never retried.
 //
 // The field manager is the invocation's effective server-side-apply
 // manager, already resolved and validated ahead of the stage: it
@@ -75,11 +97,11 @@ const (
 // deploy metric label — while bundled payload CRDs keep the
 // framework's own fixed manager and fallback label.
 //
-// The framework's continue-on-error first report is the stage's error
-// contract, exactly as in the operator, and its force-SSA adoption
-// semantics govern foreign-owned objects. The returned error is a
-// safe shared module error: its category names the phase —
-// moduleerrors.ErrDeployPrepare before the action runs,
+// The framework's continue-on-error report of the final attempt is
+// the stage's error contract, exactly as in the operator, and its
+// force-SSA adoption semantics govern foreign-owned objects. The
+// returned error is a safe shared module error: its category names
+// the phase — moduleerrors.ErrDeployPrepare before the action runs,
 // moduleerrors.ErrDeployApply for the action itself — and the
 // framework's raw report stays reachable through Unwrap for
 // errors.Is and errors.As.
@@ -124,43 +146,85 @@ func (r *Deployer) deployPayload(ctx context.Context) error {
 
 	// The invocation client goes to the action: the framework's own
 	// ownership, unmanaged, and adoption semantics apply unchanged,
-	// matching the operator.
+	// matching the operator. The action carries no deploy cache.
 	bridge := adapt.NewControllerBridge(r.client)
-
-	// One invocation-local action carries the whole payload. Defaults
-	// keep the framework field ownership, metadata, customizers, SSA
-	// mode, the default apply-order sort (Namespaces and CRDs first),
-	// and the CRD field owner with ForceOwnership; WithFieldOwner
-	// names this invocation's manager for the ordinary payload apply
-	// and its fallback part-of label, leaving the bundled-CRD path on
-	// the framework's fixed manager.
-	action := fwdeploy.NewAction(
-		fwdeploy.WithCache(),
-		fwdeploy.WithContinueOnError(),
-		fwdeploy.WithFieldOwner(r.fieldManager),
-	)
 
 	// The action's own logs can echo server-returned error text, so
 	// it runs under a discarded logger.
 	quietCtx := logf.IntoContext(ctx, logr.Discard())
 
-	// The single action invocation: the invocation client, the
-	// controller bridge, the persisted definition as the live
-	// instance, the runtime release, and the whole rendered payload.
-	// Conditions stay unset and SkipDeploy stays false.
-	if err := action(quietCtx, &odhTypes.ReconciliationRequest{
-		Client:     r.client,
-		Controller: bridge,
-		Instance:   r.owner,
-		Release:    r.release,
-		Resources:  r.resources,
-	}); err != nil {
-		return moduleerrors.New(
-			moduleerrors.ErrDeployApply,
-			applyFailureMessage,
-			moduleerrors.WithCause(err),
-		)
+	backoff := r.payloadRetryBackoff
+	if backoff == nil {
+		backoff = defaultPayloadRetryBackoff
 	}
 
-	return nil
+	// The bounded retry loop: one attempt per iteration, the settled
+	// pause between them, and a stop on success, on the invocation's
+	// cancellation or deadline, or when the attempts are exhausted.
+	var lastErr error
+
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(backoff[attempt-1])
+
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+
+				return moduleerrors.New(
+					moduleerrors.ErrDeployApply,
+					applyFailureMessage,
+					moduleerrors.WithCause(ctx.Err()),
+				)
+			case <-timer.C:
+			}
+		}
+
+		// A fresh action configuration per attempt. Defaults keep
+		// the framework field ownership, metadata, customizers, SSA
+		// mode, the default apply-order sort (Namespaces and CRDs
+		// first), and the CRD field owner with ForceOwnership;
+		// WithContinueOnError finishes remaining resources and
+		// reports; WithFieldOwner names this invocation's manager
+		// for the ordinary payload apply and its fallback part-of
+		// label, leaving the bundled-CRD path on the framework's
+		// fixed manager.
+		action := fwdeploy.NewAction(
+			fwdeploy.WithContinueOnError(),
+			fwdeploy.WithFieldOwner(r.fieldManager),
+		)
+
+		// One action invocation per attempt: the invocation client,
+		// the controller bridge, the persisted definition as the
+		// live instance, the runtime release, and the whole rendered
+		// payload. Conditions stay unset and SkipDeploy stays false.
+		err := action(quietCtx, &odhTypes.ReconciliationRequest{
+			Client:     r.client,
+			Controller: bridge,
+			Instance:   r.owner,
+			Release:    r.release,
+			Resources:  r.resources,
+		})
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+
+		// The invocation's cancellation or deadline observed through
+		// the action error is terminal: no further attempt runs.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			break
+		}
+
+		if attempt >= len(backoff) {
+			break
+		}
+	}
+
+	return moduleerrors.New(
+		moduleerrors.ErrDeployApply,
+		applyFailureMessage,
+		moduleerrors.WithCause(lastErr),
+	)
 }

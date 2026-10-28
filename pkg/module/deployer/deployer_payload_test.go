@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 
@@ -351,6 +352,12 @@ type fakeCluster struct {
 	// applyErrors maps a recorded identity to an error Apply returns.
 	applyErrors map[string]error
 
+	// transientApplyFailures maps a recorded identity to the number
+	// of its leading Apply calls that fail; later calls delegate. The
+	// countdown is derived from the mutex-guarded write log, so it is
+	// safe under the action's own concurrency.
+	transientApplyFailures map[string]int
+
 	// getErrors maps a recorded identity to an error Get returns.
 	getErrors map[string]error
 }
@@ -403,6 +410,10 @@ func (f *fakeCluster) connect(t *testing.T) (crclient.Client, *writeLog) {
 			force := effective.Force != nil && *effective.Force
 			log.record("apply " + id)
 			log.recordApply(applyOption{id: id, manager: effective.FieldManager, force: force})
+
+			if fails, injected := f.transientApplyFailures[id]; injected && log.count("apply "+id) <= fails {
+				return apierrors.NewInternalError(errors.New("transient apply failure"))
+			}
 
 			if err, injected := f.applyErrors[id]; injected {
 				return err
@@ -787,7 +798,9 @@ func TestApplyCreatesAbsentRenderedNamespace(t *testing.T) {
 // the server refuses fails the apply stage with the framework's own
 // first report reachable through Unwrap, while the public message
 // stays the safe stage text; writes that preceded the failure stand,
-// so the failure is reported as partial state.
+// so the failure is reported as partial state. The schedule is
+// shortened to a single attempt so the test observes exactly the
+// first report; the retry behavior has its own tests.
 func TestApplyApplyErrorFailsStageWithFirstReport(t *testing.T) {
 	t.Parallel()
 
@@ -808,7 +821,10 @@ func TestApplyApplyErrorFailsStageWithFirstReport(t *testing.T) {
 
 	resources := payload(t, g, payloadCRDYAML, configMapYAML)
 
-	err := payloadTarget(connection, newDefinition(), newRelease(), resources, defaultFieldManager).deployPayload(t.Context())
+	target := payloadTarget(connection, newDefinition(), newRelease(), resources, defaultFieldManager)
+	target.payloadRetryBackoff = []time.Duration{}
+
+	err := target.deployPayload(t.Context())
 
 	typed := applyError(g, err)
 	g.Expect(errors.Is(typed, moduleerrors.ErrDeployApply)).To(BeTrue())
@@ -827,7 +843,8 @@ func TestApplyApplyErrorFailsStageWithFirstReport(t *testing.T) {
 // TestApplyLookupErrorFailsStageWithFirstReport proves a read the
 // server refuses during the action's own lookup fails the apply stage
 // with the framework's continue-on-error first report; no classifier
-// of our own sits in front of it.
+// of our own sits in front of it. The schedule is shortened to a
+// single attempt so the test observes exactly the first report.
 func TestApplyLookupErrorFailsStageWithFirstReport(t *testing.T) {
 	t.Parallel()
 
@@ -844,7 +861,10 @@ func TestApplyLookupErrorFailsStageWithFirstReport(t *testing.T) {
 
 	resources := payload(t, g, payloadCRDYAML, configMapYAML)
 
-	err := payloadTarget(connection, newDefinition(), newRelease(), resources, defaultFieldManager).deployPayload(t.Context())
+	target := payloadTarget(connection, newDefinition(), newRelease(), resources, defaultFieldManager)
+	target.payloadRetryBackoff = []time.Duration{}
+
+	err := target.deployPayload(t.Context())
 
 	typed := applyError(g, err)
 	g.Expect(errors.Is(typed, moduleerrors.ErrDeployApply)).To(BeTrue())
@@ -852,6 +872,123 @@ func TestApplyLookupErrorFailsStageWithFirstReport(t *testing.T) {
 	g.Expect(typed.Error()).To(Equal(applyFailureMessage))
 	g.Expect(typed.Error()).NotTo(ContainSubstring("unavailable-detail"))
 	g.Expect(apierrors.IsServiceUnavailable(typed.Unwrap())).To(BeTrue())
+}
+
+// TestApplyRetriesTransientActionFailure proves a payload write that
+// fails once and then succeeds does not fail the stage: the whole
+// action runs again, reapplying the already-successful resources, and
+// the payload ends fully applied.
+func TestApplyRetriesTransientActionFailure(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	harness := &fakeCluster{
+		scheme:  testScheme(t),
+		objects: []crclient.Object{liveNamespace()},
+		transientApplyFailures: map[string]int{
+			moduleConfigMapIdentity(): 1,
+		},
+	}
+	connection, writes := harness.connect(t)
+
+	resources := payload(t, g, payloadCRDYAML, configMapYAML)
+
+	target := payloadTarget(connection, newDefinition(), newRelease(), resources, defaultFieldManager)
+	target.payloadRetryBackoff = []time.Duration{time.Millisecond}
+
+	g.Expect(target.deployPayload(t.Context())).To(Succeed())
+
+	// The failed write was attempted again and succeeded, and the
+	// retry reapplied the already-successful CRD too.
+	g.Expect(writes.count("apply " + moduleConfigMapIdentity())).To(Equal(2))
+	g.Expect(writes.count("apply " + payloadCRDIdentity())).To(Equal(2))
+
+	configMap := stored(t, connection, gvkConfigMap, "modules", "module-config")
+	g.Expect(configMap.Object).To(jq.Match(`.data["key"] == "value"`))
+}
+
+// TestApplyRetriesPersistentFailureUntilExhausted proves a payload
+// write the server keeps refusing consumes exactly the settled five
+// attempts and then fails the stage with the last action error as the
+// cause, with the public message staying the safe stage text.
+func TestApplyRetriesPersistentFailureUntilExhausted(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	harness := &fakeCluster{
+		scheme:  testScheme(t),
+		objects: []crclient.Object{liveNamespace()},
+		applyErrors: map[string]error{
+			moduleConfigMapIdentity(): apierrors.NewForbidden(
+				schema.GroupResource{Group: "", Resource: "configmaps"},
+				"module-config",
+				errors.New("secret-detail"),
+			),
+		},
+	}
+	connection, writes := harness.connect(t)
+
+	resources := payload(t, g, payloadCRDYAML, configMapYAML)
+
+	target := payloadTarget(connection, newDefinition(), newRelease(), resources, defaultFieldManager)
+	target.payloadRetryBackoff = []time.Duration{
+		time.Millisecond,
+		time.Millisecond,
+		time.Millisecond,
+		time.Millisecond,
+	}
+
+	err := target.deployPayload(t.Context())
+
+	typed := applyError(g, err)
+	g.Expect(errors.Is(typed, moduleerrors.ErrDeployApply)).To(BeTrue())
+	g.Expect(typed.Error()).To(Equal(applyFailureMessage))
+	g.Expect(typed.Error()).NotTo(ContainSubstring("secret-detail"))
+	g.Expect(apierrors.IsForbidden(typed.Unwrap())).To(BeTrue())
+
+	// Five attempts in total: the first plus one after each of the
+	// four pauses.
+	g.Expect(writes.count("apply " + moduleConfigMapIdentity())).To(Equal(5))
+}
+
+// TestApplyStopsRetryingWhenBackoffIsCancelled proves the invocation's
+// deadline observed during a backoff wait stops the retry loop
+// without a further attempt, reporting the cancellation identity
+// through the cause chain under the safe stage text.
+func TestApplyStopsRetryingWhenBackoffIsCancelled(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	harness := &fakeCluster{
+		scheme:  testScheme(t),
+		objects: []crclient.Object{liveNamespace()},
+		applyErrors: map[string]error{
+			moduleConfigMapIdentity(): apierrors.NewInternalError(errors.New("broken")),
+		},
+	}
+	connection, writes := harness.connect(t)
+
+	resources := payload(t, g, payloadCRDYAML, configMapYAML)
+
+	target := payloadTarget(connection, newDefinition(), newRelease(), resources, defaultFieldManager)
+	// One long pause: the invocation deadline fires inside it.
+	target.payloadRetryBackoff = []time.Duration{20 * time.Second}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+	defer cancel()
+
+	err := target.deployPayload(ctx)
+
+	typed := applyError(g, err)
+	g.Expect(errors.Is(typed, moduleerrors.ErrDeployApply)).To(BeTrue())
+	g.Expect(typed.Error()).To(Equal(applyFailureMessage))
+	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
+
+	// Exactly one attempt ran; the backoff wait consumed the rest.
+	g.Expect(writes.count("apply " + moduleConfigMapIdentity())).To(Equal(1))
 }
 
 // TestApplyPreservesLiveDeploymentTuning proves the framework's
