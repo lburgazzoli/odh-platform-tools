@@ -14,13 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package errors carries the module domain error taxonomy shared by
-// the module services and the command layer: the central category
-// sentinels below, and ModuleError, the one wrapper that pairs a
-// category with an explicitly composed public message and an optional
-// raw cause. It is generic module support code: the API package stays
-// free of file-loading concerns, and this package depends only on the
-// standard library and the shared generic option adapter.
+// Package errors defines module failure categories and public error messages.
 package errors
 
 import (
@@ -29,11 +23,7 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/util/option"
 )
 
-// ErrInvalidDefinition identifies configuration-level module definition
-// failures: unreadable files, malformed documents, and structural
-// violations. Errors returned by the loader and its callers wrap it,
-// so callers classify them with errors.Is instead of matching message
-// text.
+// ErrInvalidDefinition identifies definition input failures.
 var ErrInvalidDefinition = stderrors.New(
 	"invalid module definition",
 )
@@ -99,32 +89,15 @@ var ErrRolloutWait = stderrors.New(
 	"waiting for module controller rollout failed",
 )
 
-// ModuleError is the shared wrapper for module domain failures: one
-// central category sentinel, one explicitly composed public message,
-// and one optional raw underlying cause.
-//
-// Classification uses errors.Is: the wrapper's own Is method matches
-// only its category, while the standard errors.Is also walks the
-// cause chain, so nested domain errors keep every category they
-// carry. Access to the wrapper itself uses errors.As to
-// *ModuleError, which finds the outermost wrapper in a chain.
-//
-// The message is exactly what the caller supplied to New: the wrapper
-// never formats, prefixes, or appends the category or the cause, so
-// the caller keeps full responsibility for what its diagnostics
-// expose — never dotenv contents, server bodies, or other unsafe
-// detail. Unwrap returns the raw cause unchanged (nil when none was
-// set), keeping cancellation, status, and sentinel identities
-// reachable.
+// ModuleError pairs a category with a public message and optional raw cause.
+// Error exposes only the message; errors.Is traverses the category and cause.
 type ModuleError struct {
 	category error
 	message  string
 	cause    error
 }
 
-// ModuleErrorOption customizes one ModuleError: options target the
-// error directly and apply in order inside New; a nil option is
-// ignored.
+// ModuleErrorOption customizes an error; nil options are ignored.
 type ModuleErrorOption = option.Option[ModuleError]
 
 // WithCause sets the raw underlying cause.
@@ -135,10 +108,8 @@ func WithCause(cause error) ModuleErrorOption {
 		})
 }
 
-// New returns a ModuleError classified by category, with message as
-// its exact public text. Options carry the optional parts — the raw
-// underlying cause, through WithCause; an error without one simply
-// omits the option. category must be one of this package's sentinels.
+// New uses message verbatim. Callers must avoid exposing sensitive data.
+// Category should be one of this package's sentinels.
 func New(category error, message string, opts ...ModuleErrorOption) *ModuleError {
 	err := &ModuleError{
 		category: category,
@@ -164,11 +135,7 @@ func (e *ModuleError) Unwrap() error {
 	return e.cause
 }
 
-// Is reports whether target is this error's own category sentinel.
-// The check is a shallow identity comparison: it never compares
-// messages, never equates separately constructed ModuleError
-// instances, and never recurses into causes. Use errors.Is for
-// full-chain classification.
+// Is matches the category only; errors.Is also traverses the cause.
 func (e *ModuleError) Is(target error) bool {
 	return target == e.category
 }

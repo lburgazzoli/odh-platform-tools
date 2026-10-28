@@ -1,5 +1,4 @@
-// Package k8s carries small Kubernetes API helpers shared by the
-// tool.
+// Package k8s provides shared Kubernetes resource helpers.
 package k8s
 
 import (
@@ -8,9 +7,7 @@ import (
 	framework "github.com/opendatahub-io/odh-platform-utilities/framework/cluster/gvk"
 )
 
-// The GroupVersionKind constants mirror the framework's cluster/gvk
-// set, which does not carry the OpenShift-only kinds. Callers import
-// this package with the alias gvk and reference one uniform set.
+// Resource GVKs used by module manifests.
 var (
 	Deployment                       = framework.Deployment
 	Service                          = framework.Service

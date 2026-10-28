@@ -1,18 +1,5 @@
-// Package images resolves the image sources a module deploy needs: the
-// explicitly requested related-image keys, snapshotted from a
-// dotenv-compatible file and the process environment with
-// environment-over-file precedence, and the shared whole-token image
-// contract used by the deployer and the adaptation layer.
-//
-// Resolution uses private Viper state only: no implicit file
-// discovery, no global Viper, no watch mode, and no writes to the
-// process environment. Requested keys are looked up directly, never
-// enumerated, so unused file or ambient entries are never returned.
-// File parsing is Viper's native dotenv codec: quoting, comments, and
-// variable expansion keep their upstream semantics — double-quoted
-// values may expand other variables, including ambient process
-// variables, before this package ever sees them. This package neither
-// adds expansion nor promises isolation from it.
+// Package images resolves requested image sources from dotenv files and the
+// environment. Viper's dotenv parser may expand ambient variables in quoted values.
 package images
 
 import (
@@ -25,27 +12,14 @@ import (
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
-// Load snapshots the requested keys from the process environment and,
-// when path is non-empty, the dotenv file at path, resolved from the
-// working directory regardless of the file-name extension. An empty
-// path means environment-only resolution; an explicit but unreadable
-// or malformed file is an input error.
-//
-// Precedence is environment over file. A key whose environment
-// variable is explicitly empty masks any file value and counts as
-// missing, matching the operator's rule that empty image sources keep
-// rendered defaults. Environment bindings are exact and
-// case-sensitive; file keys follow Viper's case-insensitive rules.
-// The result carries the authored key spelling and only nonempty
-// values: absent and masked keys are simply omitted.
+// Load resolves only the requested keys. Environment values override the
+// optional dotenv file; explicitly empty values mask file values and are omitted.
+// Environment names are case-sensitive; file keys follow Viper's case folding.
 func Load(path string, keys []string) (map[string]string, error) {
 	env := viper.New()
 	env.AllowEmptyEnv(true)
 
-	// Requested keys bind to per-index internal lookup keys so that
-	// case-colliding requests such as FOO and foo never alias and the
-	// result never depends on the enumeration order. Only the bound
-	// internal keys are ever read from this instance.
+	// Use indexed lookup keys so case-distinct environment names cannot alias.
 	for i, key := range keys {
 		if err := env.BindEnv(strconv.Itoa(i), key); err != nil {
 			return nil, moduleerrors.New(
@@ -74,9 +48,7 @@ func Load(path string, keys []string) (map[string]string, error) {
 	for i, key := range keys {
 		value := ""
 
-		// A bound variable that is unset makes Get return nil; an
-		// explicitly empty variable returns the empty string and
-		// masks the file value.
+		// An empty environment value masks the file; an unset one falls back.
 		if bound, ok := env.Get(strconv.Itoa(i)).(string); ok {
 			value = bound
 		} else if fromFile, ok := file.Get(key).(string); ok {
@@ -91,15 +63,10 @@ func Load(path string, keys []string) (map[string]string, error) {
 	return values, nil
 }
 
-// Snapshot snapshots the image sources of one module definition: the
-// declared related images plus the main container image's whole-token
-// source key, when it is one, resolved through Load from the selected
-// file and the process environment. A definition whose controller
-// container is absent or whose image is not a whole-token reference
-// contributes no extra key; absent and masked sources are simply
-// omitted, preserving the permissive missing-image behavior.
+// Snapshot resolves related images and tokens in both controller image fields.
+// Only RelatedImages controls which values are injected as environment variables.
 func Snapshot(path string, definition toolApi.PlatformModuleDefinition) (map[string]string, error) {
-	keys := make([]string, 0, len(definition.Spec.RelatedImages)+1)
+	keys := make([]string, 0, len(definition.Spec.RelatedImages)+2)
 	keys = append(keys, definition.Spec.RelatedImages...)
 
 	if container := definition.Spec.Controller.Deployment.Container; container != nil {
@@ -107,20 +74,18 @@ func Snapshot(path string, definition toolApi.PlatformModuleDefinition) (map[str
 			keys = append(keys, key)
 		}
 	}
+	if init := definition.Spec.Controller.Deployment.InitContainer; init != nil {
+		if key, ok := ImageSourceKey(init.Image); ok {
+			keys = append(keys, key)
+		}
+	}
 
 	return Load(path, keys)
 }
 
-// imageTokenPattern matches a complete {{NAME}} image reference with
-// a portable environment variable name — an upper- or lower-case
-// letter or underscore, then letters, digits, or underscores —
-// spanning the whole value.
 var imageTokenPattern = regexp.MustCompile(`^\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}$`)
 
-// ImageSourceKey reports whether image is a complete {{NAME}} token
-// and returns NAME. Tokens are matched whole: partial references,
-// surrounding text, inner whitespace, and non-portable names are not
-// tokens.
+// ImageSourceKey extracts a portable variable name from a whole {{NAME}} token.
 func ImageSourceKey(image string) (string, bool) {
 	match := imageTokenPattern.FindStringSubmatch(image)
 	if match == nil {
@@ -130,14 +95,8 @@ func ImageSourceKey(image string) (string, bool) {
 	return match[1], true
 }
 
-// ResolveImage applies the shared image contract to a configured
-// image value. A complete {{NAME}} token resolves to the value of
-// NAME in values; a missing or empty value resolves to the empty
-// string, which callers treat as retaining the rendered default. Any
-// other value is a literal image override, returned as authored —
-// including the empty string. Resolution is whole-token only and
-// never recursive: a resolved value is used verbatim even when it
-// itself looks like a token.
+// ResolveImage expands a whole {{NAME}} token once; other values stay literal.
+// Missing or empty sources return an empty string.
 func ResolveImage(image string, values map[string]string) string {
 	key, ok := ImageSourceKey(image)
 	if !ok {

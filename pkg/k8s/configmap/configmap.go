@@ -14,11 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package configmap customizes typed ConfigMap resources: data key
-// mutations, collected as ordered options and applied in place by
-// Customize. The helpers own the mechanics only — which keys to set
-// or remove stays with callers. The package deliberately mirrors
-// pkg/k8s/deployment's option and request pattern.
+// Package configmap applies ordered mutations to typed ConfigMaps.
 package configmap
 
 import (
@@ -27,13 +23,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// Customize applies the collected customization options to the typed
-// ConfigMap in place. Requests apply in the order their options were
-// passed; the first error stops the pass and earlier mutations are
-// kept — there is no rollback. A nil ConfigMap returns an error, nil
-// options are ignored, and a non-nil ConfigMap without options
-// succeeds unchanged. There is no change count: a successful pass may
-// have changed nothing.
+// Customize mutates the ConfigMap in option order, stopping on the first error.
+// Earlier mutations are retained. Nil input fails; nil options are ignored.
 func Customize(cm *corev1.ConfigMap, opts ...CustomizeOption) error {
 	if cm == nil {
 		return errors.New("cannot customize a nil ConfigMap")

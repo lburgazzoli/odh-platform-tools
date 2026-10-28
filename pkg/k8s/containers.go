@@ -20,8 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// FindContainer returns the index of the first container in the slice
-// carrying the exact name, for regular and init container lists alike.
+// FindContainer returns the first container index matching name.
 func FindContainer(containers []corev1.Container, name string) (int, bool) {
 	for i := range containers {
 		if containers[i].Name == name {
@@ -32,13 +31,8 @@ func FindContainer(containers []corev1.Container, name string) (int, bool) {
 	return 0, false
 }
 
-// MergeEnv merges one env var into the list: the first entry with the
-// same name is replaced in place by the full incoming EnvVar — a
-// literal override clears an old valueFrom, an incoming source
-// replaces an old literal — and a new name is appended. Unrelated
-// entries and later pre-existing duplicates keep their order. The
-// incoming EnvVar is stored as given; deep-copying it is the caller's
-// choice.
+// MergeEnv replaces the first same-name entry or appends env, preserving order.
+// Replacement clears any old valueFrom. Env is stored without a deep copy.
 func MergeEnv(envs []corev1.EnvVar, env corev1.EnvVar) []corev1.EnvVar {
 	for i := range envs {
 		if envs[i].Name == env.Name {

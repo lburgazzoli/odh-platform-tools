@@ -25,15 +25,9 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
 )
 
-// customizationRequest is one ordered Deployment mutation, deferred
-// from option collection to Customize's apply pass. It is deliberately
-// not another option.Option: ApplyTo mutates a configuration struct
-// and cannot report failure, while a request mutates the Deployment
-// itself and returns the first error.
+// Requests defer fallible mutations until Customize; options only collect them.
 type customizationRequest func(d *appsv1.Deployment) error
 
-// containerImage returns the request assigning a literal image to the
-// first regular container with the exact name.
 func containerImage(name string, image string) customizationRequest {
 	return func(d *appsv1.Deployment) error {
 		idx, ok := k8s.FindContainer(d.Spec.Template.Spec.Containers, name)
@@ -47,8 +41,6 @@ func containerImage(name string, image string) customizationRequest {
 	}
 }
 
-// initContainerImage returns the request assigning a literal image to
-// the first init container with the exact name.
 func initContainerImage(name string, image string) customizationRequest {
 	return func(d *appsv1.Deployment) error {
 		idx, ok := k8s.FindContainer(d.Spec.Template.Spec.InitContainers, name)
@@ -62,9 +54,6 @@ func initContainerImage(name string, image string) customizationRequest {
 	}
 }
 
-// containerEnv returns the request merging env vars into the first
-// regular container with the exact name; the container must exist even
-// for an empty env list.
 func containerEnv(name string, envs []corev1.EnvVar) customizationRequest {
 	return func(d *appsv1.Deployment) error {
 		idx, ok := k8s.FindContainer(d.Spec.Template.Spec.Containers, name)
@@ -78,9 +67,6 @@ func containerEnv(name string, envs []corev1.EnvVar) customizationRequest {
 	}
 }
 
-// initContainerEnv returns the request merging env vars into the first
-// init container with the exact name; the container must exist even
-// for an empty env list.
 func initContainerEnv(name string, envs []corev1.EnvVar) customizationRequest {
 	return func(d *appsv1.Deployment) error {
 		idx, ok := k8s.FindContainer(d.Spec.Template.Spec.InitContainers, name)
@@ -94,8 +80,6 @@ func initContainerEnv(name string, envs []corev1.EnvVar) customizationRequest {
 	}
 }
 
-// mergeContainerEnv merges the env vars into the container's env list,
-// deep-copying each incoming entry.
 func mergeContainerEnv(container *corev1.Container, envs []corev1.EnvVar) {
 	for _, env := range envs {
 		container.Env = k8s.MergeEnv(container.Env, *env.DeepCopy())

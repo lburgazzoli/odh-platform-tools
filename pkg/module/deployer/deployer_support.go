@@ -22,9 +22,7 @@ import (
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
-// Stage names one Deployer stage in a deploy report. The empty Stage means
-// no stage was attempted: the invocation was rejected before any
-// input or output happened.
+// Stage identifies a deployment phase. The empty value means none was attempted.
 type Stage string
 
 const (
@@ -38,8 +36,6 @@ const (
 	StageDeploy Stage = "deploy"
 )
 
-// preceding returns the stage that runs before this one in the deploy
-// sequence, or the empty Stage for StageLoad.
 func (s Stage) preceding() Stage {
 	switch s {
 	case StageDeploy:
@@ -51,55 +47,29 @@ func (s Stage) preceding() Stage {
 	}
 }
 
-// Result is the honest, apply-only outcome of one Run invocation. It
-// reports what the invocation confirmed — never readiness, never
-// source values, never fabricated counts.
-//
-// Owner identity is a confirmed fact only: a non-nil Owner means a
-// successful definition apply returned a server-backed identity, and
-// a nil Owner means the identity is unconfirmed, never that no write
-// occurred. ApplyCompleted reports that the single framework payload
-// apply returned success and nothing more: a pending, absent, or
-// nonconverged Deployment causes no failure and no monitoring call,
-// and apply completion is never a readiness claim.
+// Result reports confirmed progress, including state retained after failure.
+// Apply completion alone does not imply workload readiness.
 type Result struct {
-	// Attempted is the last stage the invocation attempted, in Load →
-	// Render → Deploy order. It is empty when the invocation rejected the
-	// invocation before any stage ran.
+	// Attempted is the last attempted stage, or empty if rejected before execution.
 	Attempted Stage
 
-	// Completed is the last stage that finished successfully. It is
-	// empty when no stage did.
+	// Completed is the last successful stage, or empty if none succeeded.
 	Completed Stage
 
-	// Owner is the confirmed server-backed identity of the
-	// definition owner, when the invocation confirmed one — from a
-	// successful preparation, retained through a later payload or
-	// wait failure. A nil value asserts an unconfirmed identity only.
+	// Owner is the server-confirmed definition, retained after payload or wait
+	// failure. Nil means unconfirmed; it does not prove that no write occurred.
 	Owner *toolApi.PlatformModuleDefinition
 
-	// ApplyCompleted reports whether the framework payload apply
-	// finished without error. Writes that preceded the framework's
-	// first error report stand as partial state; this flag never
-	// claims workload convergence.
+	// ApplyCompleted records a successful payload apply. Failed applies may
+	// still leave partial writes.
 	ApplyCompleted bool
 
-	// WaitRequested reports the invocation requested the opt-in
-	// controller wait. It is false — with every other wait field
-	// zero — whenever the wait was not requested: an unrequested wait
-	// never claims readiness.
+	// WaitRequested records whether rollout waiting was requested.
 	WaitRequested bool
 
-	// WaitCompleted reports the requested wait observed every
-	// selected controller Deployment rolled out. It is false on a
-	// failed, timed-out, or cancelled wait, and it is the only
-	// readiness-adjacent claim the deploy can make — apply completion
-	// alone never sets it.
+	// WaitCompleted records whether all selected Deployments rolled out.
 	WaitCompleted bool
 
-	// WaitTargets lists the safe identities of the controller
-	// Deployments the requested wait covered — namespace and name
-	// only, never spec, status, or image values. It is empty when no
-	// wait ran or the payload matched no target.
+	// WaitTargets contains the observed Deployment identities.
 	WaitTargets []types.NamespacedName
 }

@@ -27,17 +27,8 @@ import (
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
-// CheckReserved is the shared payload guard every render path — lint
-// and deploy alike — applies to its own output: it rejects the objects a
-// module deploy must never apply, whatever backend rendered them.
-//
-// Reserved are instances of the definition's configured module type
-// (any version), any config.opendatahub.io PlatformModuleDefinition,
-// and the persisted definition custom resource definition under its
-// reserved name. A rejected object fails the render itself —
-// classified by moduleerrors.ErrReservedResource — and is never
-// silently dropped, so no caller can deploy it by accident. All other
-// rendered resources pass through unexamined.
+// CheckReserved rejects instances of the configured module type (any version),
+// PlatformModuleDefinitions, and the definition CRD with ErrReservedResource.
 func CheckReserved(
 	definition toolApi.PlatformModuleDefinition,
 	resources []unstructured.Unstructured,

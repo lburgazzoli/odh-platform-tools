@@ -27,6 +27,7 @@ func testDefinition() toolApi.PlatformModuleDefinition {
 	return toolApi.PlatformModuleDefinition{
 		ObjectMeta: metav1.ObjectMeta{Name: "synthetic"},
 		Spec: toolApi.PlatformModuleDefinitionSpec{
+			Controller: toolApi.Controller{Deployment: toolApi.ControllerDeployment{Name: "synthetic-controller"}},
 			Instance: toolApi.Instance{Type: toolApi.ModuleType{
 				Group:   "components.platform.opendatahub.io",
 				Version: "v1alpha1",
@@ -100,7 +101,7 @@ func TestDeploymentValidate(t *testing.T) {
 
 		resources := []unstructured.Unstructured{
 			object("v1", "ServiceAccount", "controller"),
-			object("apps/v1", "Deployment", "controller"),
+			object("apps/v1", "Deployment", "synthetic-controller"),
 		}
 
 		diagnostics, err := Validate(testDefinition(), resources)
@@ -152,6 +153,38 @@ func TestDeploymentValidate(t *testing.T) {
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(diagnostics).To(HaveLen(1))
 		g.Expect(diagnostics[0].ID).To(Equal(Missing))
+	})
+}
+
+func TestControllerSelection(t *testing.T) {
+	t.Parallel()
+	for _, resource := range []unstructured.Unstructured{
+		object("apps/v1", "Deployment", "wrong-name"),
+		object("apps/v1beta1", "Deployment", "synthetic-controller"),
+	} {
+		t.Run(resource.GetAPIVersion()+resource.GetName(), func(t *testing.T) {
+			t.Parallel()
+			g := NewWithT(t)
+			findings, err := Validate(managerDefinition(), []unstructured.Unstructured{resource})
+			g.Expect(err).To(Succeed())
+			g.Expect(findings).To(HaveLen(1))
+			g.Expect(findings[0].ID).To(Equal(ControllerMismatch))
+		})
+	}
+	t.Run("module name fallback", func(t *testing.T) {
+		g := NewWithT(t)
+		definition := managerDefinition()
+		definition.Spec.Controller.Deployment.Name = ""
+		resource := deployment([]string{"manager"}, nil)
+		resource.SetName(definition.Name)
+		g.Expect(Validate(definition, []unstructured.Unstructured{resource})).To(BeEmpty())
+	})
+	t.Run("unnamed configured init container", func(t *testing.T) {
+		g := NewWithT(t)
+		findings, err := Validate(initContainerDefinition(""), []unstructured.Unstructured{deployment([]string{"manager"}, nil)})
+		g.Expect(err).To(Succeed())
+		g.Expect(findings).To(HaveLen(1))
+		g.Expect(findings[0].ID).To(Equal(ContainerMissing))
 	})
 }
 
@@ -264,7 +297,7 @@ func TestDeploymentValidateContainerExists(t *testing.T) {
 		g := NewWithT(t)
 
 		diagnostics, err := Validate(managerDefinition(),
-			[]unstructured.Unstructured{object("apps/v1", "Deployment", "bare")})
+			[]unstructured.Unstructured{object("apps/v1", "Deployment", "synthetic-controller")})
 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(diagnostics).To(HaveLen(1))
@@ -276,7 +309,7 @@ func TestDeploymentValidateContainerExists(t *testing.T) {
 
 		g := NewWithT(t)
 
-		malformed := object("apps/v1", "Deployment", "broken")
+		malformed := object("apps/v1", "Deployment", "synthetic-controller")
 		malformed.Object["spec"] = map[string]any{
 			"template": map[string]any{
 				"spec": map[string]any{"containers": "not-a-list"},

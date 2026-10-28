@@ -1,8 +1,4 @@
-// Package lint adapts the module lint action to the `module lint`
-// command surface. It owns flag parsing, report formatting, and
-// exit-code classification only: no loading, rendering, or
-// validation logic lives here, and every business execution goes
-// through the injected action boundary.
+// Package lint provides the module lint command and reports.
 package lint
 
 import (
@@ -23,16 +19,11 @@ const (
 	ExitUsage   = 2
 )
 
-// Run runs the composed module lint action once. The concrete
-// implementation is module.NewLinter().Run; command tests inject
-// fakes. It is the only business boundary the command touches.
+// Run is the command's lint action.
 type Run func(ctx context.Context, options linter.Options) (linter.Result, error)
 
-// ExitError carries the process exit status of one executed lint
-// invocation, so main can exit with the classified status without
-// re-inspecting reports or matching error strings. Its error identity
-// is the underlying execution error, if any; findings-only failures
-// carry no execution error.
+// ExitError carries the exit code and optional execution error.
+// Findings can fail lint without an execution error.
 type ExitError struct {
 	Code int
 	Err  error
@@ -51,9 +42,7 @@ func (e *ExitError) Error() string {
 // Unwrap preserves the underlying execution error identity.
 func (e *ExitError) Unwrap() error { return e.Err }
 
-// ExitCode reports the classified process exit status, implementing
-// the root command's neutral exit contract for both lint and run
-// outcomes.
+// ExitCode implements the root command's exit contract.
 func (e *ExitError) ExitCode() int { return e.Code }
 
 // Classified execution failure categories of one lint invocation.
@@ -64,12 +53,7 @@ const (
 	FailureRender         = "render"
 )
 
-// classify maps one lint execution error to its failure category and
-// exit code. Cancellation and deadline always win, then the
-// identifiable invalid-options and definition categories are usage
-// failures, then any other execution error is a render/internal
-// failure. Findings are never classified here: they are report
-// content, and their exit code derives from Result.HasErrors.
+// classify handles execution errors; findings use Result.HasErrors.
 func classify(err error) (string, int) {
 	switch {
 	case err == nil:
@@ -92,10 +76,7 @@ type lintOptions struct {
 	format outputFormat
 }
 
-// NewLintCommand returns the `module lint` command. It turns the
-// required --config flag and the optional --output flag into a plain
-// action Options struct, forwards the command context, calls the
-// injected action exactly once, and formats one report.
+// NewLintCommand binds flags to the supplied action and formats its result.
 func NewLintCommand(run Run) *cobra.Command {
 	options := lintOptions{format: FormatText}
 
@@ -127,10 +108,6 @@ func NewLintCommand(run Run) *cobra.Command {
 	return command
 }
 
-// execute runs one lint invocation: call the action with the parsed
-// options and command context, classify the outcome, write exactly
-// one report to stdout, echo execution failures to stderr, and return
-// the classified exit outcome for main.
 func (o lintOptions) execute(command *cobra.Command, run Run) error {
 	result, err := run(command.Context(), linter.Options{DefinitionFile: o.config})
 
@@ -143,9 +120,7 @@ func (o lintOptions) execute(command *cobra.Command, run Run) error {
 
 	report := newReport(o.config, result, failure)
 
-	// A report or summary write failure is an internal execution
-	// failure (exit 1), never a usage error, and keeps the action's
-	// outcome identity alongside it.
+	// Preserve the action error if writing its report also fails.
 	if writeErr := writeReport(command.OutOrStdout(), o.format.String(), report); writeErr != nil {
 		return &ExitError{
 			Code: ExitFailure,

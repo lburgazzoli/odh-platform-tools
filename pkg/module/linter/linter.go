@@ -1,14 +1,4 @@
-// Package linter runs manifest validators over rendered module
-// objects and reports their findings.
-//
-// The linter itself owns no rules: checks are linter.Validation
-// functions injected into the action, so the check set is the
-// caller's choice. Validation is a pure function of the rendered
-// object list and the definition: it reads no files or environment,
-// contacts no cluster, invokes no renderer, and never mutates its
-// inputs. Findings are aggregated as diagnostics with stable check
-// IDs; a nil execution error means validation ran to completion, not
-// that the manifests are valid.
+// Package linter runs injected manifest checks and aggregates diagnostics.
 package linter
 
 import (
@@ -37,20 +27,14 @@ const (
 	SeverityInfo Severity = "info"
 )
 
-// Validation runs the manifest checks over the objects a manifest
-// backend rendered for one module and returns the findings. It is a
-// pure function of the definition and the rendered objects; the
-// checks package provides the default implementation. A non-nil
-// error means a check failed to evaluate — it is an execution error,
-// never a finding about the manifests.
+// Validation checks a definition and rendered resources without mutating them.
+// Errors indicate evaluation failure; manifest defects are diagnostics.
 type Validation func(
 	definition toolApi.PlatformModuleDefinition,
 	resources []unstructured.Unstructured,
 ) ([]Diagnostic, error)
 
-// Diagnostic is one validation finding. GVK, Namespace, Name, and Field
-// identify the affected object location when relevant; Message is the
-// actionable explanation.
+// Diagnostic identifies a finding and its resource location.
 type Diagnostic struct {
 	ID        string
 	Severity  Severity
@@ -61,10 +45,7 @@ type Diagnostic struct {
 	Message   string
 }
 
-// Path returns the stable object path the diagnostic refers to, such
-// as "apps/v1, Kind=Deployment/odh-applications/synthetic-controller/
-// spec.template.spec.containers", or an empty string for findings that
-// are not attached to one object.
+// Path formats the finding's location, or empty if unattached.
 func (d Diagnostic) Path() string {
 	var path []string
 
@@ -88,9 +69,7 @@ func (d Diagnostic) String() string {
 
 // Result is the aggregated outcome of one validation run.
 type Result struct {
-	// Diagnostics are sorted deterministically: by check ID, then
-	// object identity, then field and message. The order does not
-	// depend on the input object order.
+	// Diagnostics are ordered by check ID, identity, field, and message.
 	Diagnostics []Diagnostic
 }
 

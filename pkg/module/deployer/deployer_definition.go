@@ -32,23 +32,9 @@ import (
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
-// publishDefinition is the single preparation step ahead of the payload
-// apply, over the invocation's client: apply the embedded definition
-// CRD, wait until the server serves it, then apply the definition
-// itself and return the server-backed object. Both writes are plain
-// create-or-update server-side applies through the framework helper —
-// the same path whether the server holds the object or not, with no
-// pre-write read and no local compatibility or live-state policy: the
-// API validates the result and refuses what it must refuse. Both
-// writes claim their fields under the invocation's effective field
-// manager: one manager owns the authored spec and the whole authored
-// labels and annotations maps, so a re-run replaces keys it no longer
-// authors; live status and fields owned by other field managers are
-// never claimed.
-//
-// The authored definition the receiver holds is never mutated: a deep
-// copy is sanitized and submitted, and the copy — carrying the
-// identity the apply response returned — becomes the confirmed owner.
+// publishDefinition applies the embedded CRD, waits for establishment, and
+// applies a sanitized definition copy. The returned object carries the live
+// identity used to own payload resources.
 func (r *Deployer) publishDefinition(ctx context.Context) (*toolApi.PlatformModuleDefinition, error) {
 	crd := &apiextensionsv1.CustomResourceDefinition{}
 	if err := yaml.Unmarshal(configcrd.PlatformModuleDefinitionYAML, crd); err != nil {
@@ -63,7 +49,7 @@ func (r *Deployer) publishDefinition(ctx context.Context) (*toolApi.PlatformModu
 		crclient.FieldOwner(r.options.FieldManager), crclient.ForceOwnership); err != nil {
 		return nil, moduleerrors.New(
 			moduleerrors.ErrOwnerPreparation,
-			"applying the definition custom resource definition failed",
+			safeFailureMessage("applying the definition custom resource definition failed", err),
 			moduleerrors.WithCause(err),
 		)
 	}
@@ -71,17 +57,13 @@ func (r *Deployer) publishDefinition(ctx context.Context) (*toolApi.PlatformModu
 	if err := k8scrd.WaitForCRDToBeEstablished(ctx, r.client, toolApi.CRDName); err != nil {
 		return nil, moduleerrors.New(
 			moduleerrors.ErrOwnerPreparation,
-			"waiting for the definition custom resource definition failed",
+			safeFailureMessage("waiting for the definition custom resource definition failed", err),
 			moduleerrors.WithCause(err),
 		)
 	}
 
-	// Forged authority fields — UID, resourceVersion, namespace, owner
-	// references, finalizers — never reach the apply request: the
-	// preparation claims only the authored name, labels, annotations,
-	// and spec, over a copy of the authored definition. The
-	// server-side merge preserves the live identity and status, so
-	// re-runs reuse identities without any lock.
+	// Keep authored name, labels, annotations, and spec; discard client-supplied
+	// identity and lifecycle metadata.
 	desired := r.definition.DeepCopy()
 	desired.ObjectMeta = metav1.ObjectMeta{
 		Name:        desired.Name,
@@ -93,7 +75,7 @@ func (r *Deployer) publishDefinition(ctx context.Context) (*toolApi.PlatformModu
 		crclient.FieldOwner(r.options.FieldManager), crclient.ForceOwnership); err != nil {
 		return nil, moduleerrors.New(
 			moduleerrors.ErrOwnerPreparation,
-			"applying the module definition failed",
+			safeFailureMessage("applying the module definition failed", err),
 			moduleerrors.WithCause(err),
 		)
 	}

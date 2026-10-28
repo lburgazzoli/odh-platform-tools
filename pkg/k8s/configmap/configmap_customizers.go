@@ -20,17 +20,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// customizationRequest is one ordered ConfigMap mutation, deferred
-// from option collection to Customize's apply pass. It is deliberately
-// not another option.Option: ApplyTo mutates a configuration struct
-// and cannot report failure, while a request mutates the ConfigMap
-// itself and returns the first error. No current request fails, but
-// the shape matches pkg/k8s/deployment so a future failing request
-// needs no restructuring.
+// Requests defer fallible work until Customize; options only collect them.
 type customizationRequest func(cm *corev1.ConfigMap) error
 
-// setData returns the request setting one data key, replacing an
-// existing entry and materializing a missing data block first.
 func setData(key string, value string) customizationRequest {
 	return func(cm *corev1.ConfigMap) error {
 		if cm.Data == nil {
@@ -43,8 +35,6 @@ func setData(key string, value string) customizationRequest {
 	}
 }
 
-// removeKeys returns the request deleting the data keys; keys missing
-// from the data block — or a missing data block itself — are a no-op.
 func removeKeys(keys []string) customizationRequest {
 	return func(cm *corev1.ConfigMap) error {
 		for _, key := range keys {

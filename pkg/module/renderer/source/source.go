@@ -14,21 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package source resolves authored manifest source entries against the
-// definition file that declared them. It is the leaf both rendering
-// backends consume, so the parent rendering service can import those
-// backends without an import cycle.
+// Package source resolves manifest paths shared by both render backends.
 package source
 
 import "path/filepath"
 
-// ResolveEntry resolves an authored manifest path against the
-// definition file's directory. An empty path — an omitted block or an
-// omitted path — resolves to the definition file's directory itself;
-// the path is otherwise used exactly as configured, and an absolute
-// path is honored as is. Existence and shape of the entry are the
-// render engines' to validate, so a missing or unsuitable entry fails
-// at render time.
+// ResolveEntry joins authored to root; empty uses root and absolute paths
+// are honored. The renderer validates existence and shape.
 func ResolveEntry(root string, authored string) string {
 	if filepath.IsAbs(authored) {
 		return filepath.Clean(authored)

@@ -31,41 +31,10 @@ import (
 	"k8s.io/kubectl/pkg/polymorphichelpers"
 )
 
-// Wait is the opt-in controller rollout wait: after a successful
-// Deploy, it observes the live rendered apps/v1 controller
-// Deployments until the public kubectl deployment status helper
-// reports every one rolled out, or the shared wait budget expires.
-// It never creates, updates, or patches anything.
-//
-// The waited targets are the rendered Deployments matching the
-// configured controller deployment name — the same target selection
-// the env injector uses, falling back to the module's metadata.name
-// — deduplicated by namespace and name, in their actual rendered
-// namespaces. Unrelated Deployments are ignored, and a payload with
-// no matching Deployment fails here, after the apply, never during
-// local definition validation.
-//
-// One shared budget starts when Wait runs, as a child of the given
-// context — the still-live invocation context when Apply drives it —
-// so an explicit WaitTimeout can never extend the remaining overall
-// timeout. Every observation is a fresh uncached GET, and the wait
-// follows its targets by namespace and name only: a target that is
-// absent, terminating, or replaced by a new object stays pending
-// until a live object under that identity rolls out. Live objects go
-// straight to the public helper with no revision constraint, so
-// merged replicas, generation lag, incomplete updates,
-// old-replica termination, availability, and the progress deadline
-// are judged exactly as kubectl judges them — no extra readiness,
-// paused, or ReplicaFailure policy exists here.
-//
-// A wait failure is a runtime error: the published owner and apply
-// completion are retained, and the
-// report never claims readiness. Wait failures are safe shared
-// moduleerrors.ErrRolloutWait errors:
-// their text names the operation and the target identity — namespace
-// and name, already safe report identity — and never the API's or the
-// status helper's own text; underlying causes stay reachable only
-// through Unwrap for errors.Is and errors.As.
+// Wait observes matching controller Deployments after a successful Deploy.
+// Targets are deduplicated by namespace/name and judged by kubectl rollout
+// semantics under one shared budget. Missing, replaced, or terminating
+// objects remain pending; a failed wait retains the completed apply.
 func (r *Deployer) Wait(ctx context.Context) error {
 	if r.stage != stageDeployed {
 		return moduleerrors.New(
@@ -97,7 +66,7 @@ func (r *Deployer) Wait(ctx context.Context) error {
 			moduleerrors.ErrWaitTargetMissing,
 			fmt.Sprintf("no rendered controller deployment matched the wait target: module %s controller deployment %q",
 				r.definition.Name,
-				r.controllerDeploymentName()),
+				r.definition.ControllerDeploymentName()),
 		)
 	}
 
@@ -111,34 +80,14 @@ func (r *Deployer) Wait(ctx context.Context) error {
 	return nil
 }
 
-// controllerDeploymentName mirrors the env injector's target
-// selection: the configured controller deployment name, falling back
-// to the module's metadata.name.
-func (r *Deployer) controllerDeploymentName() string {
-	if name := r.definition.Spec.Controller.Deployment.Name; name != "" {
-		return name
-	}
-
-	return r.definition.Name
-}
-
-// selectWaitTargets picks the wait's targets out of the rendered
-// payload: apps/v1 Deployments whose name matches the configured
-// controller deployment name, deduplicated by namespace and name.
 func (r *Deployer) selectWaitTargets() []types.NamespacedName {
-	name := r.controllerDeploymentName()
-
 	var targets []types.NamespacedName
 	seen := sets.New[types.NamespacedName]()
 
 	for i := range r.resources {
 		resource := &r.resources[i]
 
-		if resource.GroupVersionKind() != gvk.Deployment {
-			continue
-		}
-
-		if resource.GetName() != name {
+		if !r.definition.IsControllerDeployment(resource.GroupVersionKind(), resource.GetName()) {
 			continue
 		}
 
@@ -154,11 +103,6 @@ func (r *Deployer) selectWaitTargets() []types.NamespacedName {
 	return targets
 }
 
-// observeUntilRolledOut polls the live targets through the shared
-// Kubernetes wait helper until the public status helper reports every
-// one rolled out. The first observation is immediate and later rounds
-// follow the poll interval; the shared wait budget, derived from the
-// invocation context, bounds the whole poll.
 func (r *Deployer) observeUntilRolledOut(ctx context.Context) error {
 	err := wait.PollUntilContextTimeout(
 		ctx,
@@ -171,10 +115,6 @@ func (r *Deployer) observeUntilRolledOut(ctx context.Context) error {
 		return nil
 	}
 
-	// The poll's own termination — the budget expiring or the caller
-	// cancelling — becomes the shared wait-failure message with the
-	// context identity as its cause. A condition failure is already
-	// one of the safe target failures and is returned as-is.
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return moduleerrors.New(
 			moduleerrors.ErrRolloutWait,
@@ -187,13 +127,6 @@ func (r *Deployer) observeUntilRolledOut(ctx context.Context) error {
 	return err
 }
 
-// observeRolledOut is one wait observation round over the recorded
-// targets: every target is GET fresh, targets are followed by
-// namespace and name only — an absent, terminating, or replaced
-// target is pending — and live objects go to the public status
-// helper. It reports whether every target is rolled out, and every
-// failure is a safe shared ErrRolloutWait error whose cause carries
-// the raw API or helper error.
 func (r *Deployer) observeRolledOut(ctx context.Context) (bool, error) {
 	viewer := &polymorphichelpers.DeploymentStatusViewer{}
 
@@ -206,9 +139,6 @@ func (r *Deployer) observeRolledOut(ctx context.Context) (bool, error) {
 		err := r.client.Get(ctx, target, live)
 		if err != nil {
 			if apierrors.IsNotFound(err) {
-				// An absent target is pending whenever it
-				// happens: the wait follows the namespace
-				// and name, never one object instance.
 				rolledOut = false
 				continue
 			}
@@ -221,15 +151,11 @@ func (r *Deployer) observeRolledOut(ctx context.Context) (bool, error) {
 			)
 		}
 
-		// A terminating target is pending — never done,
-		// never a failure on its own.
 		if live.GetDeletionTimestamp() != nil {
 			rolledOut = false
 			continue
 		}
 
-		// The public helper is the only rollout judge: live
-		// object, no revision constraint, no extra policy.
 		_, done, err := viewer.Status(live, 0)
 		if err != nil {
 			return false, moduleerrors.New(

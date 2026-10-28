@@ -26,18 +26,8 @@ import (
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// WaitForCRDToBeEstablished polls the named custom resource
-// definition through the given client until it reports both
-// Established and NamesAccepted — the upstream apihelpers condition
-// checks, not a local reimplementation. The first poll is immediate;
-// later polls follow the configured interval (WithPollInterval,
-// DefaultPollInterval). No discovery refresh follows: a lazy REST
-// mapper reloads missing groups itself, so groups served by a CRD
-// established here become mappable on the next lookup. Errors are
-// returned with their identity preserved — an apiextensions NotFound,
-// a context cancellation, or any request error reaches the caller
-// unwrapped in kind, and a failure means no successful establishment
-// is claimed.
+// WaitForCRDToBeEstablished polls until Established and NamesAccepted are true.
+// The first poll is immediate. Context and API errors are returned unchanged.
 func WaitForCRDToBeEstablished(
 	ctx context.Context,
 	cli crclient.Client,

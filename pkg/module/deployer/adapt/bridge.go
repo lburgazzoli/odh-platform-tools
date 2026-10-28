@@ -26,29 +26,17 @@ import (
 	odhTypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 )
 
-// ControllerBridge is the minimal concrete Controller the framework
-// deploy action reads, shaped after the operator's modules controller:
-// dynamic ownership with no statically owned types. It owns no
-// reconciler and no manager. The action populates the dynamic-owned
-// set as it decides to own rendered types; Owns answers from that
-// set. core/v1 Namespaces and CRDs stay excluded from ownership — the
-// never-own-namespaces policy the action's shouldOwn reads — so the
-// action never sets controller references on them (CRDs additionally
-// bypass shouldOwn entirely through the action's unowned deployCRD
-// path). Its client is the plain connection client; the discovery and
-// dynamic getters report nil, because only out-of-scope
-// garbage-collection and dynamic-ownership actions read them.
+// ControllerBridge supplies the framework deploy action's ownership policy.
+// Ordinary resources are dynamically owned; Namespaces and CRDs are excluded.
+// It supports deployment only, not reconciliation or garbage collection.
 type ControllerBridge struct {
 	client       crclient.Client
 	dynamicOwned map[schema.GroupVersionKind]struct{}
 }
 
-// compile assertion: the bridge satisfies the framework Controller
-// contract.
 var _ odhTypes.Controller = (*ControllerBridge)(nil)
 
-// NewControllerBridge wires the bridge over the plain connection
-// client the deploy action deploys through.
+// NewControllerBridge uses the supplied client unchanged.
 func NewControllerBridge(client crclient.Client) *ControllerBridge {
 	return &ControllerBridge{
 		client:       client,
@@ -56,9 +44,7 @@ func NewControllerBridge(client crclient.Client) *ControllerBridge {
 	}
 }
 
-// Owns reports whether the type is in the dynamic-owned set the
-// action populated: a module deploy declares no statically owned types,
-// exactly like the operator's modules controller.
+// Owns reports whether the action registered a GVK for dynamic ownership.
 func (b *ControllerBridge) Owns(gvk schema.GroupVersionKind) bool {
 	_, owned := b.dynamicOwned[gvk]
 
@@ -70,33 +56,27 @@ func (b *ControllerBridge) AddDynamicOwnedType(gvk schema.GroupVersionKind) {
 	b.dynamicOwned[gvk] = struct{}{}
 }
 
-// GetClient returns the plain connection client the action deploys
-// through.
+// GetClient returns the invocation client.
 func (b *ControllerBridge) GetClient() crclient.Client {
 	return b.client
 }
 
-// GetDiscoveryClient reports none: the deploy action reads no
-// discovery client.
+// GetDiscoveryClient returns nil; the deploy action does not use discovery here.
 func (b *ControllerBridge) GetDiscoveryClient() discovery.DiscoveryInterface {
 	return nil
 }
 
-// GetDynamicClient reports none: the deploy action reads no dynamic
-// client.
+// GetDynamicClient returns nil; the deploy action does not use a dynamic client.
 func (b *ControllerBridge) GetDynamicClient() dynamic.Interface {
 	return nil
 }
 
-// IsDynamicOwnershipEnabled keeps dynamic ownership on: rendered
-// ordinary resources receive controller references to the persisted
-// definition.
+// IsDynamicOwnershipEnabled enables owner references on ordinary resources.
 func (b *ControllerBridge) IsDynamicOwnershipEnabled() bool {
 	return true
 }
 
-// IsExcludedFromDynamicOwnership excludes core/v1 Namespaces and
-// CRDs, matching the upstream controller's exclusions.
+// IsExcludedFromDynamicOwnership excludes Namespaces and CRDs.
 func (b *ControllerBridge) IsExcludedFromDynamicOwnership(gvk schema.GroupVersionKind) bool {
 	return gvk == fwgvk.Namespace || gvk == fwgvk.CustomResourceDefinition
 }

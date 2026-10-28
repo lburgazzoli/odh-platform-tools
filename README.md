@@ -97,8 +97,8 @@ definition file's own directory:
 | `spec.controller.deployment.name` | The controller Deployment. When omitted, `module deploy` falls back to the module's `metadata.name` when selecting the controller Deployment for injection and waiting. |
 | `spec.controller.deployment.container` | The main container. `name` defaults to `manager` when omitted, and a fully omitted block is materialized as the default-named block (loader defaults); `image` may be a literal or a whole-value `{{VARIABLE}}` reference resolved only by `module deploy`, and it must resolve — the render fails otherwise. |
 | `spec.controller.deployment.initContainer` | Optional init container, selected by `name`, carrying an optional `image` of its own. The main image overrides the named init container when no init-specific image is declared; the effective image must resolve. The injected env vars land on the init container too. |
-| `spec.controller.deployment.container.env` | Explicit environment variables for the main container only. An explicit empty string is a valid value. |
-| `spec.relatedImages` | Optional list of portable environment-variable-style names. `module deploy` resolves them from the file or environment and injects them into the main container only; lint neither resolves nor injects them. |
+| `spec.controller.deployment.container.env` | Explicit environment variables for the main and configured init containers. An explicit empty string is a valid value. |
+| `spec.relatedImages` | Optional list of portable environment-variable-style names. `module deploy` resolves them from the file or environment and injects them into the main and configured init containers; lint neither resolves nor injects them. |
 
 The instance identity is descriptive data: nothing in this tooling
 creates or looks up the custom resource, and rendering never uses
@@ -239,7 +239,8 @@ environment, with the environment winning over the file. The image
 must resolve — the chart default is never kept silently — and it
 replaces the main container's image and the named init container's
 image too, unless the init target declares an image of its own, which
-then resolves and applies independently. Declared
+then resolves and applies independently. Tokens from both images are
+resolved even when absent from `relatedImages`; only declared
 `relatedImages` names are injected as env vars into the main and
 configured init containers alike. Explicit definition env values
 replace same-named chart env vars, removing their `valueFrom`; the
@@ -252,7 +253,11 @@ loader, never by the injection pass.
 
 Injection targets the controller Deployment only after an exact
 apps/v1 Deployment group/version/kind and name match — the configured
-deployment name, or the module name fallback. The matched target is
+deployment name, or the module name fallback. No matching controller
+is a render error before any cluster write. Lint verifies the same
+name and GVK, the selected containers, and the name of any configured
+init container, while retaining its exactly-one-Deployment rule.
+The matched target is
 adapted through a typed Deployment round-trip: a malformed typed field
 on the target fails the render instead of being repaired, unknown
 fields on an adapted target may be dropped, and unrelated resources —
@@ -314,6 +319,25 @@ successful deploy means the payload apply returned success — nothing
 more. A pending, absent, or never-converging workload causes no
 failure, no monitoring call, and no readiness claim. `--wait=false`
 is the default.
+
+**Cancellation and retries.** Requests use the standard Kubernetes
+client transport and configured request timeout. If no request timeout
+is set, the remaining invocation budget becomes a per-request limit.
+Background discovery requests can finish after the invocation deadline.
+
+Payload application makes at most five attempts with delays of 1s,
+2s, 4s, and 8s. The retry decision uses the framework's first reported
+resource failure: transient API responses and discovery no-match errors
+qualify. Later failures are not exposed as error causes, so a later
+permanent failure cannot stop retries selected by an earlier transient
+failure. Each retry reapplies the whole payload. Preparation is not
+retried.
+
+Deployment errors include recognized Kubernetes reason codes and
+structured resource identity when available. Raw server messages,
+status causes, and formatted wrapper text remain private; callers can
+inspect the preserved cause through the Go error chain. CLI report
+fields and exit categories are unchanged.
 
 **The opt-in wait.** `--wait` adds an explicit Wait stage after
 Deploy: it observes only the rendered controller Deployment(s) whose
@@ -463,10 +487,11 @@ including OpenShift SecurityContextConstraints — is the error
 
 **Controller Deployment** (`deployments`): the bundle must contain
 exactly one Deployment (`DEPLOYMENT_MISSING` /
-`DEPLOYMENT_MULTIPLE`), and the containers the definition selects —
+`DEPLOYMENT_MULTIPLE`). Its name and exact apps/v1 GVK must match
+the controller selection (`CONTROLLER_DEPLOYMENT_MISMATCH`), and the containers the definition selects —
 the main container, defaulting to `manager`, and the optional init
 container when configured — must exist in the Deployment's pod spec
-(`CONTAINER_MISSING`).
+(`CONTAINER_MISSING`). A configured init container must also have a name.
 
 **Module CRD** (`crd`): the bundle must contain exactly one
 CustomResourceDefinition declaring the module's own group and kind

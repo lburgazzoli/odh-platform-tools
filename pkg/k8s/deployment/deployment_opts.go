@@ -33,45 +33,34 @@ type CustomizeOptions struct {
 // order they are passed; a nil option is ignored.
 type CustomizeOption = option.Option[CustomizeOptions]
 
-// WithContainerImage assigns the image to the first regular container
-// with the exact name. The image is assigned literally, including the
-// empty string; a missing name is an error at apply time.
+// WithContainerImage sets the first named container's literal image.
+// A missing container fails during Customize.
 func WithContainerImage(name string, image string) CustomizeOption {
 	return option.FunctionalOption[CustomizeOptions](func(target *CustomizeOptions) {
 		target.requests = append(target.requests, containerImage(name, image))
 	})
 }
 
-// WithInitContainerImage assigns the image to the first init container
-// with the exact name. The image is assigned literally, including the
-// empty string; a missing name is an error at apply time.
+// WithInitContainerImage sets the first named init container's literal image.
+// A missing container fails during Customize.
 func WithInitContainerImage(name string, image string) CustomizeOption {
 	return option.FunctionalOption[CustomizeOptions](func(target *CustomizeOptions) {
 		target.requests = append(target.requests, initContainerImage(name, image))
 	})
 }
 
-// WithContainerEnv merges the env vars into the first regular
-// container with the exact name: the first same-name entry is replaced
-// in place or the entry is appended, so later incoming entries and
-// repeated requests win. The input is snapshotted at construction and
-// deep-copied again at apply time, so later caller mutations do not
-// affect the request and a reused option never shares writable nested
-// state across Deployments. A missing container name is an error at
-// apply time, even for an empty env list.
+// WithContainerEnv merges by name, with later values winning.
+// Inputs are deep-copied so options can be reused safely across Deployments.
+// A missing container fails even with an empty env list.
 func WithContainerEnv(name string, envs []corev1.EnvVar) CustomizeOption {
 	return withContainerEnv(containerEnv, name, envs)
 }
 
-// WithInitContainerEnv merges the env vars into the first init
-// container with the exact name, with the same merge, snapshot, and
-// error semantics as WithContainerEnv.
+// WithInitContainerEnv applies WithContainerEnv semantics to init containers.
 func WithInitContainerEnv(name string, envs []corev1.EnvVar) CustomizeOption {
 	return withContainerEnv(initContainerEnv, name, envs)
 }
 
-// withContainerEnv builds an env-merging option around the request
-// constructor, snapshotting the input at construction time.
 func withContainerEnv(
 	request func(name string, envs []corev1.EnvVar) customizationRequest,
 	name string,

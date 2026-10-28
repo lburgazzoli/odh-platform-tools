@@ -1,8 +1,4 @@
-// Package deploy adapts the staged module deploy action to the
-// `module deploy` command surface. It owns flag parsing, report
-// formatting, and exit-code classification only: no loading,
-// rendering, connecting, or applying logic lives here, and every
-// business execution goes through the injected action boundary.
+// Package deploy provides the module deploy command and reports.
 package deploy
 
 import (
@@ -34,30 +30,15 @@ const (
 	DefaultWaitTimeout = 30 * time.Second
 )
 
-// Deploy runs one composed module deploy invocation. The concrete
-// implementation is Action; command tests inject fakes. It is the
-// only business boundary the command touches: it receives the
-// standard getter the root registered, so namespace and REST
-// resolution share one configuration source.
+// Deploy is the command's deployment action.
 type Deploy func(
 	ctx context.Context,
 	getter genericclioptions.RESTClientGetter,
 	options deployer.Options,
 ) (deployer.Result, error)
 
-// Action is the concrete Deploy boundary: it validates the
-// invocation settings, derives the invocation context from the caller's
-// context and the options' timeout, builds the standard cluster
-// connection from the getter — so REST and authentication inputs
-// share one configuration source — and drives one fresh staged
-// Deployer over the connected client through its convenience Apply.
-// The settings check precedes the client, the invocation timer, and
-// every stage, so an invalid setting is a usage failure before any
-// client construction; the client itself cannot be checked before the
-// connection that supplies it, so its requirement is enforced by the
-// deployer's first stage once construction has injected it, and a
-// broken configuration surfaces as a runtime failure. The deployer
-// holds no state across invocations.
+// Action validates settings, connects using the standard getter, and runs a
+// fresh deployer. The timeout includes connection setup.
 func Action(
 	ctx context.Context,
 	getter genericclioptions.RESTClientGetter,
@@ -85,11 +66,7 @@ func Action(
 	).Apply(ctx)
 }
 
-// ExitError carries the process exit status of one executed deploy
-// invocation, so main can exit with the classified status without
-// re-inspecting reports or matching error strings. Its error identity
-// is the underlying execution error, if any. ExitCode implements the
-// root's command-neutral exit contract.
+// ExitError carries a process exit code and preserves the execution error.
 type ExitError struct {
 	Code int
 	Err  error
@@ -120,11 +97,7 @@ const (
 	FailureRuntime        = "runtime"
 )
 
-// classify maps one deploy execution error to its failure category and
-// exit code. Cancellation and deadline always win; usage, local
-// definition, and image-file failures are usage failures; every
-// other execution error — render, connection, owner preparation, apply,
-// and wait failures included — is a runtime failure.
+// Cancellation takes precedence over usage and runtime failure categories.
 func classify(err error) (string, int) {
 	switch {
 	case err == nil:
@@ -157,13 +130,7 @@ type deployOptions struct {
 	format              outputFormat
 }
 
-// NewDeployCommand returns the `module deploy` command. It turns the
-// required --config and --platform-version flags and the runtime,
-// image, wait, and output flags into a plain action Options struct,
-// forwards the command context and the standard getter, calls the
-// injected action exactly once, and formats one report. The standard
-// kubeconfig/context/namespace/auth flags come from the root's
-// persistent ConfigFlags, never duplicated here.
+// NewDeployCommand binds flags to the supplied action and formats its result.
 func NewDeployCommand(action Deploy, getter genericclioptions.RESTClientGetter) *cobra.Command {
 	options := deployOptions{
 		format:      FormatText,
@@ -225,13 +192,6 @@ func NewDeployCommand(action Deploy, getter genericclioptions.RESTClientGetter) 
 	return command
 }
 
-// execute runs one module deploy invocation: resolve the effective
-// namespace from the standard getter — kubectl semantics: the explicit
-// --namespace flag, else the kubeconfig context's namespace, else
-// default — call the action with the parsed options, the command
-// context, and the same getter, classify the outcome, write exactly
-// one report to stdout, echo execution failures to stderr, and return
-// the classified exit outcome for main.
 func (o deployOptions) execute(
 	command *cobra.Command,
 	action Deploy,
@@ -241,11 +201,7 @@ func (o deployOptions) execute(
 
 	var err error
 
-	// The flag's default is the canonical manager, so an empty value
-	// can only be explicit input. It is rejected here, before the
-	// injected action runs, through the same classification and
-	// report path as every other options failure: the Go option
-	// itself treats empty as the default request.
+	// An empty flag is explicit invalid input; the Go API treats empty as default.
 	if o.fieldManager == "" {
 		err = moduleerrors.New(
 			moduleerrors.ErrInvalidDeployOptions,
@@ -254,10 +210,6 @@ func (o deployOptions) execute(
 	} else {
 		var namespace string
 
-		// The namespace resolution is a local configuration read
-		// through the same getter the connection uses; its failure
-		// is a runtime one, classified with every other execution
-		// error below.
 		namespace, err = cluster.ResolveNamespace(getter)
 		if err == nil {
 			result, err = action(command.Context(), getter, deployer.Options{
@@ -284,9 +236,7 @@ func (o deployOptions) execute(
 
 	report := newReport(o.config, result, failure)
 
-	// A report or summary write failure is an internal execution
-	// failure (exit 1), never a usage error, and keeps the action's
-	// outcome identity alongside it.
+	// Preserve the action error if writing its report also fails.
 	if writeErr := writeReport(command.OutOrStdout(), o.format.String(), report); writeErr != nil {
 		return &ExitError{
 			Code: ExitFailure,

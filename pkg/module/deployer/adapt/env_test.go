@@ -965,11 +965,12 @@ func TestEnvInjectorIgnoresNonDeploymentResources(t *testing.T) {
 	batch := strings.Join([]string{
 		serviceYAML,
 		sameNameWrongGVKYAML,
+		controllerDeploymentYAML,
 	}, "\n---\n")
 
 	input, err := toolk8s.DecodeResources([]byte(batch))
 	g.Expect(err).To(Succeed())
-	g.Expect(input).To(HaveLen(2))
+	g.Expect(input).To(HaveLen(3))
 
 	resources, err := render(t.Context(), input)
 	g.Expect(err).To(Succeed())
@@ -985,6 +986,21 @@ func TestEnvInjectorIgnoresNonDeploymentResources(t *testing.T) {
 	g.Expect(err).To(Succeed())
 	g.Expect(expected).To(HaveLen(1))
 	g.Expect(*lookalike).To(Equal(expected[0]))
+}
+
+func TestEnvInjectorRequiresControllerTarget(t *testing.T) {
+	t.Parallel()
+	for _, document := range []string{serviceYAML, sameNameWrongGVKYAML, otherDeploymentYAML} {
+		t.Run(document[:20], func(t *testing.T) {
+			t.Parallel()
+			g := NewWithT(t)
+			input, err := toolk8s.DecodeResources([]byte(document))
+			g.Expect(err).To(Succeed())
+			resources, err := newEnvInjector(newDefinition()).Run(t.Context(), input)
+			g.Expect(err).To(MatchError(ContainSubstring("no rendered apps/v1 Deployment matched controller")))
+			g.Expect(resources).To(BeNil())
+		})
+	}
 }
 
 // TestEnvInjectorInitContainerBranches pins the init container

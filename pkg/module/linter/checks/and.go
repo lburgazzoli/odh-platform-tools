@@ -1,8 +1,4 @@
-// Package checks composes module manifest checks, mirroring the
-// compliance checks the opendatahub-operator applies to its own
-// module manifests (manifests_compliance_test.go). Each check lives
-// in its own package with a Validate function; And composes them,
-// and the wiring site chooses the set.
+// Package checks composes module manifest validations.
 package checks
 
 import (
@@ -12,9 +8,7 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 )
 
-// And composes validations into one that runs each in order and
-// concatenates their findings, aborting with the first evaluation
-// error. Composing no validation yields no findings.
+// And runs validations in order, combining findings until an evaluation fails.
 func And(validations ...linter.Validation) linter.Validation {
 	return func(
 		definition toolApi.PlatformModuleDefinition,

@@ -10,23 +10,13 @@ import (
 	deployer "github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer"
 )
 
-// Report formatting below is the stable wire and text form of one
-// executed module deploy invocation. Reports carry only safe, confirmed
-// facts — never readiness claims by default, never authored spec
-// values, image sources, or API-echoed content, and never fabricated
-// counts.
-
 // Report statuses of one executed deploy invocation.
 const (
 	StatusApplied = "applied"
 	StatusFailed  = "failed"
 )
 
-// Report is the stable wire form of one executed deploy invocation: the
-// definition it ran against, the confirmed owner identity, how far
-// the stages ran, apply completion, the wait state when one was
-// requested, and the classified failure when execution did not
-// complete.
+// Report is the CLI's deployment result.
 type Report struct {
 	Definition     string     `json:"definition"`
 	Status         string     `json:"status"`
@@ -38,9 +28,8 @@ type Report struct {
 	Failure        *Failure   `json:"failure,omitzero"`
 }
 
-// Owner is the safe identity of the confirmed definition owner:
-// name, server-assigned UID, and type identity only. Its absence
-// means the identity is unconfirmed, never that no write occurred.
+// Owner identifies a server-confirmed definition. Absence means unconfirmed,
+// not that no write occurred.
 type Owner struct {
 	Name       string `json:"name"`
 	UID        string `json:"uid,omitzero"`
@@ -48,9 +37,7 @@ type Owner struct {
 	Kind       string `json:"kind,omitzero"`
 }
 
-// WaitState is the requested wait's outcome. It appears only when
-// the invocation requested the wait: an unrequested wait never
-// claims readiness.
+// WaitState appears only when rollout waiting was requested.
 type WaitState struct {
 	Requested bool     `json:"requested"`
 	Completed bool     `json:"completed"`
@@ -70,8 +57,6 @@ type Failure struct {
 	Message  string `json:"message"`
 }
 
-// newReport builds the report of one deploy invocation from the action
-// result and the classified failure, if execution did not complete.
 func newReport(definition string, result deployer.Result, failure *Failure) Report {
 	report := Report{
 		Definition:     definition,
@@ -116,7 +101,6 @@ func newReport(definition string, result deployer.Result, failure *Failure) Repo
 	return report
 }
 
-// writeReport writes one report in the selected format.
 func writeReport(w io.Writer, format string, report Report) error {
 	switch format {
 	case FormatText:
@@ -128,7 +112,6 @@ func writeReport(w io.Writer, format string, report Report) error {
 	}
 }
 
-// writeJSONReport writes the report as one parseable JSON document.
 func writeJSONReport(w io.Writer, report Report) error {
 	encoded, err := jsonv2.Marshal(report)
 	if err != nil {
@@ -142,7 +125,6 @@ func writeJSONReport(w io.Writer, report Report) error {
 	return nil
 }
 
-// writeTextReport writes the report as stable human-readable lines.
 func writeTextReport(w io.Writer, report Report) error {
 	var builder strings.Builder
 
@@ -183,8 +165,6 @@ func writeTextReport(w io.Writer, report Report) error {
 	return nil
 }
 
-// joinTargets renders waited target identities as a comma-separated
-// namespace/name list.
 func joinTargets(targets []Target) string {
 	parts := make([]string, 0, len(targets))
 	for _, target := range targets {

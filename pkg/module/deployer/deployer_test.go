@@ -906,6 +906,43 @@ func TestDeployApplyFailureRetainsOwner(t *testing.T) {
 	g.Expect(payloadApplies).To(Equal(1))
 }
 
+func TestApplyRejectsMissingContainersBeforeWrites(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		definition string
+		template   string
+		message    string
+	}{
+		{
+			name:       "main container",
+			definition: literalControllerDefinitionYAML,
+			template:   strings.Replace(composeTemplateYAML, "name: manager", "name: other", 1),
+			message:    `container "manager" not found`,
+		},
+		{
+			name:       "init container",
+			definition: strings.Replace(literalControllerDefinitionYAML, "      container:", "      initContainer:\n        name: bootstrap\n      container:", 1),
+			template:   composeTemplateYAML,
+			message:    `init container "bootstrap" not found`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g := NewWithT(t)
+			fixture := newPrepareCluster(t)
+			target := newTestDeployer(t, testOptions(), fixture, composeRoot(t, tc.definition, tc.template))
+			result, err := target.Apply(t.Context())
+			g.Expect(err).To(MatchError(ContainSubstring(tc.message)))
+			g.Expect(result.Attempted).To(Equal(StageRender))
+			g.Expect(result.Completed).To(Equal(StageLoad))
+			g.Expect(result.Owner).To(BeNil())
+			g.Expect(fixture.applies).To(BeEmpty())
+		})
+	}
+}
+
 // TestLoadRenderComposeRealServices proves the full offline chain
 // through the real loader, the real Helm backend, and the real payload
 // apply over the fake cluster: a chart on disk renders through the

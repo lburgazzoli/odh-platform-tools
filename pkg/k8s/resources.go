@@ -26,25 +26,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// DecodeResources decodes a YAML stream — one or more documents
-// separated by --- — into unstructured resources, preserving document
-// order. Empty documents and documents without a kind are skipped;
-// anything undecodable fails. It delegates to the framework's shared
-// document decoder, the same resource decoding the render actions use.
+// DecodeResources decodes YAML documents in order, skipping empty or kind-less
+// documents. Unknown kinds are supported.
 func DecodeResources(content []byte) ([]unstructured.Unstructured, error) {
-	// An empty scheme suffices: decoding into unstructured never
-	// consults the type registry, so any group/version/kind —
-	// including unknown ones — decodes exactly as it would with a
-	// populated scheme.
+	// Unstructured decoding does not require registered types.
 	decoder := serializer.NewCodecFactory(runtime.NewScheme()).UniversalDeserializer()
 
 	return fwresources.Decode(decoder, content)
 }
 
-// Is reports whether candidate and target identify the same object:
-// equal group/version/kind, namespace, and name. An object carrying no
-// group/version/kind never matches, so a freshly built typed object
-// must stamp one first.
+// Is compares GVK, namespace, and name. An empty GVK never matches.
 func Is(candidate client.Object, target client.Object) bool {
 	candidateGVK := candidate.GetObjectKind().GroupVersionKind()
 	targetGVK := target.GetObjectKind().GroupVersionKind()

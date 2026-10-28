@@ -1,7 +1,4 @@
-// Package helm builds the native manifest-kit Helm renderer for
-// Helm-based module definitions. Construction is its whole job: the
-// shared rendering service in the parent renderer package drives the
-// returned renderer through the shared engine, ordering, and guard.
+// Package helm constructs native Helm renderers.
 package helm
 
 import (
@@ -20,24 +17,9 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer/source"
 )
 
-// New builds the native Helm renderer for the module described by
-// definition, whose file was loaded from definitionFile: the chart
-// entry resolves against the definition file's directory, the release
-// name is the module's metadata.name, and namespace — the release
-// namespace, exposed to chart templates as .Release.Namespace without
-// filling metadata.namespace — is passed already resolved. Authored
-// literal values decode lazily inside the source's own values
-// function, so a malformed entry surfaces as a render failure, not a
-// construction failure.
-//
-// The explicit flags preserve the old framework action's effective
-// struct-valued options: strict templates, and no renderer-added
-// content hash or source annotations, where the native renderer would
-// default the content hash to true. The renderer carries no cache and
-// no client, never resolves replacement strings, never sets values
-// beyond the definition's authored literals, and never adds repository
-// configuration, so descriptor images and environment entries cannot
-// affect the output.
+// New resolves the chart relative to definitionFile and uses the module name
+// as the release name. Namespace sets .Release.Namespace, not object metadata.
+// Only authored literal chart values are used.
 func New(
 	definition toolApi.PlatformModuleDefinition,
 	definitionFile string,
@@ -56,14 +38,6 @@ func New(
 	return native, nil
 }
 
-// helmSource builds the native Helm chart source for a definition:
-// the chart entry resolves against the definition file's directory,
-// the release name is the module's metadata.name, and the release
-// namespace carries the resolved namespace without filling
-// metadata.namespace. Authored literal values decode lazily inside
-// the source's own values function — the renderer's error channel —
-// so a malformed entry surfaces as a render failure, not a new error
-// seam here.
 func helmSource(
 	definition toolApi.PlatformModuleDefinition,
 	definitionFile string,
@@ -92,16 +66,7 @@ func helmSource(
 	return source
 }
 
-// decodeHelmValues decodes authored literal chart values to the map
-// the Helm renderer consumes. Each entry is raw JSON exactly as
-// authored — placeholder-looking text stays literal — and the round
-// trip cannot fail for content that loaded successfully, but a
-// malformed entry is reported rather than dropped.
-//
-// A null entry is represented by apiextensions JSON with empty Raw —
-// its UnmarshalJSON leaves Raw untouched for null while MarshalJSON
-// emits null again — so empty Raw decodes as JSON null, not as an EOF
-// failure.
+// A JSON null is stored as empty Raw by apiextensions.JSON.
 func decodeHelmValues(values map[string]apiextensionsv1.JSON) (enginetypes.Values, error) {
 	result := make(enginetypes.Values, len(values))
 

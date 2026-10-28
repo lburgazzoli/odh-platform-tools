@@ -22,34 +22,8 @@ import (
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
-// Apply is the default apply-only orchestration: Load, then Render,
-// then Deploy, over one invocation context derived from the caller's
-// context and the options' timeout. The default invocation is the
-// whole command on its own — a successful apply is command success,
-// with no convergence check, no workload monitoring, and no readiness
-// claim. When Options.Wait is set, the opt-in controller rollout
-// wait runs once after the successful apply, over the same
-// still-live invocation context; see Wait.
-//
-// The caller's cancellation and the invocation settings are checked
-// before the invocation timer is constructed, so an already-cancelled
-// caller fails with its own cancellation identity and a nonpositive
-// timeout stays an options error instead of becoming an artificial
-// deadline error. The invocation context stays alive until Apply
-// returns: no worker is abandoned and no context is cancelled early.
-//
-// The returned Result reports what the invocation confirmed — the
-// attempted and last-successful stages, the confirmed owner identity,
-// and apply completion — and the returned error preserves its cause
-// chain through Unwrap for callers that classify failures. Neither
-// ever echoes authored definition, dotenv, or API-returned values;
-// the framework action's own logging is already discarded by the
-// payload apply, and this orchestration adds no logging of its own.
-//
-// An explicitly requested controller wait is layered after Deploy
-// through Options.Wait; the default invocation performs and reports
-// apply only. Apply requires a fresh Deployer: it rejects a Deployer
-// whose stages were already driven, directly or by a previous Apply.
+// Apply runs Load, Render, Deploy, and the requested Wait under Options.Timeout.
+// It requires a fresh deployer and reports confirmed state after a failure.
 func (r *Deployer) Apply(ctx context.Context) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
@@ -81,11 +55,7 @@ func (r *Deployer) Apply(ctx context.Context) (Result, error) {
 		return r.report(StageDeploy, err)
 	}
 
-	// The opt-in wait runs once, after the successful apply, over the
-	// same still-live invocation context; a wait failure is a runtime
-	// error that retains everything the deploy confirmed, deploy
-	// included: the completed stage stays deploy, because the apply
-	// succeeded — only the wait failed.
+	// A wait failure retains the completed deployment in the result.
 	if r.options.Wait {
 		if err := r.Wait(ctx); err != nil {
 			return r.reportCompleted(StageDeploy, StageDeploy, err)
@@ -95,9 +65,6 @@ func (r *Deployer) Apply(ctx context.Context) (Result, error) {
 	return r.report(StageDeploy, nil)
 }
 
-// report snapshots the deployer's confirmed state as the invocation
-// result beside the stage error. The last-successful stage is the
-// attempted one on success and the stage preceding it on failure.
 func (r *Deployer) report(attempted Stage, err error) (Result, error) {
 	completed := attempted
 	if err != nil {
@@ -107,10 +74,6 @@ func (r *Deployer) report(attempted Stage, err error) (Result, error) {
 	return r.reportCompleted(attempted, completed, err)
 }
 
-// reportCompleted snapshots the deployer's confirmed state with the
-// completed stage stated explicitly. Stage failures use report's
-// preceding-stage rule; a wait failure passes deploy for both — the
-// apply already completed, and only the wait failed.
 func (r *Deployer) reportCompleted(attempted Stage, completed Stage, err error) (Result, error) {
 	return Result{
 		Attempted:      attempted,

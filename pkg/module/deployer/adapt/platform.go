@@ -16,19 +16,11 @@ import (
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
-// Platform config ConfigMap naming and data keys, mirroring the
-// operator's constants exactly.
 const (
-	// platformConfigPrefix is prepended to the module name to form
-	// the ConfigMap name: odh-<modulename>-config.
 	platformConfigPrefix = "odh-"
 
-	// platformConfigSuffix is appended to the module name.
 	platformConfigSuffix = "-config"
 
-	// platformVersionKey is the data key containing the platform
-	// version. This is platform-managed and reconciled back if
-	// modified externally.
 	platformVersionKey = "platformVersion"
 
 	certManagerIssuerRefNameKey     = "CERT_MANAGER_ISSUER_REF_NAME"
@@ -38,10 +30,7 @@ const (
 	certManagerIstioCACertPathKey   = "CERT_MANAGER_ISTIO_CA_CERT_PATH"
 )
 
-// platformManagedCertManagerKeys are removed from an existing module
-// ConfigMap before the platform keys are merged. The operator manages
-// them for XKS bootstrap; this tool never sets them but removes stale
-// ones exactly as upstream does.
+// Remove stale keys reserved for the operator's xKS bootstrap.
 var platformManagedCertManagerKeys = []string{
 	certManagerIssuerRefNameKey,
 	certManagerIssuerRefKindKey,
@@ -50,43 +39,23 @@ var platformManagedCertManagerKeys = []string{
 	certManagerIstioCACertPathKey,
 }
 
-// PlatformConfigInjector is the engine post-renderer that creates or
-// merges the per-module platform config ConfigMap: the
-// odh-<module>-config ConfigMap is created in the applications
-// namespace, or the platform-managed keys are merged into the module's
-// own ConfigMap of that name co-located in the applications namespace.
-// Existing module-owned data keys are preserved.
-//
-// An existing ConfigMap matches on the full object identity —
-// group/version/kind, namespace, and name, with the last exact match
-// winning — and is merged through a typed round-trip: a
-// malformed data block fails the render instead of being repaired,
-// and unknown fields may be dropped. The deployer supplies the canonical
-// parsed platform version string directly, so no release plumbing is
-// carried.
+// PlatformConfigInjector creates or merges odh-<module>-config in Namespace.
+// The last exact GVK/namespace/name match wins. Existing data is preserved
+// except for platform-managed keys; typed conversion may drop unknown fields.
 type PlatformConfigInjector struct {
-	// Definition is the loaded module definition. Its name forms the
-	// ConfigMap name; the deployer owns the definition's lifetime.
+	// Definition supplies the module name.
 	Definition *toolApi.PlatformModuleDefinition
 
-	// Namespace is where the platform config ConfigMap is
-	// created and where a module-rendered one is matched for merging.
+	// Namespace is the ConfigMap's namespace.
 	Namespace string
 
-	// PlatformVersion is the canonical platform version string the
-	// deployer parsed and supplies to both the injector and deploy.
+	// PlatformVersion is the canonical parsed version.
 	PlatformVersion string
 }
 
-// The injector's Run method value is a real engine post-renderer.
 var _ enginetypes.PostRenderer = (*PlatformConfigInjector)(nil).Run
 
-// Run implements the engine post-renderer contract: the platform
-// config ConfigMap is built fresh and a rendered ConfigMap of the same
-// identity — when one exists — is decoded over it, so the found one's
-// data wins; the platform keys are merged once and the result replaces
-// the match in place, or is appended when none matched. On error no
-// successful output is returned.
+// Run updates the last matching ConfigMap or appends one when absent.
 func (inj *PlatformConfigInjector) Run(
 	_ context.Context,
 	resources []unstructured.Unstructured,
@@ -98,14 +67,6 @@ func (inj *PlatformConfigInjector) Run(
 	cm.Name = platformConfigPrefix + name + platformConfigSuffix
 	cm.Namespace = inj.Namespace
 
-	// One reverse search: the last resource of the created ConfigMap's
-	// identity — k8s.Is compares group/version/kind, namespace, and
-	// name — wins. Same-name lookalikes of another group/version/kind
-	// or namespace are not candidates. The match is decoded over the
-	// created ConfigMap through the typed round-trip: the found one's
-	// identity and data replace the created one's, a malformed data
-	// block fails the render instead of being repaired, and unknown
-	// fields may be dropped.
 	match := -1
 
 	for i := len(resources) - 1; i >= 0; i-- {

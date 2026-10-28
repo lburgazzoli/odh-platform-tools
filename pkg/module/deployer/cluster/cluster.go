@@ -1,25 +1,4 @@
-// Package cluster connects the deploy command to a Kubernetes cluster
-// through the standard cli-runtime configuration: the same
-// RESTClientGetter the root command's inherited ConfigFlags carry.
-//
-// The connection is invocation-scoped and lazy. Connect builds one
-// controller-runtime client from a copied standard ToRESTConfig
-// result — preserving credentials, TLS, impersonation, exec auth,
-// request-timeout, and loader behavior — without contacting the
-// server: discovery and the REST mapper resolve on first use. When
-// the standard configuration carries no request timeout, Connect
-// bounds every request to the invocation's remaining deadline, so
-// client-internal discovery requests issued with background contexts
-// of their own are still bounded; a user-provided request timeout is
-// never extended. Calls that carry a context keep it.
-//
-// Required caller RBAC for a full deploy: discovery access
-// (system:discovery or aggregated equivalent), get on namespaces, get
-// on apiextensions.k8s.io customresourcedefinitions, and the
-// create/get/update/patch permissions the framework deploy action
-// needs for the rendered resources plus the persisted
-// platformmoduledefinitions (including finalizers update for
-// blockOwnerDeletion).
+// Package cluster builds Kubernetes clients from standard cli-runtime configuration.
 package cluster
 
 import (
@@ -43,26 +22,14 @@ import (
 // errNilGetter marks a missing standard configuration getter.
 var errNilGetter = errors.New("kubernetes configuration getter is nil")
 
-// Connection holds the single invocation-scoped controller-runtime
-// client a deploy uses: uncached, built with default options, and
-// carrying its own lazy REST mapper that reloads missing groups on
-// demand — including groups served by CRDs established after the
-// first mapping. It is created by Connect and never reused across
-// invocations.
+// Connection holds an uncached client with a lazy REST mapper.
 type Connection struct {
 	client crclient.Client
 }
 
-// Connect builds a connection from the standard cli-runtime getter.
-// It performs no bootstrap, payload, or cleanup writes and contacts
-// no server: the client and its mapper are lazy. The standard REST
-// configuration is copied so the connection never mutates the
-// caller's getter state; credentials stay inside the standard client
-// objects. When the copied configuration carries no request timeout,
-// the invocation context's remaining deadline becomes the per-request
-// bound — client-internal discovery requests issued with background
-// contexts stay bounded, and a user --request-timeout is preserved
-// exactly.
+// Connect creates a lazy, uncached client without changing the getter's configuration.
+// When no request timeout is configured, it uses the remaining invocation budget
+// as a per-request limit. Background discovery can outlive the invocation deadline.
 func Connect(ctx context.Context, getter genericclioptions.RESTClientGetter) (*Connection, error) {
 	if getter == nil {
 		return nil, fmt.Errorf("resolving Kubernetes configuration: %w", errNilGetter)
@@ -104,23 +71,13 @@ func Connect(ctx context.Context, getter genericclioptions.RESTClientGetter) (*C
 	return &Connection{client: client}, nil
 }
 
-// NewWithClient wraps an existing controller-runtime client as a
-// connection. Connect remains the production constructor; this seam
-// exists for callers that exercise connection consumers against a
-// client they construct themselves — the offline tests drive the
-// framework deploy action through the controller-runtime fake client
-// this way. The client is used exactly as given: no copy, timeout
-// adjustment, or scheme change is made, so the connection's behavior
-// is the wrapped client's behavior.
+// NewWithClient wraps an existing client unchanged.
 func NewWithClient(client crclient.Client) *Connection {
 	return &Connection{client: client}
 }
 
-// ResolveNamespace resolves the effective namespace from the standard
-// kubeconfig loader: an explicit getter override, the selected
-// context's namespace, or the standard default. It is local
-// preparation — no client is constructed and no request is issued —
-// so it can run before Connect.
+// ResolveNamespace uses the standard local kubeconfig resolution:
+// explicit override, context namespace, then default.
 func ResolveNamespace(getter genericclioptions.RESTClientGetter) (string, error) {
 	if getter == nil {
 		return "", fmt.Errorf("resolving namespace: %w", errNilGetter)
@@ -139,10 +96,7 @@ func (c *Connection) Client() crclient.Client {
 	return c.client
 }
 
-// NamespaceExists reports whether the namespace exists. It is a
-// read-only check: no namespace is ever created or mutated, and an
-// absent namespace is a plain false, leaving the caller to decide
-// fatality. Errors other than absence are returned as-is.
+// NamespaceExists returns false for NotFound and propagates other errors.
 func (c *Connection) NamespaceExists(ctx context.Context, name string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err

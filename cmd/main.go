@@ -23,10 +23,6 @@ func main() {
 	os.Exit(run())
 }
 
-// exitCoder is the command-neutral exit-code contract: any command
-// error exposing the process exit status of its classified outcome.
-// Both lint's and deploy's ExitError implement it, so the root never
-// inspects a command-specific type.
 type exitCoder interface {
 	ExitCode() int
 }
@@ -56,13 +52,7 @@ func run() int {
 	return lint.ExitSuccess
 }
 
-// NewRootCommand returns the binary root command with exactly one
-// registered command tree, `module lint` and `module deploy`. The
-// standard Kubernetes ConfigFlags are registered once here, on the
-// root's persistent flags, and the same getter is forwarded to the
-// deploy composition: subcommands never register their own
-// kubeconfig/context/namespace/auth flags. Legacy descriptor
-// override flags are rejected as unknown flags.
+// NewRootCommand registers module commands and shared Kubernetes flags.
 func NewRootCommand(lintRun lint.Run, deployAction deploycli.Deploy) *cobra.Command {
 	flags := genericclioptions.NewConfigFlags(true)
 
@@ -75,9 +65,6 @@ func NewRootCommand(lintRun lint.Run, deployAction deploycli.Deploy) *cobra.Comm
 		SilenceErrors: true,
 	}
 
-	// Standard kubectl-style flags, inherited by every subcommand:
-	// --kubeconfig, --context, --cluster, --server, --namespace,
-	// --user, --token, --tls-* and friends.
 	flags.AddFlags(root.PersistentFlags())
 
 	root.AddCommand(climodule.NewModuleCommand(lintRun, deployAction, flags))
@@ -85,10 +72,7 @@ func NewRootCommand(lintRun lint.Run, deployAction deploycli.Deploy) *cobra.Comm
 	return root
 }
 
-// ExitCode maps one command execution error to its process exit
-// status: classified outcomes keep their own code through the
-// neutral exit contract, and every other command or flag failure is
-// a usage failure.
+// ExitCode preserves classified exit codes; unclassified failures are usage errors.
 func ExitCode(err error) int {
 	if err == nil {
 		return lint.ExitSuccess

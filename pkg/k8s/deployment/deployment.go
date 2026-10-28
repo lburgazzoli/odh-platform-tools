@@ -14,11 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package deployment customizes typed Deployment workloads: named
-// container image and env mutations, collected as ordered options and
-// applied in place by Customize. The helpers own the mechanics only —
-// target-selection policy, image resolution, and skip rules stay with
-// callers.
+// Package deployment applies ordered mutations to typed Deployments.
 package deployment
 
 import (
@@ -27,13 +23,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 )
 
-// Customize applies the collected customization options to the typed
-// Deployment in place. Requests apply in the order their options were
-// passed; the first error stops the pass and earlier mutations are
-// kept — there is no rollback. A nil Deployment returns an error, nil
-// options are ignored, and a non-nil Deployment without options
-// succeeds unchanged. There is no change count: a successful pass may
-// have changed nothing.
+// Customize mutates the Deployment in option order, stopping on the first error.
+// Earlier mutations are retained. Nil input fails; nil options are ignored.
 func Customize(d *appsv1.Deployment, opts ...CustomizeOption) error {
 	if d == nil {
 		return errors.New("cannot customize a nil Deployment")

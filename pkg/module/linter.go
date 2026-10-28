@@ -1,6 +1,4 @@
-// Package module composes the reusable module services into the
-// public lint action. The services stay independently callable: this
-// facade only wires them, it does not embed or rename them.
+// Package module wires the reusable module services.
 package module
 
 import (
@@ -13,11 +11,7 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
 
-// NewLinter returns the Cobra-free module lint action wired with the
-// concrete reusable loader, the centralized rendering service, and
-// the operator-parity checks. Callers pass a plain linter.Options
-// struct and a context; the action itself performs no flag parsing,
-// printing, or environment resolution.
+// NewLinter supplies local loading, rendering, and the default manifest checks.
 func NewLinter() *linter.Action {
 	return linter.NewAction(
 		linter.DefinitionLoad(loader.LoadFromPath),

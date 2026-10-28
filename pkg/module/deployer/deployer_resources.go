@@ -36,16 +36,8 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/util/retry"
 )
 
-// errNilArgument marks a nil payload-apply argument; it carries identity
-// through the shared error's cause chain for errors.Is and its text
-// never echoes API-returned values.
 var errNilArgument = errors.New("nil deploy argument")
 
-// Fixed safe operation summaries, one per phase. They intentionally
-// omit server-returned detail, which stays reachable through the
-// cause chain: failures before the action runs are classified by
-// moduleerrors.ErrDeployPrepare, action failures by
-// moduleerrors.ErrDeployApply.
 const (
 	prepareFailureMessage = "preparing the module deployment failed"
 	applyFailureMessage   = "applying the module resources failed"
@@ -63,11 +55,8 @@ func defaultPayloadRetryOptions() retry.Options {
 	}
 }
 
-// isRetriablePayloadError retries Kubernetes failures that can recover
-// without changing the requested payload. Discovery no-match errors
-// cover the short interval after a bundled CRD is applied and before
-// its API becomes available; transient API responses may recover on a
-// later attempt. Cancellation and all other errors are terminal.
+// The framework exposes only its first failure as a cause. Later permanent
+// failures cannot veto retries selected by an earlier transient error.
 func isRetriablePayloadError(err error) bool {
 	switch {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
@@ -84,52 +73,9 @@ func isRetriablePayloadError(err error) bool {
 	}
 }
 
-// applyResources applies the rendered module resources through the
-// actual framework deploy action, with the persisted definition as
-// the live owner, under the invocation's effective field manager, all
-// read from the receiver. It never publishes an owner itself and
-// never prunes.
-//
-// The flow is minimal: normalize the persisted owner's runtime type,
-// then invoke the action with the whole payload, retrying the whole
-// action on failure. The action's default SortByApplyOrder — the
-// same engine apply-order post-renderer the shared render pipeline
-// uses — places Namespaces and CRDs first and routes CRDs through
-// its unowned CRD path, so no payload partition or CRD
-// establishment wait exists here: a bundled custom resource whose
-// CRD was just created may fail on the first attempt and succeed on
-// a retry, exactly as the operator behaves. CRD establishment
-// waiting stays only in the deployer's definition-CRD preparation.
-// Rendered Namespaces follow normal framework create/update behavior
-// and stay unowned; a payload referencing an API the server does not
-// serve fails through the action's own error after earlier writes,
-// reported as partial state, and there is no rollback.
-//
-// The action runs without the deploy cache for up to five attempts on
-// transient API or discovery failures, stopping on success,
-// on a terminal error, on the invocation's cancellation or deadline,
-// or on exhaustion. Retries
-// reapply already-successful resources — the writes are idempotent
-// server-side applies and there is no rollback — and only the
-// payload action retries: load, render, validation, and preparation
-// failures are never retried.
-//
-// The field manager is the invocation's effective server-side-apply
-// manager, already resolved and validated ahead of the stage: it
-// reaches the framework through WithFieldOwner, so it covers the
-// ordinary payload apply — including the manager-derived fallback
-// part-of label on objects that author none and the framework's
-// deploy metric label — while bundled payload CRDs keep the
-// framework's own fixed manager and fallback label.
-//
-// The framework's continue-on-error report of the final attempt is
-// the stage's error contract, exactly as in the operator, and its
-// force-SSA adoption semantics govern foreign-owned objects. The
-// returned error is a safe shared module error: its category names
-// the phase — moduleerrors.ErrDeployPrepare before the action runs,
-// moduleerrors.ErrDeployApply for the action itself — and the
-// framework's raw report stays reachable through Unwrap for
-// errors.Is and errors.As.
+// applyResources retries the whole framework action without a deploy cache.
+// Namespaces and CRDs remain unowned; bundled CRDs keep the framework's field
+// manager. Successful writes survive later failures and are reapplied on retry.
 func (r *Deployer) applyResources(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return moduleerrors.New(
@@ -147,9 +93,6 @@ func (r *Deployer) applyResources(ctx context.Context) error {
 		)
 	}
 
-	// The stage receives its configuration prevalidated; an empty
-	// manager is a caller defect, never a request for the framework's
-	// own default. It fails before any client access.
 	if r.options.FieldManager == "" {
 		return moduleerrors.New(
 			moduleerrors.ErrDeployPrepare,
@@ -158,9 +101,7 @@ func (r *Deployer) applyResources(ctx context.Context) error {
 		)
 	}
 
-	// The persisted owner's runtime GVK is normalized from the
-	// client scheme before the action reads the instance: scheme
-	// registration alone does not populate TypeMeta.
+	// Scheme registration alone does not populate TypeMeta.
 	if err := fwresources.EnsureGroupVersionKind(r.client.Scheme(), r.owner); err != nil {
 		return moduleerrors.New(
 			moduleerrors.ErrDeployPrepare,
@@ -169,39 +110,19 @@ func (r *Deployer) applyResources(ctx context.Context) error {
 		)
 	}
 
-	// The invocation client goes to the action: the framework's own
-	// ownership, unmanaged, and adoption semantics apply unchanged,
-	// matching the operator. The action carries no deploy cache.
 	bridge := adapt.NewControllerBridge(r.client)
 
-	// The bounded retry: the whole action reruns on transient failures
-	// through the shared loop. The explicit policy sets the attempt
-	// limit, capped exponential delay, and retry classification.
 	err := retry.OnError(
 		ctx,
 		func(attemptCtx context.Context) error {
-			// A fresh action configuration per attempt. Defaults keep
-			// the framework field ownership, metadata, customizers, SSA
-			// mode, the default apply-order sort (Namespaces and CRDs
-			// first), and the CRD field owner with ForceOwnership;
-			// WithContinueOnError finishes remaining resources and
-			// reports; WithFieldOwner names this invocation's manager
-			// for the ordinary payload apply and its fallback part-of
-			// label, leaving the bundled-CRD path on the framework's
-			// fixed manager.
 			action := fwdeploy.NewAction(
 				fwdeploy.WithContinueOnError(),
 				fwdeploy.WithFieldOwner(r.options.FieldManager),
 			)
 
-			// The action's own logs can echo server-returned error
-			// text, so it runs under a discarded logger.
+			// Suppress framework logs that may contain raw server error text.
 			quietCtx := logf.IntoContext(attemptCtx, logr.Discard())
 
-			// One action invocation per attempt: the invocation client,
-			// the controller bridge, the persisted definition as the
-			// live instance, the runtime release, and the whole rendered
-			// payload. Conditions stay unset and SkipDeploy stays false.
 			return action(quietCtx, &odhTypes.ReconciliationRequest{
 				Client:     r.client,
 				Controller: bridge,
@@ -215,7 +136,7 @@ func (r *Deployer) applyResources(ctx context.Context) error {
 	if err != nil {
 		return moduleerrors.New(
 			moduleerrors.ErrDeployApply,
-			applyFailureMessage,
+			safeFailureMessage(applyFailureMessage, err),
 			moduleerrors.WithCause(err),
 		)
 	}

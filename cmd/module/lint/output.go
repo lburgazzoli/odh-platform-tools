@@ -17,10 +17,7 @@ const (
 	StatusFailed   = "failed"
 )
 
-// Report is the stable wire form of one executed lint invocation:
-// the definition it ran against, the aggregated outcome, every
-// finding, and the classified failure when execution did not
-// complete.
+// Report is the CLI's lint result.
 type Report struct {
 	Definition  string       `json:"definition"`
 	Status      string       `json:"status"`
@@ -49,9 +46,6 @@ type Failure struct {
 	Message  string `json:"message"`
 }
 
-// newReport builds the report of one lint invocation from the
-// validator result and the classified failure, if execution did not
-// complete.
 func newReport(definition string, result linter.Result, failure *Failure) Report {
 	report := Report{
 		Definition:  definition,
@@ -92,7 +86,6 @@ func newReport(definition string, result linter.Result, failure *Failure) Report
 	return report
 }
 
-// writeReport writes one report in the selected format.
 func writeReport(w io.Writer, format string, report Report) error {
 	switch format {
 	case FormatText:
@@ -104,7 +97,6 @@ func writeReport(w io.Writer, format string, report Report) error {
 	}
 }
 
-// writeJSONReport writes the report as one parseable JSON document.
 func writeJSONReport(w io.Writer, report Report) error {
 	encoded, err := jsonv2.Marshal(report)
 	if err != nil {
@@ -118,7 +110,6 @@ func writeJSONReport(w io.Writer, report Report) error {
 	return nil
 }
 
-// writeTextReport writes the report as stable human-readable lines.
 func writeTextReport(w io.Writer, report Report) error {
 	var builder strings.Builder
 
@@ -150,9 +141,6 @@ func (d Diagnostic) String() string {
 	return fmt.Sprintf("%s %s: %s", d.Severity, d.ID, d.Message)
 }
 
-// path returns the object path the diagnostic refers to, such as
-// "apps/v1, Kind=Deployment/default/synthetic-controller", or an
-// empty string for findings not attached to one object.
 func (d Diagnostic) path() string {
 	var parts []string
 

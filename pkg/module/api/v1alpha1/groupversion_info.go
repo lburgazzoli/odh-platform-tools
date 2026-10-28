@@ -14,10 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package v1alpha1 is the canonical module definition API: the
-// config.opendatahub.io/v1alpha1 PlatformModuleDefinition a module
-// author writes as a file and the same object, once persisted, the
-// deployment owner.
+// Package v1alpha1 defines module files and their persisted deployment owners.
 //
 // +kubebuilder:object:generate=true
 // +groupName=config.opendatahub.io

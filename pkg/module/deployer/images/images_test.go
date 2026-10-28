@@ -390,6 +390,22 @@ func snapshotDefinition(relatedImages []string, image string) toolApi.PlatformMo
 	return definition
 }
 
+func TestSnapshotInitImageSources(t *testing.T) {
+	unsetEnv(t, "INIT_IMAGE")
+	g := NewWithT(t)
+	definition := snapshotDefinition(nil, "controller:literal")
+	definition.Spec.Controller.Deployment.InitContainer = &toolApi.ContainerTarget{Image: "{{INIT_IMAGE}}"}
+	path := writeSources(t, "images.env", "INIT_IMAGE=registry.example/init:file\n")
+	g.Expect(Snapshot(path, definition)).To(Equal(map[string]string{"INIT_IMAGE": "registry.example/init:file"}))
+	t.Setenv("INIT_IMAGE", "registry.example/init:env")
+	g.Expect(Snapshot(path, definition)).To(Equal(map[string]string{"INIT_IMAGE": "registry.example/init:env"}))
+	t.Setenv("INIT_IMAGE", "")
+	g.Expect(Snapshot(path, definition)).To(BeEmpty())
+	definition.Spec.Controller.Deployment.InitContainer.Image = ""
+	g.Expect(Snapshot(path, definition)).To(BeEmpty())
+	g.Expect(definition.Spec.RelatedImages).To(BeEmpty())
+}
+
 // TestSnapshotSelectsDeclaredAndContainerKeys proves the snapshot
 // requests exactly the declared related images plus the main
 // container's whole-token source key: every requested source resolves

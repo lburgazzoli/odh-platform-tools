@@ -19,6 +19,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	appsv1 "k8s.io/api/apps/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -26,7 +27,6 @@ import (
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
 )
 
-// Constants describing the definition envelope.
 const (
 	// APIVersion is the definition API version. It is the string form
 	// of GroupVersion.
@@ -53,10 +53,8 @@ const (
 	FormatKustomize Format = "kustomize"
 )
 
-// PlatformModuleDefinition describes a module: its custom resource
-// instance identity, its manifest source, and its controller
-// deployment. Authored as a file, it is also the persisted,
-// cluster-scoped deployment owner once installed.
+// PlatformModuleDefinition describes a module and becomes its cluster-scoped
+// deployment owner when persisted.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
@@ -75,6 +73,20 @@ type PlatformModuleDefinition struct {
 
 	// +optional
 	Status PlatformModuleDefinitionStatus `json:"status,omitzero"`
+}
+
+// ControllerDeploymentName returns the configured controller name,
+// falling back to the module name.
+func (d PlatformModuleDefinition) ControllerDeploymentName() string {
+	if name := d.Spec.Controller.Deployment.Name; name != "" {
+		return name
+	}
+	return d.Name
+}
+
+// IsControllerDeployment applies the shared controller selection rule.
+func (d PlatformModuleDefinition) IsControllerDeployment(gvk schema.GroupVersionKind, name string) bool {
+	return gvk == appsv1.SchemeGroupVersion.WithKind("Deployment") && name == d.ControllerDeploymentName()
 }
 
 // PlatformModuleDefinitionStatus is the observed state of a module
@@ -96,9 +108,7 @@ type PlatformModuleDefinitionList struct {
 	Items []PlatformModuleDefinition `json:"items"`
 }
 
-// PlatformModuleDefinitionSpec is the desired module state: the
-// custom resource instance the controller owns, the manifest backend
-// that renders it, and the controller deployment.
+// PlatformModuleDefinitionSpec configures the module identity, manifests, and controller.
 type PlatformModuleDefinitionSpec struct {
 	// +required
 	Instance Instance `json:"instance"`
@@ -113,16 +123,9 @@ type PlatformModuleDefinitionSpec struct {
 	Controller Controller `json:"controller"`
 }
 
-// Instance identifies the module's custom resource: the resource type
-// the module controller owns and the instance name that custom
-// resource would carry. Both are descriptive identity: nothing in
-// this tooling creates or looks up the custom resource, and rendering
-// never uses them — the Helm release name comes from metadata.name.
+// Instance describes the module CR identity. This tool does not create the CR.
 type Instance struct {
-	// Name is the module instance name. It is empty when the
-	// definition omits it or authors an explicit empty string; both
-	// are equivalent here, and the loader then defaults it to
-	// metadata.name.
+	// Name defaults to metadata.name when empty.
 	//
 	// +optional
 	Name string `json:"name,omitzero"`
@@ -133,9 +136,7 @@ type Instance struct {
 	Type ModuleType `json:"type"`
 }
 
-// ModuleType identifies the Module custom resource the module
-// controller owns. The wire members are lower-case group, version,
-// and kind strings.
+// ModuleType identifies the module CR's group, version, and kind.
 type ModuleType struct {
 	// +required
 	Group string `json:"group"`
@@ -152,18 +153,13 @@ func (t ModuleType) GroupVersionKind() schema.GroupVersionKind {
 	return schema.GroupVersionKind{Group: t.Group, Version: t.Version, Kind: t.Kind}
 }
 
-// String returns the module type in the schema.GroupVersionKind
-// format, matching the embedded GVK behavior of the previous wire
-// type.
+// String formats the module type as a GVK.
 func (t ModuleType) String() string {
 	return t.GroupVersionKind().String()
 }
 
-// Manifests selects a rendering backend and its single local input
-// directory. The block matching format may be omitted — its entry
-// path then defaults to the definition file's own directory — or
-// given with an empty path for the same co-located default; the other
-// block must be absent.
+// Manifests selects one local rendering backend. An omitted or empty path
+// uses the definition file's directory; the other backend block must be absent.
 type Manifests struct {
 	// +required
 	Format Format `json:"format"`
@@ -175,31 +171,15 @@ type Manifests struct {
 	Kustomize *KustomizeManifests `json:"kustomize,omitzero"`
 }
 
-// HelmManifests locates the Helm chart root, relative to the module
-// root, and carries authored chart values. The chart release name is
-// the definition metadata.name.
+// HelmManifests locates a chart and supplies literal values.
 type HelmManifests struct {
-	// Path is the chart root, relative to the module root. It is
-	// empty when the definition omits it or authors an explicit
-	// empty string; both are equivalent here, and the entry then
-	// defaults to the definition file's own directory — the
-	// co-located layout where Chart.yaml sits next to the definition
-	// file. Existence and shape of the chart are the render engine's
-	// to validate.
+	// Path is the chart root relative to the definition file; empty uses its directory.
 	//
 	// +optional
 	Path string `json:"path,omitzero"`
 
-	// Values are authored literal Helm values, merged over the chart
-	// defaults exactly as the operator carries its module handler
-	// values: chart defaults apply first and definition values
-	// override them. No interpolation, placeholder resolution, or
-	// secret handling exists here — {{NAME}}-looking text stays
-	// literal, matching the env contract. The canonical
-	// apiextensions JSON type carries the arbitrary authored
-	// content; the pinned controller-gen cannot deepcopy
-	// interface{}-valued maps, and it is the only representation
-	// whose CRD schema accepts every JSON value kind.
+	// Values override chart defaults without interpolation.
+	// JSON supports arbitrary values and controller-gen deepcopy generation.
 	//
 	// +optional
 	Values map[string]apiextensionsv1.JSON `json:"values,omitzero"`
@@ -208,14 +188,8 @@ type HelmManifests struct {
 // KustomizeManifests locates the directory containing
 // kustomization.yaml, relative to the module root.
 type KustomizeManifests struct {
-	// Path is the directory containing kustomization.yaml (or
-	// .yml), relative to the module root. It is empty when the
-	// definition omits it or authors an explicit empty string; both
-	// are equivalent here, and the entry then defaults to the
-	// definition file's own directory — the co-located layout where
-	// kustomization.yaml sits next to the definition file.
-	// Existence and shape of the entry are the render engine's to
-	// validate.
+	// Path locates the kustomization relative to the definition file;
+	// empty uses its directory.
 	//
 	// +optional
 	Path string `json:"path,omitzero"`
@@ -227,23 +201,14 @@ type Controller struct {
 	Deployment ControllerDeployment `json:"deployment"`
 }
 
-// ControllerDeployment names the controller Deployment and its
-// selected containers. The main container carries image and env
-// settings; the init container is selected by name and may carry an
-// image of its own.
+// ControllerDeployment selects the controller Deployment and its containers.
 type ControllerDeployment struct {
-	// Name is the controller Deployment name. It is empty when the
-	// definition omits it or authors an explicit empty string; both
-	// are equivalent here, and the deploy then falls back to the
-	// module's metadata.name when selecting the controller
-	// Deployment.
+	// Name defaults to the module's metadata.name when empty.
 	//
 	// +optional
 	Name string `json:"name,omitzero"`
 
-	// Container is the controller main container. An omitted block is
-	// materialized by the loader as a block named
-	// DefaultMainContainerName carrying no image.
+	// Container defaults to a block named DefaultMainContainerName with no image.
 	//
 	// +optional
 	Container *ContainerDefinition `json:"container,omitzero"`
@@ -252,65 +217,42 @@ type ControllerDeployment struct {
 	InitContainer *ContainerTarget `json:"initContainer,omitzero"`
 }
 
-// ContainerDefinition describes the controller's main container. The
-// image may be a literal pipeline-built value or a whole-value
-// {{VARIABLE}} reference; it must resolve at run time, and it also
-// overrides the init container selected by InitContainer unless that
-// target carries an image of its own.
+// ContainerDefinition configures the main controller container.
 type ContainerDefinition struct {
-	// Name is the main container name. It is empty when the
-	// definition omits it or authors an explicit empty string; both
-	// are equivalent here, and the main container then defaults to
-	// DefaultMainContainerName when the loader applies its defaults.
+	// Name defaults to DefaultMainContainerName when empty.
 	//
 	// +optional
 	Name string `json:"name,omitzero"`
 
-	// Image is the main container image. It may be a literal or a
-	// whole-value {{VARIABLE}} reference; its contents stay opaque
-	// here and are resolved by the deployer, never by lint. An image
-	// that does not resolve fails the render; the chart default is
-	// never kept silently.
+	// Image is a literal or whole {{VARIABLE}} token. It must resolve during deploy;
+	// lint does not resolve image sources.
 	//
 	// +required
 	Image string `json:"image"`
 
-	// Env declares explicit environment variables merged into the
-	// controller containers.
+	// Env is merged into the main and configured init containers.
 	//
 	// +optional
 	Env []EnvVar `json:"env,omitzero"`
 }
 
-// ContainerTarget selects one controller container by name and may
-// carry its own image: a resolved target image overrides the named
-// init container directly, and when the target carries no image the
-// resolved main image overrides it instead. The injected env vars
-// land on the main and init containers alike.
+// ContainerTarget selects an init container. Its image defaults to the main
+// image, and it receives the same injected environment variables.
 type ContainerTarget struct {
-	// Name is the init container name. It is empty when the
-	// definition omits it or authors an explicit empty string; both
-	// are equivalent here, and an init container requires an explicit
-	// name.
+	// Name is required when an init container is configured.
 	//
 	// +optional
 	Name string `json:"name,omitzero"`
 
-	// Image is the init container image, distinct from the main
-	// container's. It may be a literal or a whole-value {{VARIABLE}}
-	// reference; its contents stay opaque here and are resolved by the
-	// deployer, never by lint. When it is empty, the main container's
-	// image applies instead; the effective image must resolve, and an
-	// unresolved one fails the render.
+	// Image is a literal or whole {{VARIABLE}} token; empty uses the main image.
+	// The effective image must resolve during deploy.
 	//
 	// +optional
 	Image string `json:"image,omitzero"`
 }
 
-// EnvVar is one explicit main-container environment variable. Value
-// is a pointer so an absent value stays distinguishable from an
-// explicit empty string; the persisted schema keeps it optional and
-// nullable so all three states survive serialization and admission.
+// EnvVar is an injected variable. A nil Value preserves absent/null separately
+// from an explicitly empty string.
 type EnvVar struct {
 	// +required
 	Name string `json:"name"`

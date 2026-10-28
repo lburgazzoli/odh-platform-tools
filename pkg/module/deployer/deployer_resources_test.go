@@ -890,8 +890,7 @@ func TestApplyApplyErrorFailsStageWithFirstReport(t *testing.T) {
 	typed := applyError(g, err)
 	g.Expect(errors.Is(typed, moduleerrors.ErrDeployApply)).To(BeTrue())
 	g.Expect(errors.Is(typed, moduleerrors.ErrDeployPrepare)).To(BeFalse())
-	g.Expect(typed.Error()).To(Equal(applyFailureMessage))
-	g.Expect(typed.Error()).NotTo(ContainSubstring("Forbidden"))
+	g.Expect(typed.Error()).To(Equal(applyFailureMessage + ": Forbidden (configmaps/module-config)"))
 	g.Expect(typed.Error()).NotTo(ContainSubstring("secret-detail"))
 	g.Expect(apierrors.IsForbidden(typed.Unwrap())).To(BeTrue())
 
@@ -929,7 +928,7 @@ func TestApplyLookupErrorFailsStageWithFirstReport(t *testing.T) {
 	typed := applyError(g, err)
 	g.Expect(errors.Is(typed, moduleerrors.ErrDeployApply)).To(BeTrue())
 	g.Expect(errors.Is(typed, moduleerrors.ErrDeployPrepare)).To(BeFalse())
-	g.Expect(typed.Error()).To(Equal(applyFailureMessage))
+	g.Expect(typed.Error()).To(Equal(applyFailureMessage + ": ServiceUnavailable"))
 	g.Expect(typed.Error()).NotTo(ContainSubstring("unavailable-detail"))
 	g.Expect(apierrors.IsServiceUnavailable(typed.Unwrap())).To(BeTrue())
 }
@@ -997,12 +996,39 @@ func TestApplyDoesNotRetryTerminalFailure(t *testing.T) {
 
 	typed := applyError(g, err)
 	g.Expect(errors.Is(typed, moduleerrors.ErrDeployApply)).To(BeTrue())
-	g.Expect(typed.Error()).To(Equal(applyFailureMessage))
+	g.Expect(typed.Error()).To(Equal(applyFailureMessage + ": Forbidden (configmaps/module-config)"))
 	g.Expect(typed.Error()).NotTo(ContainSubstring("secret-detail"))
 	g.Expect(apierrors.IsForbidden(typed.Unwrap())).To(BeTrue())
 
 	// Forbidden is terminal, so only the first action runs.
 	g.Expect(writes.count("apply " + moduleConfigMapIdentity())).To(Equal(1))
+}
+
+// The framework preserves only the first failure as a cause. A later
+// terminal error therefore cannot influence retry classification.
+func TestApplyMixedFailuresUseFirstReportedCause(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+	second := strings.Replace(configMapYAML, "module-config", "z-permanent", 1)
+	secondID := strings.Replace(moduleConfigMapIdentity(), "module-config", "z-permanent", 1)
+	harness := &fakeCluster{
+		scheme:  testScheme(t),
+		objects: []crclient.Object{liveNamespace()},
+		applyErrors: map[string]error{
+			moduleConfigMapIdentity(): apierrors.NewServiceUnavailable("SECRET-transient"),
+			secondID:                  apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, "z-permanent", errors.New("SECRET-permanent")),
+		},
+	}
+	connection, writes := harness.connect(t)
+	target := payloadTarget(connection, newDefinition(), newRelease(), payload(t, g, configMapYAML, second), defaultFieldManager)
+	target.payloadRetryOptions = testRetryPolicy(2, time.Millisecond)
+	err := target.applyResources(t.Context())
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(apierrors.IsServiceUnavailable(err)).To(BeTrue())
+	g.Expect(apierrors.IsForbidden(err)).To(BeFalse())
+	g.Expect(err.Error()).To(Equal(applyFailureMessage + ": ServiceUnavailable"))
+	g.Expect(writes.count("apply " + moduleConfigMapIdentity())).To(Equal(2))
+	g.Expect(writes.count("apply " + secondID)).To(Equal(2))
 }
 
 // TestApplyStopsRetryingWhenBackoffIsCancelled proves the invocation's

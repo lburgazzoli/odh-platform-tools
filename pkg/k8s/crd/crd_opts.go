@@ -32,9 +32,7 @@ type WaitOptions struct {
 	PollInterval time.Duration
 }
 
-// ApplyTo implements WaitOption, so a whole WaitOptions can
-// be passed as an option itself — a bundled preset. Non-positive
-// fields are ignored, keeping the target's values.
+// ApplyTo copies positive fields, preserving defaults for non-positive values.
 func (opts WaitOptions) ApplyTo(target *WaitOptions) {
 	if opts.PollInterval > 0 {
 		target.PollInterval = opts.PollInterval
@@ -45,9 +43,7 @@ func (opts WaitOptions) ApplyTo(target *WaitOptions) {
 // recorded defaults; a nil option is ignored.
 type WaitOption = option.Option[WaitOptions]
 
-// WithPollInterval sets the delay between establishment polls; the
-// first poll stays immediate. A non-positive interval is ignored,
-// keeping the default.
+// WithPollInterval sets a positive interval; non-positive values are ignored.
 func WithPollInterval(interval time.Duration) WaitOption {
 	return option.FunctionalOption[WaitOptions](func(target *WaitOptions) {
 		if interval > 0 {

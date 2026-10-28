@@ -14,28 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package deployer composes the reusable module services into the
-// staged module deploy: explicit Load, Render, and Deploy stages
-// holding per-invocation state. The services stay independently
-// callable; this package only wires them, it does not embed or
-// rename them.
-//
-// A Deployer is fresh per invocation and not concurrency-safe. Stages
-// run in order — Load, Render, Deploy — and every out-of-order,
-// repeated, or post-failure call is rejected without input or output.
-// A failed stage is terminal: later stages never run, and the state a
-// failure still confirms — the server-backed owner identity — is
-// retained rather than discarded.
-//
-// Load and Render are client-free local preparation. The deployer
-// never connects: its Kubernetes client arrives fully built through
-// the options, and the composition layer owns construction from the
-// standard cli-runtime configuration. Deploy runs the definition
-// owner preparation and the single framework payload apply, in that
-// order, over that client. No stage prechecks namespaces — rendered
-// Namespaces follow framework create/update behavior — and no stage
-// lints, creates the module CR, or waits for workload convergence
-// unless the opt-in Wait is requested.
+// Package deployer coordinates Load, Render, Deploy, and optional rollout waiting.
 package deployer
 
 import (
@@ -72,10 +51,8 @@ const (
 	stageFailed
 )
 
-// Deployer holds one module deploy invocation's state across its explicit
-// stages. It is constructed once per invocation; stages validate
-// their sequence themselves, so an out-of-order or repeated call is
-// rejected without input or output.
+// Deployer holds one invocation's state and is not safe for concurrent use.
+// Stages run in order; failures are terminal.
 type Deployer struct {
 	options Options
 	client  crclient.Client
@@ -91,8 +68,6 @@ type Deployer struct {
 	owner   *toolApi.PlatformModuleDefinition
 	applied bool
 
-	// payloadRetryOptions is the bounded retry policy for the payload
-	// action. New gives each deployer a value copy of the defaults.
 	payloadRetryOptions retry.Options
 
 	waited        bool
@@ -100,13 +75,8 @@ type Deployer struct {
 	waitTargets   []types.NamespacedName
 }
 
-// New resolves the constructor options in order — an Options preset
-// applies wholesale, later WithXxx options override individual
-// fields — and returns a fresh deployer holding the resolved
-// configuration and the supplied Kubernetes client. The client is a
-// required option used exactly as supplied: no copy, timeout
-// adjustment, or scheme change is made, and no client call happens
-// before the Deploy stage.
+// New applies options in order and resolves defaults. The supplied client is
+// used unchanged; cluster access begins in Deploy.
 func New(opts ...DeployerOption) *Deployer {
 	resolved := Options{}
 	for _, opt := range opts {
@@ -115,10 +85,7 @@ func New(opts ...DeployerOption) *Deployer {
 		}
 	}
 
-	// The documented defaults resolve once, here at construction: an
-	// empty or zero setting is the default request, while an invalid
-	// one stays invalid for Validate to reject. The receiver reads
-	// the resolved options directly.
+	// Resolve defaults once; leave invalid values for validation.
 	if resolved.PlatformType == "" {
 		resolved.PlatformType = DefaultPlatformType
 	}
@@ -140,17 +107,8 @@ func New(opts ...DeployerOption) *Deployer {
 	}
 }
 
-// Load is the local preparation stage: validate the invocation
-// settings, parse the platform version once into the framework
-// release, load and default the definition, and snapshot the declared
-// image sources. It performs no client call and injects no image
-// environment.
-//
-// The image snapshot covers exactly the declared related images plus
-// the main container image's whole-token source key, when it is one;
-// absent and masked sources are simply omitted, preserving the
-// permissive missing-image behavior. The namespace is
-// the mandatory options value, applied verbatim.
+// Load validates settings, reads the definition, and resolves image sources
+// without accessing the cluster.
 func (r *Deployer) Load(ctx context.Context) error {
 	if err := r.begin(stageLoaded); err != nil {
 		return err
@@ -199,19 +157,8 @@ func (r *Deployer) Load(ctx context.Context) error {
 	return nil
 }
 
-// Render is the rendering stage: the centralized rendering service
-// renders the definition with the shared engine — the library
-// apply-order post-renderer first, then the env injector, then the
-// platform config injector, each exactly once — into the target
-// namespace. It performs no client call and no owner or payload
-// write.
-//
-// The rendering service has already rejected reserved identities as
-// render errors and guarantees that a render finishing after the
-// context expired never becomes successful output. The stage holds
-// every seam to the same contract, rejecting a late successful return
-// after the context expired, so no failed render result is published
-// here.
+// Render builds and adapts the payload locally. Reserved resources, missing
+// controller targets, and unresolved required images fail before deployment.
 func (r *Deployer) Render(ctx context.Context) error {
 	if err := r.begin(stageRendered); err != nil {
 		return err
@@ -245,10 +192,6 @@ func (r *Deployer) Render(ctx context.Context) error {
 		return err
 	}
 
-	// A render that returned after the context expired never becomes
-	// successful output, even through a seam that does not check it
-	// itself: the backend enforces this for the real renderers, and
-	// the stage holds every seam to the same contract.
 	if err := ctx.Err(); err != nil {
 		r.fail()
 		return err
@@ -260,22 +203,8 @@ func (r *Deployer) Render(ctx context.Context) error {
 	return nil
 }
 
-// Deploy is the deployment stage: prepare the definition owner —
-// apply the embedded definition CRD, await its establishment, apply
-// the definition itself — then apply the whole rendered payload
-// through the framework deploy action with the confirmed owner and
-// the same release the injector used, over the invocation's client.
-//
-// Only a successful preparation permits the payload apply. A
-// preparation failure stops before any payload write and reports no
-// owner — a nil owner does not prove that no write occurred; an apply
-// failure keeps the confirmed owner, and writes that preceded the
-// framework's first error report stand as partial state. No API write
-// happens after the invocation expired: the context is checked after
-// the preparation, ahead of the services' own entry checks. No
-// namespace is prechecked: rendered Namespaces follow framework
-// create/update behavior, and other missing namespaces fail through
-// the API.
+// Deploy publishes the definition owner, then applies the rendered resources.
+// Failures can leave partial writes; the confirmed owner is retained.
 func (r *Deployer) Deploy(ctx context.Context) error {
 	if err := r.begin(stageDeployed); err != nil {
 		return err
@@ -293,8 +222,6 @@ func (r *Deployer) Deploy(ctx context.Context) error {
 	}
 	r.owner = owner
 
-	// No API write happens after the invocation expired: the payload
-	// apply is checked here, ahead of the services' own entry checks.
 	if err := ctx.Err(); err != nil {
 		r.fail()
 		return err
@@ -310,9 +237,6 @@ func (r *Deployer) Deploy(ctx context.Context) error {
 	return nil
 }
 
-// begin guards the transition into the next stage: out-of-order,
-// repeated, and post-failure calls are rejected before any input or
-// output happens.
 func (r *Deployer) begin(next stage) error {
 	if r.stage == stageFailed {
 		return moduleerrors.New(
@@ -332,8 +256,6 @@ func (r *Deployer) begin(next stage) error {
 	return nil
 }
 
-// fail marks the invocation terminal. Confirmed state — the owner
-// identity — stays readable after it.
 func (r *Deployer) fail() {
 	r.stage = stageFailed
 }

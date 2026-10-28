@@ -30,18 +30,15 @@ import (
 // ErrInvalidOptions identifies an invalid retry configuration.
 var ErrInvalidOptions = errors.New("invalid retry options")
 
-// Options configure one OnError invocation. MaxAttempts includes
-// the initial call. A single-attempt policy needs no backoff or retry
-// predicate; policies with retries require both.
+// Options sets the total attempt limit, backoff, and retry predicate.
+// Policies with multiple attempts require both backoff and predicate.
 type Options struct {
 	MaxAttempts int
 	Backoff     Backoff
 	Retriable   func(error) bool
 }
 
-// ApplyTo implements Option, so a complete retry policy can be
-// passed as a preset. Options apply in order and later values replace
-// earlier ones.
+// ApplyTo replaces the options with this preset.
 func (opts Options) ApplyTo(target *Options) {
 	*target = opts
 }
@@ -72,14 +69,10 @@ func WithRetriable(retriable func(error) bool) Option {
 	})
 }
 
-// OnError runs fn until it succeeds, returns a terminal error, reaches
-// MaxAttempts, or its context is done. The default policy runs fn once.
-// A retry policy requires a positive backoff and a non-nil predicate.
-// Nil options are ignored.
-//
-// Context cancellation observed during a pause prevents the next call.
-// After an attempt, a successful result wins a cancellation race; when
-// an attempt fails and ctx is done, ctx.Err is returned.
+// OnError defaults to one attempt. Retriable failures use the configured backoff
+// up to MaxAttempts. Nil options are ignored; invalid policies fail before fn runs.
+// A successful attempt wins a cancellation race; a failed attempt returns
+// ctx.Err() when cancelled. Cancellation during backoff prevents another attempt.
 func OnError(
 	ctx context.Context,
 	fn func(context.Context) error,

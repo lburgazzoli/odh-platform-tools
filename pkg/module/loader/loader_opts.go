@@ -20,17 +20,13 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/util/option"
 )
 
-// LoadOptions holds the optional load configuration. It is the
-// extension point for future WithXxx constructors; for now loads have
-// no configurable behavior, so it carries no fields.
+// LoadOptions reserves configuration for future loader options.
 type LoadOptions struct{}
 
-// ApplyTo implements LoadOption, so a whole LoadOptions can be passed
-// as a bundled preset.
+// ApplyTo replaces the load options.
 func (opts LoadOptions) ApplyTo(target *LoadOptions) {
 	*target = opts
 }
 
-// LoadOption customizes one load. Options apply in order over the
-// defaults; a nil option is ignored.
+// LoadOption customizes a load; nil options are ignored.
 type LoadOption = option.Option[LoadOptions]

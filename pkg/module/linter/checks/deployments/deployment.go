@@ -21,6 +21,9 @@ const (
 	// Multiple reports a module bundle with more than one Deployment.
 	Multiple = "DEPLOYMENT_MULTIPLE"
 
+	// ControllerMismatch reports a Deployment that injection cannot select.
+	ControllerMismatch = "CONTROLLER_DEPLOYMENT_MISMATCH"
+
 	// ContainerMissing reports a selected container that is not
 	// present in its pod spec list.
 	ContainerMissing = "CONTAINER_MISSING"
@@ -58,6 +61,16 @@ func (d Deployment) Validate(
 	}
 
 	deployment := deployments[0]
+	if !definition.IsControllerDeployment(deployment.GroupVersionKind(), deployment.GetName()) {
+		return []linter.Diagnostic{{
+			ID:        ControllerMismatch,
+			Severity:  linter.SeverityError,
+			GVK:       deployment.GroupVersionKind(),
+			Namespace: deployment.GetNamespace(),
+			Name:      deployment.GetName(),
+			Message:   fmt.Sprintf("controller must be apps/v1 Deployment %q", definition.ControllerDeploymentName()),
+		}}, nil
+	}
 
 	var diagnostics []linter.Diagnostic
 
@@ -73,7 +86,19 @@ func (d Deployment) Validate(
 		diagnostics = append(diagnostics, findings...)
 	}
 
-	if init := definition.Spec.Controller.Deployment.InitContainer; init != nil && init.Name != "" {
+	if init := definition.Spec.Controller.Deployment.InitContainer; init != nil {
+		if init.Name == "" {
+			diagnostics = append(diagnostics, linter.Diagnostic{
+				ID:        ContainerMissing,
+				Severity:  linter.SeverityError,
+				GVK:       deployment.GroupVersionKind(),
+				Namespace: deployment.GetNamespace(),
+				Name:      deployment.GetName(),
+				Field:     "spec.controller.deployment.initContainer.name",
+				Message:   "configured init container requires a name",
+			})
+			return diagnostics, nil
+		}
 		findings, err := d.validateContainerExists(deployment, "initContainers", init.Name)
 		if err != nil {
 			return nil, err

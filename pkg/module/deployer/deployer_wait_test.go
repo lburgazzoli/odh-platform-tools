@@ -451,11 +451,9 @@ func TestWaitConfiguredNameFallback(t *testing.T) {
 	}))
 }
 
-// TestWaitMissingTargetFailsAfterApply proves a payload with no
-// matching controller Deployment fails the requested wait after the
-// successful apply — never during local validation — with every
-// deploy-confirmed fact retained.
-func TestWaitMissingTargetFailsAfterApply(t *testing.T) {
+// A missing controller fails rendering even when rollout waiting is
+// requested, before publishing the owner or applying any resources.
+func TestMissingTargetFailsBeforeApply(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -467,24 +465,22 @@ func TestWaitMissingTargetFailsAfterApply(t *testing.T) {
 
 	result, err := target.Apply(t.Context())
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(Equal(
-		`no rendered controller deployment matched the wait target: module synthetic controller deployment "synthetic-controller"`))
-	g.Expect(errors.Is(err, moduleerrors.ErrWaitTargetMissing)).To(BeTrue())
+	g.Expect(err.Error()).To(ContainSubstring(
+		`no rendered apps/v1 Deployment matched controller "synthetic-controller"`))
+	g.Expect(errors.Is(err, moduleerrors.ErrWaitTargetMissing)).To(BeFalse())
 	g.Expect(errors.Is(err, moduleerrors.ErrRolloutWait)).To(BeFalse())
 	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDeployOptions)).To(BeFalse())
 
 	g.Expect(result).To(SatisfyAll(
-		HaveField("Attempted", StageDeploy),
-		HaveField("Completed", StageDeploy),
-		HaveField("Owner", Not(BeNil())),
-		HaveField("ApplyCompleted", BeTrue()),
+		HaveField("Attempted", StageRender),
+		HaveField("Completed", StageLoad),
+		HaveField("Owner", BeNil()),
+		HaveField("ApplyCompleted", BeFalse()),
 		HaveField("WaitRequested", BeTrue()),
 		HaveField("WaitCompleted", BeFalse()),
 	))
-	g.Expect(result.Owner.Name).To(Equal("synthetic"))
-	g.Expect(string(result.Owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
-
 	g.Expect(fixture.gets).To(BeEmpty())
+	g.Expect(fixture.applies).To(BeEmpty())
 }
 
 // TestWaitInitialNotFoundMayWait proves a target that is absent on
