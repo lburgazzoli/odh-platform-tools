@@ -171,7 +171,7 @@ when execution did not complete.
 
 ```
 module deploy --config <definition.yaml> --platform-version <version> \
-  [--kubeconfig <path>] [--context <name>] [--namespace <namespace>] [options]
+  [--namespace <namespace>] [--kubeconfig <path>] [--context <name>] [options]
 ```
 
 | Flag | Default | Meaning |
@@ -179,7 +179,6 @@ module deploy --config <definition.yaml> --platform-version <version> \
 | `--config` | required | Path to the module definition file. |
 | `--platform-version` | required | Platform version, parsed once and shared by the platform config and deploy. |
 | `--related-images-file` | none | Dotenv file of related image sources; no file is discovered automatically. |
-| `--applications-namespace` | effective installation namespace | Namespace the module controller package renders into. |
 | `--monitoring-namespace` | none | Monitoring namespace injected as `MONITORING_NAMESPACE`. |
 | `--platform-type` | `OpenDataHub` | Platform identity injected as `ODH_MODULE_OPERATOR_PLATFORM_TYPE`. |
 | `--field-manager` | `platform.opendatahub.io` | Server-side-apply field manager for the definition and ordinary payload writes; a nonempty Kubernetes label value of at most 63 characters (see field ownership below). |
@@ -187,7 +186,7 @@ module deploy --config <definition.yaml> --platform-version <version> \
 | `--wait` | `false` | Wait for the module controller Deployment rollout after the apply. |
 | `--wait-timeout` | `30s` | Shared rollout wait budget when `--wait` is enabled; positive, and never extending the remaining `--timeout`. |
 | `--output` | `text` | Report format: `text` or `json`. |
-| `--namespace` | kubeconfig context default | Effective installation namespace (standard inherited flag). |
+| `--namespace` | kubeconfig context default, else `default` | Standard inherited flag selecting where the module controller package renders (kubectl semantics: explicit flag, else the kubeconfig context's namespace, else `default`). |
 
 | Exit code | Meaning |
 | --- | --- |
@@ -202,12 +201,16 @@ module deploy --config <definition.yaml> --platform-version <version> \
 it got (`attemptedStage`/`completedStage` in the JSON report).
 
 **Settings and flags.** The deploy resolves one REST configuration from
-the standard inherited flags — the kubeconfig file, the explicit
-context, and the effective installation namespace — through one
-`ConfigFlags` getter. The effective installation namespace is where
-the controller package renders; `--applications-namespace` overrides
-it for the controller package only. Payload resources that author
-their own namespace keep it.
+the standard inherited flags — the kubeconfig file and the explicit
+context — through one `ConfigFlags` getter. The composition layer
+builds the Kubernetes client from that configuration under the
+invocation budget and injects it into the deployer; a broken
+configuration is a runtime failure. The target namespace follows
+kubectl semantics through the same getter: the explicit `--namespace`
+flag, else the kubeconfig context's namespace, else `default`. It is
+where the controller package renders, and it reaches the controller
+container as the `APPLICATIONS_NAMESPACE` env var. Payload resources
+that author their own namespace keep it.
 
 **Rendering.** The deploy and lint share one centralized rendering
 service, `renderer.Render`, which selects the native backend from the
@@ -217,8 +220,8 @@ deadline: native render calls are not interruptible mid-call, and
 cancellation is honored before rendering, between every post-renderer,
 and on the final result, so a render that finished after the context
 expired never becomes successful output. The engine's builtin
-namespace plugin places namespace-less resources into the effective
-applications namespace and rewrites the references that name a
+namespace plugin places namespace-less resources into the target
+namespace and rewrites the references that name a
 namespace (for example RoleBinding subjects); co-located same-named
 entries keep their order through the engine's ApplyOrder
 post-renderer; authored literal Helm values are merged over the chart
@@ -285,7 +288,7 @@ match winning — and keeps its module-owned data
 keys and its `binaryData`; the platform version is enforced and stale
 cert-manager keys are removed. A chart that renders the name into a
 foreign namespace keeps its own ConfigMap untouched, and a missing
-config is appended in the applications namespace.
+config is appended in the target namespace.
 
 **Field ownership.** The definition preparation writes — the embedded
 definition CRD and the definition itself — and the ordinary payload

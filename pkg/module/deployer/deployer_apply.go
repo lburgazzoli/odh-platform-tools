@@ -55,13 +55,15 @@ func (r *Deployer) Apply(ctx context.Context) (Result, error) {
 		return rejectedResult(), err
 	}
 
-	if err := r.options.validate(); err != nil {
+	if err := r.options.Validate(); err != nil {
 		return rejectedResult(), err
 	}
 
 	if r.stage != stageNew {
-		return rejectedResult(), moduleerrors.New(moduleerrors.ErrStageSequence,
-			"invalid deployer stage sequence: Apply requires a fresh deployer")
+		return rejectedResult(), moduleerrors.New(
+			moduleerrors.ErrStageSequence,
+			"invalid deployer stage sequence: Apply requires a fresh deployer",
+		)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, r.options.Timeout)

@@ -27,12 +27,15 @@ limitations under the License.
 // failure still confirms — the server-backed owner identity — is
 // retained rather than discarded.
 //
-// Load and Render are client-free local preparation. Only Deploy
-// connects: the lazy cluster connection, the definition owner
-// preparation, and the single framework payload apply all happen
-// there, in that order. No stage prechecks namespaces — rendered
+// Load and Render are client-free local preparation. The deployer
+// never connects: its Kubernetes client arrives fully built through
+// the options, and the composition layer owns construction from the
+// standard cli-runtime configuration. Deploy runs the definition
+// owner preparation and the single framework payload apply, in that
+// order, over that client. No stage prechecks namespaces — rendered
 // Namespaces follow framework create/update behavior — and no stage
-// lints, creates the module CR, or waits for workload convergence.
+// lints, creates the module CR, or waits for workload convergence
+// unless the opt-in Wait is requested.
 package deployer
 
 import (
@@ -42,7 +45,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
+	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/blang/semver/v4"
 	"github.com/operator-framework/api/pkg/lib/version"
@@ -51,48 +54,11 @@ import (
 
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/adapt"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/cluster"
 	images "github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/images"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
-
-// DefinitionLoad loads and normalizes one definition file. The
-// loader is the concrete implementation; its options flow through
-// untouched.
-type DefinitionLoad func(
-	ctx context.Context,
-	path string,
-	opts ...loader.LoadOption,
-) (toolApi.PlatformModuleDefinition, error)
-
-// ManifestRender renders the manifest backend selected by a loaded
-// definition with shared runtime options. The centralized rendering
-// service is the concrete implementation.
-type ManifestRender func(
-	ctx context.Context,
-	definition toolApi.PlatformModuleDefinition,
-	definitionFile string,
-	opts ...renderer.RenderOption,
-) ([]unstructured.Unstructured, error)
-
-// Connect builds the invocation-scoped cluster connection. The
-// cluster service is the concrete implementation.
-type Connect func(ctx context.Context, getter genericclioptions.RESTClientGetter) (*cluster.Connection, error)
-
-// ApplyPayload applies the rendered payload through the framework
-// deploy action under the invocation's effective field manager,
-// already resolved and validated by the caller. DeployPayload is the
-// concrete implementation.
-type ApplyPayload func(
-	ctx context.Context,
-	connection *cluster.Connection,
-	owner *toolApi.PlatformModuleDefinition,
-	release api.Release,
-	resources []unstructured.Unstructured,
-	fieldManager string,
-) error
 
 // stage is the deployer's position in the Load → Render → Deploy
 // sequence.
@@ -111,78 +77,62 @@ const (
 // their sequence themselves, so an out-of-order or repeated call is
 // rejected without input or output.
 type Deployer struct {
-	getter  genericclioptions.RESTClientGetter
 	options Options
-
-	load    DefinitionLoad
-	render  ManifestRender
-	connect Connect
-	apply   ApplyPayload
+	client  crclient.Client
 
 	stage stage
 
-	definition            *toolApi.PlatformModuleDefinition
-	images                map[string]string
-	namespace             string
-	applicationsNamespace string
-	platformType          string
-	release               api.Release
+	definition   *toolApi.PlatformModuleDefinition
+	images       map[string]string
+	namespace    string
+	platformType string
+	release      api.Release
 
-	resources  []unstructured.Unstructured
-	connection *cluster.Connection
+	resources []unstructured.Unstructured
 
 	owner   *toolApi.PlatformModuleDefinition
 	applied bool
 
 	fieldManager string
 
-	waited           bool
-	waitCompleted    bool
-	waitTargets      []types.NamespacedName
-	waitPollInterval time.Duration
+	waited        bool
+	waitCompleted bool
+	waitTargets   []types.NamespacedName
 }
 
-// New wires the deployer with its service boundaries: the standard
-// getter the invocation resolves namespace and connection from, and
-// the narrow I/O seams — loader, the centralized renderer, connection,
-// and payload apply. The owner preparation is the deployer's own step
-// over the connection. The root module facade passes the concrete
-// reusable services; tests inject fakes.
-func New(
-	options Options,
-	getter genericclioptions.RESTClientGetter,
-	load DefinitionLoad,
-	render ManifestRender,
-	connect Connect,
-	apply ApplyPayload,
-) *Deployer {
-	return &Deployer{
-		getter:  getter,
-		options: options,
-		load:    load,
-		render:  render,
-		connect: connect,
-		apply:   apply,
-		stage:   stageNew,
+// New resolves the constructor options in order — an Options preset
+// applies wholesale, later WithXxx options override individual
+// fields — and returns a fresh deployer holding the resolved
+// configuration and the supplied Kubernetes client. The client is a
+// required option used exactly as supplied: no copy, timeout
+// adjustment, or scheme change is made, and no client call happens
+// before the Deploy stage.
+func New(opts ...DeployerOption) *Deployer {
+	resolved := Options{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt.ApplyTo(&resolved)
+		}
+	}
 
-		waitPollInterval: defaultWaitPollInterval,
+	return &Deployer{
+		options: resolved,
+		client:  resolved.Client,
+		stage:   stageNew,
 	}
 }
 
 // Load is the local preparation stage: validate the invocation
 // settings, parse the platform version once into the framework
-// release, load and default the definition, snapshot the declared
-// image sources, and resolve the effective namespace from the
-// standard getter. It performs no client or HTTP request and injects
-// no image environment.
+// release, load and default the definition, and snapshot the declared
+// image sources. It performs no client call and injects no image
+// environment.
 //
 // The image snapshot covers exactly the declared related images plus
 // the main container image's whole-token source key, when it is one;
 // absent and masked sources are simply omitted, preserving the
-// permissive missing-image behavior. The applications namespace
-// defaults to the effective installation namespace here, so a
-// rendered module lands where the invocation targets unless
-// explicitly redirected.
+// permissive missing-image behavior. The namespace is
+// the mandatory options value, applied verbatim.
 func (r *Deployer) Load(ctx context.Context) error {
 	if err := r.begin(stageLoaded); err != nil {
 		return err
@@ -193,7 +143,7 @@ func (r *Deployer) Load(ctx context.Context) error {
 		return err
 	}
 
-	if err := r.options.validate(); err != nil {
+	if err := r.options.Validate(); err != nil {
 		r.fail()
 		return err
 	}
@@ -201,12 +151,14 @@ func (r *Deployer) Load(ctx context.Context) error {
 	parsed, err := semver.ParseTolerant(r.options.PlatformVersion)
 	if err != nil {
 		r.fail()
-		return moduleerrors.New(moduleerrors.ErrInvalidDeployOptions,
+		return moduleerrors.New(
+			moduleerrors.ErrInvalidDeployOptions,
 			"invalid deploy options: parsing platform version: "+err.Error(),
-			moduleerrors.WithCause(err))
+			moduleerrors.WithCause(err),
+		)
 	}
 
-	definition, err := r.load(ctx, r.options.DefinitionFile)
+	definition, err := loader.LoadFromPath(ctx, r.options.DefinitionFile)
 	if err != nil {
 		r.fail()
 		return err
@@ -218,23 +170,13 @@ func (r *Deployer) Load(ctx context.Context) error {
 		return err
 	}
 
-	namespace, err := cluster.ResolveNamespace(r.getter)
-	if err != nil {
-		r.fail()
-		return err
-	}
-
 	r.release = api.Release{
 		Name:    api.ReleasePlatform,
 		Version: version.OperatorVersion{Version: parsed},
 	}
 	r.definition = &definition
 	r.images = snapshot
-	r.namespace = namespace
-	r.applicationsNamespace = r.options.ApplicationsNamespace
-	if r.applicationsNamespace == "" {
-		r.applicationsNamespace = namespace
-	}
+	r.namespace = r.options.Namespace
 	r.platformType = r.options.PlatformType
 	if r.platformType == "" {
 		r.platformType = DefaultPlatformType
@@ -251,9 +193,9 @@ func (r *Deployer) Load(ctx context.Context) error {
 // Render is the rendering stage: the centralized rendering service
 // renders the definition with the shared engine — the library
 // apply-order post-renderer first, then the env injector, then the
-// platform config injector, each exactly once — into the applications
-// namespace. It performs no client or HTTP request and no owner or
-// payload write.
+// platform config injector, each exactly once — into the target
+// namespace. It performs no client call and no owner or payload
+// write.
 //
 // The rendering service has already rejected reserved identities as
 // render errors and guarantees that a render finishing after the
@@ -272,20 +214,20 @@ func (r *Deployer) Render(ctx context.Context) error {
 	}
 
 	env := &adapt.EnvInjector{
-		Definition:            r.definition,
-		Images:                r.images,
-		ApplicationsNamespace: r.applicationsNamespace,
-		MonitoringNamespace:   r.options.MonitoringNamespace,
-		PlatformType:          r.platformType,
+		Definition:          r.definition,
+		Images:              r.images,
+		Namespace:           r.namespace,
+		MonitoringNamespace: r.options.MonitoringNamespace,
+		PlatformType:        r.platformType,
 	}
 	config := &adapt.PlatformConfigInjector{
-		Definition:            r.definition,
-		ApplicationsNamespace: r.applicationsNamespace,
-		PlatformVersion:       r.release.Version.String(),
+		Definition:      r.definition,
+		Namespace:       r.namespace,
+		PlatformVersion: r.release.Version.String(),
 	}
 
-	resources, err := r.render(ctx, *r.definition, r.options.DefinitionFile,
-		renderer.WithNamespace(r.applicationsNamespace),
+	resources, err := renderer.Render(ctx, *r.definition, r.options.DefinitionFile,
+		renderer.WithNamespace(r.namespace),
 		renderer.WithPostRenderer(env.Run),
 		renderer.WithPostRenderer(config.Run),
 	)
@@ -309,11 +251,11 @@ func (r *Deployer) Render(ctx context.Context) error {
 	return nil
 }
 
-// Deploy is the deployment stage: connect lazily, prepare the
-// definition owner — apply the embedded definition CRD, await its
-// establishment, apply the definition itself — then apply the whole
-// rendered payload through the framework deploy action with the
-// confirmed owner and the same release the injector used.
+// Deploy is the deployment stage: prepare the definition owner —
+// apply the embedded definition CRD, await its establishment, apply
+// the definition itself — then apply the whole rendered payload
+// through the framework deploy action with the confirmed owner and
+// the same release the injector used, over the invocation's client.
 //
 // Only a successful preparation permits the payload apply. A
 // preparation failure stops before any payload write and reports no
@@ -321,10 +263,10 @@ func (r *Deployer) Render(ctx context.Context) error {
 // failure keeps the confirmed owner, and writes that preceded the
 // framework's first error report stand as partial state. No API write
 // happens after the invocation expired: the context is checked after
-// connecting and after the preparation, ahead of the services' own
-// entry checks. No namespace is prechecked: rendered Namespaces
-// follow framework create/update behavior, and other missing
-// namespaces fail through the API.
+// the preparation, ahead of the services' own entry checks. No
+// namespace is prechecked: rendered Namespaces follow framework
+// create/update behavior, and other missing namespaces fail through
+// the API.
 func (r *Deployer) Deploy(ctx context.Context) error {
 	if err := r.begin(stageDeployed); err != nil {
 		return err
@@ -335,34 +277,21 @@ func (r *Deployer) Deploy(ctx context.Context) error {
 		return err
 	}
 
-	connection, err := r.connect(ctx, r.getter)
-	if err != nil {
-		r.fail()
-		return err
-	}
-	r.connection = connection
-
-	// No API write happens after the invocation expired: the owner
-	// preparation and the payload apply are both checked here, ahead
-	// of the services' own entry checks.
-	if err := ctx.Err(); err != nil {
-		r.fail()
-		return err
-	}
-
-	owner, err := prepareOwner(ctx, connection, *r.definition, r.fieldManager)
+	owner, err := r.prepareOwner(ctx)
 	if err != nil {
 		r.fail()
 		return err
 	}
 	r.owner = owner
 
+	// No API write happens after the invocation expired: the payload
+	// apply is checked here, ahead of the services' own entry checks.
 	if err := ctx.Err(); err != nil {
 		r.fail()
 		return err
 	}
 
-	if err := r.apply(ctx, connection, r.owner, r.release, r.resources, r.fieldManager); err != nil {
+	if err := r.deployPayload(ctx); err != nil {
 		r.fail()
 		return err
 	}
@@ -377,14 +306,18 @@ func (r *Deployer) Deploy(ctx context.Context) error {
 // output happens.
 func (r *Deployer) begin(next stage) error {
 	if r.stage == stageFailed {
-		return moduleerrors.New(moduleerrors.ErrStageSequence,
-			"invalid deployer stage sequence: a failed invocation is terminal")
+		return moduleerrors.New(
+			moduleerrors.ErrStageSequence,
+			"invalid deployer stage sequence: a failed invocation is terminal",
+		)
 	}
 
 	if next != r.stage+1 {
-		return moduleerrors.New(moduleerrors.ErrStageSequence,
+		return moduleerrors.New(
+			moduleerrors.ErrStageSequence,
 			fmt.Sprintf("invalid deployer stage sequence: stage %d cannot follow %d",
-				next, r.stage))
+				next, r.stage),
+		)
 	}
 
 	return nil
@@ -411,4 +344,14 @@ func snapshotImages(path string, definition toolApi.PlatformModuleDefinition) (m
 	}
 
 	return images.Load(path, keys)
+}
+
+// waitPollInterval is the effective observation pause: the explicit
+// option when positive, the shared default otherwise.
+func (r *Deployer) waitPollInterval() time.Duration {
+	if r.options.WaitPollInterval > 0 {
+		return r.options.WaitPollInterval
+	}
+
+	return DefaultWaitPollInterval
 }

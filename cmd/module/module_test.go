@@ -139,6 +139,11 @@ func TestModuleCommandRunsDeploy(t *testing.T) {
 	runRecorder := &recordingModuleDeploy{}
 
 	getter := genericclioptions.NewConfigFlags(true)
+	// The standard namespace flag is registered once at the root, so
+	// the group-level test sets the standard override on the getter
+	// directly; the deploy resolves it into its options.
+	runNamespace := "run-namespace"
+	getter.Namespace = &runNamespace
 
 	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, getter,
 		"deploy",
@@ -150,6 +155,7 @@ func TestModuleCommandRunsDeploy(t *testing.T) {
 	g.Expect(runRecorder.options).To(HaveLen(1))
 	g.Expect(runRecorder.options[0].DefinitionFile).To(Equal("definition.yaml"))
 	g.Expect(runRecorder.options[0].PlatformVersion).To(Equal("2.19.0"))
+	g.Expect(runRecorder.options[0].Namespace).To(Equal("run-namespace"))
 
 	// The group forwards the root's one standard getter.
 	g.Expect(runRecorder.getters).To(HaveLen(1))

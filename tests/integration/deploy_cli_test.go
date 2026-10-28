@@ -17,16 +17,23 @@ import (
 )
 
 // runCLIDeploy executes the built CLI's deploy command over one module
-// root with a nonexistent kubeconfig — every case below fails before
-// any cluster contact, so the unreachable configuration proves no API
-// call happened — returning stdout, stderr, and the exit code.
+// root with a valid kubeconfig pointing at an unreachable server —
+// client construction is lazy, so every local failure below happens
+// before any cluster contact, and the unreachable address proves no
+// API call succeeded — returning stdout, stderr, and the exit code.
 func runCLIDeploy(root string, flags ...string) (string, string, int) {
+	kubeconfig := filepath.Join(root, "kubeconfig")
+	if err := os.WriteFile(kubeconfig, []byte(runKubeconfigYAML), 0o600); err != nil {
+		panic(err)
+	}
+
 	args := append([]string{
 		"module",
 		"deploy",
 		"--config", filepath.Join(root, "definition.yaml"),
 		"--platform-version", "2.19.0",
-		"--kubeconfig", "/nonexistent/kubeconfig",
+		"--namespace", "run-namespace",
+		"--kubeconfig", kubeconfig,
 	}, flags...)
 
 	var stdout, stderr bytes.Buffer

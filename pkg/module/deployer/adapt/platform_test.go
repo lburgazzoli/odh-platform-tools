@@ -137,9 +137,9 @@ var foreignConfigMapKey = types.NamespacedName{Namespace: "rendered-namespace", 
 // fully populated runtime inputs.
 func newPlatformConfigInjector() *PlatformConfigInjector {
 	return &PlatformConfigInjector{
-		Definition:            newDefinition(),
-		ApplicationsNamespace: "opendatahub",
-		PlatformVersion:       "2.19.0",
+		Definition:      newDefinition(),
+		Namespace:       "opendatahub",
+		PlatformVersion: "2.19.0",
 	}
 }
 
@@ -212,9 +212,9 @@ func TestPlatformConfigInjectorMergesExisting(t *testing.T) {
 	g := NewWithT(t)
 
 	var render enginetypes.PostRenderer = (&PlatformConfigInjector{
-		Definition:            newDefinition(),
-		ApplicationsNamespace: "opendatahub",
-		PlatformVersion:       "2.20.1",
+		Definition:      newDefinition(),
+		Namespace:       "opendatahub",
+		PlatformVersion: "2.20.1",
 	}).Run
 
 	input, err := toolk8s.DecodeResources([]byte(moduleConfigMapYAML))
@@ -333,9 +333,9 @@ func TestPlatformConfigInjectorMalformedDataErrors(t *testing.T) {
 	g := NewWithT(t)
 
 	var render enginetypes.PostRenderer = (&PlatformConfigInjector{
-		Definition:            newDefinition(),
-		ApplicationsNamespace: "opendatahub",
-		PlatformVersion:       "2.20.1",
+		Definition:      newDefinition(),
+		Namespace:       "opendatahub",
+		PlatformVersion: "2.20.1",
 	}).Run
 
 	input, err := toolk8s.DecodeResources([]byte(malformedDataConfigMapYAML))
@@ -497,9 +497,9 @@ func TestPlatformConfigInjectorDoesNotMutateDefinition(t *testing.T) {
 	definition := newDefinition()
 
 	var render enginetypes.PostRenderer = (&PlatformConfigInjector{
-		Definition:            definition,
-		ApplicationsNamespace: "opendatahub",
-		PlatformVersion:       "2.19.0",
+		Definition:      definition,
+		Namespace:       "opendatahub",
+		PlatformVersion: "2.19.0",
 	}).Run
 
 	input, err := toolk8s.DecodeResources([]byte(moduleConfigMapYAML))

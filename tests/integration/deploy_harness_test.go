@@ -9,10 +9,10 @@
 // owner preparation, the real framework deploy action with its
 // default enriched sort, and the real public Deployment status viewer
 // behind the requested wait. The composed chain is the production
-// deployer.New wiring with exactly one seam substituted: the cluster
-// connection is a controller-runtime fake client wrapped in the
-// connection's public NewWithClient test constructor, reached
-// through the real connect signature.
+// cmd Action wiring — deployer.New with the client injected through
+// WithClient — with exactly one seam substituted: the cluster client
+// is a controller-runtime fake client wrapped in the connection's
+// public NewWithClient test constructor.
 //
 // Simulated boundaries — and only these: API identity assignment
 // (deterministic server UIDs stamped into applies and creates so
@@ -92,7 +92,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
@@ -102,8 +101,6 @@ import (
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/cluster"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
 )
 
 // runCRDEstablishedStatusJSON is the status a served CRD carries:
@@ -120,14 +117,12 @@ type runFrame struct {
 }
 
 // deployHarness is the complete offline deploy chain over one fake
-// cluster: the standard getter resolves the namespace from a real
-// kubeconfig, every mutating client call is recorded in order, GET
+// cluster: every mutating client call is recorded in order, GET
 // identities are recorded for workload-observation assertions, and
 // scripted frames replace live lookups of objects that exist — so
 // only the applied workload is ever scripted.
 type deployHarness struct {
 	connection *cluster.Connection
-	getter     genericclioptions.RESTClientGetter
 
 	writes []string
 	gets   []string
@@ -151,25 +146,14 @@ type deployHarness struct {
 	// quiet suppresses write recording while the simulated server
 	// performs its own internal identity writes.
 	quiet bool
-
-	// connected reports whether the chain reached the connect seam.
-	connected bool
 }
 
-// newDeployHarness builds the harness and its kubeconfig-backed getter.
+// newDeployHarness builds the harness around its intercepted fake
+// client.
 func newDeployHarness(t *testing.T) *deployHarness {
 	t.Helper()
 
-	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
-	if err := os.WriteFile(kubeconfig, []byte(runKubeconfigYAML), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	getter := genericclioptions.NewConfigFlags(true)
-	getter.KubeConfig = &kubeconfig
-
 	harness := &deployHarness{
-		getter:    getter,
 		frames:    map[string][]runFrame{},
 		failApply: map[string]error{},
 	}
@@ -429,26 +413,15 @@ func newDeployHarness(t *testing.T) *deployHarness {
 	return harness
 }
 
-// connect is the single substituted service boundary: the real
-// connect signature returning the simulated connection.
-func (h *deployHarness) connect(_ context.Context, _ genericclioptions.RESTClientGetter) (*cluster.Connection, error) {
-	h.connected = true
-
-	return h.connection, nil
-}
-
-// deploy composes the production deployer wiring — the real loader,
+// deploy composes the production cmd Action wiring — the real loader,
 // both real renderers, and the real framework deploy action, with the
-// deployer's own owner preparation — over the harness connection, and
-// applies it once.
+// deployer's own owner preparation — with the harness client injected
+// through WithClient, exactly as Action injects the connected client,
+// and applies it once.
 func (h *deployHarness) deploy(ctx context.Context, options deployer.Options) (deployer.Result, error) {
 	composed := deployer.New(
 		options,
-		h.getter,
-		loader.LoadFromPath,
-		renderer.Render,
-		h.connect,
-		deployer.DeployPayload,
+		deployer.WithClient(h.connection.Client()),
 	)
 
 	return composed.Apply(ctx)
@@ -459,6 +432,7 @@ func deployOptions(root string) deployer.Options {
 	return deployer.Options{
 		DefinitionFile:  filepath.Join(root, "definition.yaml"),
 		PlatformVersion: "2.19.0",
+		Namespace:       "run-namespace",
 		Timeout:         30 * time.Second,
 	}
 }

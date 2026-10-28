@@ -27,7 +27,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -35,16 +34,152 @@ import (
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
-// waitTargetKey is the wait's single target identity: the test
-// definition's controller Deployment in the invocation namespace.
-const waitTargetKey = "run-namespace/synthetic-controller"
-
-// stageOverheadSlack bounds the time the stub load/render/deploy
-// stages take between the invocation's start and the wait budget's start —
-// including the real owner preparation's two fake-client applies of
-// the large embedded CRD; real boundaries are proven against budget
-// magnitudes far larger than this slack.
+// stageOverheadSlack bounds the time the real local stages and the
+// deploy's remote work take between the invocation's start and the
+// wait budget's start — including the owner preparation's two
+// fake-client applies of the large embedded CRD and the whole payload
+// apply; real boundaries are proven against budget magnitudes far
+// larger than this slack.
 const stageOverheadSlack = 2 * time.Second
+
+// waitFallbackDefinitionYAML is the definition with no configured
+// controller deployment name: the wait target falls back to the
+// module's metadata.name.
+const waitFallbackDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: helm
+    helm:
+      path: ./manifests/chart
+  controller:
+    deployment:
+      container:
+        image: quay.io/example/controller:v1
+`
+
+// waitFallbackNameTemplateYAML renders the controller Deployment
+// under the module's metadata.name.
+const waitFallbackNameTemplateYAML = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthetic
+  namespace: "{{ .Release.Namespace }}"
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: synthetic
+    spec:
+      containers:
+      - name: manager
+        image: quay.io/example/chart-default:v1
+`
+
+// waitOtherNameTemplateYAML renders a Deployment no wait target
+// matches.
+const waitOtherNameTemplateYAML = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: other-controller
+  namespace: "{{ .Release.Namespace }}"
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: synthetic
+    spec:
+      containers:
+      - name: manager
+        image: quay.io/example/chart-default:v1
+`
+
+// waitMultiTargetTemplateYAML renders the controller Deployment
+// twice in one namespace — the wait deduplicates by namespace and
+// name — once in another namespace, one unrelated Deployment, and a
+// same-named ConfigMap: exactly the target-selection corpus. The
+// duplicate document means the payload apply's pre-apply lookup of
+// the second copy finds the first applied object and consumes one
+// scripted frame, the fixture's documented rerun caveat.
+const waitMultiTargetTemplateYAML = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthetic-controller
+  namespace: ns-a
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: synthetic
+    spec:
+      containers:
+      - name: manager
+        image: quay.io/example/chart-default:v1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthetic-controller
+  namespace: ns-a
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: synthetic
+    spec:
+      containers:
+      - name: manager
+        image: quay.io/example/chart-default:v1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthetic-controller
+  namespace: ns-b
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: synthetic
+    spec:
+      containers:
+      - name: manager
+        image: quay.io/example/chart-default:v1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: other-controller
+  namespace: ns-a
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: synthetic
+    spec:
+      containers:
+      - name: manager
+        image: quay.io/example/chart-default:v1
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: synthetic-controller
+  namespace: run-namespace
+`
 
 // waitDeployment builds one controller Deployment observation. The
 // default is rolled out: observed generation, updated, and available
@@ -87,68 +222,44 @@ func waitLive(t *testing.T, deployment *appsv1.Deployment) map[string]any {
 	return live
 }
 
-// renderedDeployment builds one rendered apps/v1 Deployment resource
-// for target selection.
-func renderedDeployment(namespace, name string) unstructured.Unstructured {
-	return unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "apps/v1",
-		"kind":       "Deployment",
-		"metadata":   map[string]any{"name": name, "namespace": namespace},
-	}}
-}
-
-// renderedPayloadConfigMap builds one rendered non-Deployment
-// resource whose name collides with the controller target.
-func renderedPayloadConfigMap(name string) unstructured.Unstructured {
-	return unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "v1",
-		"kind":       "ConfigMap",
-		"metadata":   map[string]any{"name": name, "namespace": "run-namespace"},
-	}}
-}
-
-// newWaitStub wires the stub harness for a wait: polling goes through
-// the intercepted prepareCluster connection, the render payload is
-// the given resources, and the poll interval is instant. Deploy's
-// owner preparation runs for real over the same fixture.
-func newWaitStub(
-	t *testing.T,
-	options Options,
-	fixture *prepareCluster,
-	rendered []unstructured.Unstructured,
-) *stubDeployer {
-	t.Helper()
-
-	stub := newStubDeployer(t, options)
-	stub.cluster = fixture
-	stub.renderResult = rendered
-	stub.target.waitPollInterval = time.Millisecond
-
-	return stub
-}
-
 // waitOptions returns valid invocation settings with the wait
-// requested and an explicit budget.
+// requested, an explicit budget, and an instant poll interval.
 func waitOptions() Options {
 	options := testOptions()
 	options.Wait = true
 	options.WaitTimeout = 5 * time.Second
+	options.WaitPollInterval = time.Millisecond
 
 	return options
 }
 
-// deployed drives the stub through its stages up to a successful
-// Deploy, so Wait can run.
-func deployed(t *testing.T, stub *stubDeployer) {
+// newWaitDeployer wires the real-operation harness for a wait: the
+// given definition and chart template variants render the payload,
+// and polling goes through the fixture client.
+func newWaitDeployer(
+	t *testing.T,
+	options Options,
+	fixture *prepareCluster,
+	definition string,
+	template string,
+) *Deployer {
 	t.Helper()
 
-	if err := stub.target.Load(t.Context()); err != nil {
+	return newTestDeployer(t, options, fixture, composeRoot(t, definition, template))
+}
+
+// deployed drives the target through its stages up to a successful
+// Deploy, so Wait can run.
+func deployed(t *testing.T, target *Deployer) {
+	t.Helper()
+
+	if err := target.Load(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := stub.target.Render(t.Context()); err != nil {
+	if err := target.Render(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := stub.target.Deploy(t.Context()); err != nil {
+	if err := target.Deploy(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -163,18 +274,22 @@ func TestWaitRequiresSuccessfulDeploy(t *testing.T) {
 	g := NewWithT(t)
 
 	freshFixture := newPrepareCluster(t)
-	fresh := newWaitStub(t, waitOptions(), freshFixture, nil)
-	g.Expect(errors.Is(fresh.target.Wait(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	fresh := newWaitDeployer(t, waitOptions(), freshFixture,
+		literalControllerDefinitionYAML, composeTemplateYAML)
+	g.Expect(errors.Is(fresh.Wait(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 
-	local := newWaitStub(t, waitOptions(), newPrepareCluster(t), nil)
-	g.Expect(local.target.Load(t.Context())).To(Succeed())
-	g.Expect(local.target.Render(t.Context())).To(Succeed())
-	g.Expect(errors.Is(local.target.Wait(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	local := newWaitDeployer(t, waitOptions(), newPrepareCluster(t),
+		literalControllerDefinitionYAML, composeTemplateYAML)
+	g.Expect(local.Load(t.Context())).To(Succeed())
+	g.Expect(local.Render(t.Context())).To(Succeed())
+	g.Expect(errors.Is(local.Wait(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 
-	failed := newWaitStub(t, waitOptions(), newPrepareCluster(t), nil)
-	failed.loadError = errors.New("definition failure")
-	g.Expect(failed.target.Load(t.Context())).To(HaveOccurred())
-	g.Expect(errors.Is(failed.target.Wait(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	failedFixture := newPrepareCluster(t)
+	failed := newWaitDeployer(t, waitOptions(), failedFixture,
+		literalControllerDefinitionYAML, brokenTemplateYAML)
+	g.Expect(failed.Load(t.Context())).To(Succeed())
+	g.Expect(failed.Render(t.Context())).To(HaveOccurred())
+	g.Expect(errors.Is(failed.Wait(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 
 	g.Expect(freshFixture.gets).To(BeEmpty())
 }
@@ -186,17 +301,16 @@ func TestWaitRunsOnce(t *testing.T) {
 	g := NewWithT(t)
 
 	fixture := newPrepareCluster(t)
-	fixture.frames[waitTargetKey] = []waitFrame{
+	fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = []waitFrame{
 		{live: waitLive(t, waitDeployment(nil))},
 	}
 
-	stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
-		renderedDeployment("run-namespace", "synthetic-controller"),
-	})
-	deployed(t, stub)
+	target := newWaitDeployer(t, waitOptions(), fixture,
+		literalControllerDefinitionYAML, composeTemplateYAML)
+	deployed(t, target)
 
-	g.Expect(stub.target.Wait(t.Context())).To(Succeed())
-	g.Expect(errors.Is(stub.target.Wait(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	g.Expect(target.Wait(t.Context())).To(Succeed())
+	g.Expect(errors.Is(target.Wait(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
 }
 
 // TestApplyDefaultMakesNoWaitGet proves the default invocation performs no
@@ -208,15 +322,14 @@ func TestApplyDefaultMakesNoWaitGet(t *testing.T) {
 	g := NewWithT(t)
 
 	fixture := newPrepareCluster(t)
-	fixture.frames[waitTargetKey] = []waitFrame{
+	fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = []waitFrame{
 		{live: waitLive(t, waitDeployment(nil))},
 	}
 
-	stub := newWaitStub(t, testOptions(), fixture, []unstructured.Unstructured{
-		renderedDeployment("run-namespace", "synthetic-controller"),
-	})
+	target := newWaitDeployer(t, testOptions(), fixture,
+		literalControllerDefinitionYAML, composeTemplateYAML)
 
-	result, err := stub.target.Apply(t.Context())
+	result, err := target.Apply(t.Context())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(fixture.gets).To(BeEmpty())
@@ -227,7 +340,7 @@ func TestApplyDefaultMakesNoWaitGet(t *testing.T) {
 	))
 }
 
-// TestRunRequestedWaitReportsCompletion proves a requested wait
+// TestApplyRequestedWaitReportsCompletion proves a requested wait
 // completes over the live observation and the report carries the
 // safe target identity beside the retained deploy facts.
 func TestApplyRequestedWaitReportsCompletion(t *testing.T) {
@@ -236,15 +349,14 @@ func TestApplyRequestedWaitReportsCompletion(t *testing.T) {
 	g := NewWithT(t)
 
 	fixture := newPrepareCluster(t)
-	fixture.frames[waitTargetKey] = []waitFrame{
+	fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = []waitFrame{
 		{live: waitLive(t, waitDeployment(nil))},
 	}
 
-	stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
-		renderedDeployment("run-namespace", "synthetic-controller"),
-	})
+	target := newWaitDeployer(t, waitOptions(), fixture,
+		literalControllerDefinitionYAML, composeTemplateYAML)
 
-	result, err := stub.target.Apply(t.Context())
+	result, err := target.Apply(t.Context())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(result).To(SatisfyAll(
@@ -259,7 +371,7 @@ func TestApplyRequestedWaitReportsCompletion(t *testing.T) {
 	g.Expect(result.Owner.Name).To(Equal("synthetic"))
 	g.Expect(string(result.Owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
 
-	g.Expect(fixture.gets).To(ContainElement(waitTargetKey))
+	g.Expect(fixture.gets).To(ContainElement(waitTargetIdentity("run-namespace", "synthetic-controller")))
 }
 
 // TestWaitTargetSelectionAndDedup proves the wait selects exactly the
@@ -273,45 +385,45 @@ func TestWaitTargetSelectionAndDedup(t *testing.T) {
 	g := NewWithT(t)
 
 	fixture := newPrepareCluster(t)
-	fixture.frames["ns-a/synthetic-controller"] = []waitFrame{
+
+	// The duplicate ns-a document's pre-apply lookup consumes the
+	// first ns-a frame, so the scripted sequence carries one extra
+	// rolled-out observation.
+	fixture.frames[waitTargetIdentity("ns-a", "synthetic-controller")] = []waitFrame{
+		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
+			d.Namespace = "ns-a"
+		}))},
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.Namespace = "ns-a"
 		}))},
 	}
-	fixture.frames["ns-b/synthetic-controller"] = []waitFrame{
+	fixture.frames[waitTargetIdentity("ns-b", "synthetic-controller")] = []waitFrame{
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.Namespace = "ns-b"
 		}))},
 	}
 
-	rendered := []unstructured.Unstructured{
-		renderedDeployment("ns-a", "synthetic-controller"),
-		renderedDeployment("ns-a", "synthetic-controller"),
-		renderedDeployment("ns-b", "synthetic-controller"),
-		renderedDeployment("ns-a", "other-controller"),
-		renderedPayloadConfigMap("synthetic-controller"),
-	}
+	target := newWaitDeployer(t, waitOptions(), fixture,
+		literalControllerDefinitionYAML, waitMultiTargetTemplateYAML)
+	deployed(t, target)
 
-	stub := newWaitStub(t, waitOptions(), fixture, rendered)
-	deployed(t, stub)
+	g.Expect(target.Wait(t.Context())).To(Succeed())
 
-	g.Expect(stub.target.Wait(t.Context())).To(Succeed())
-
-	g.Expect(stub.target.waitTargets).To(Equal([]types.NamespacedName{
+	g.Expect(target.waitTargets).To(Equal([]types.NamespacedName{
 		{Namespace: "ns-a", Name: "synthetic-controller"},
 		{Namespace: "ns-b", Name: "synthetic-controller"},
 	}))
 
 	for _, get := range fixture.gets {
 		g.Expect(get).To(SatisfyAny(
-			Equal("ns-a/synthetic-controller"),
-			Equal("ns-b/synthetic-controller"),
+			Equal(waitTargetIdentity("ns-a", "synthetic-controller")),
+			Equal(waitTargetIdentity("ns-b", "synthetic-controller")),
 		))
 	}
 
-	g.Expect(fixture.gets).To(ContainElement("ns-a/synthetic-controller"))
-	g.Expect(fixture.gets).To(ContainElement("ns-b/synthetic-controller"))
-	g.Expect(fixture.gets).NotTo(ContainElement("ns-a/other-controller"))
+	g.Expect(fixture.gets).To(ContainElement(waitTargetIdentity("ns-a", "synthetic-controller")))
+	g.Expect(fixture.gets).To(ContainElement(waitTargetIdentity("ns-b", "synthetic-controller")))
+	g.Expect(fixture.gets).NotTo(ContainElement(waitTargetIdentity("ns-a", "other-controller")))
 }
 
 // TestWaitConfiguredNameFallback proves an unconfigured controller
@@ -323,20 +435,18 @@ func TestWaitConfiguredNameFallback(t *testing.T) {
 	g := NewWithT(t)
 
 	fixture := newPrepareCluster(t)
-	fixture.frames["run-namespace/synthetic"] = []waitFrame{
+	fixture.frames[waitTargetIdentity("run-namespace", "synthetic")] = []waitFrame{
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.Name = "synthetic"
 		}))},
 	}
 
-	stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
-		renderedDeployment("run-namespace", "synthetic"),
-	})
-	stub.definition.Spec.Controller.Deployment.Name = ""
-	deployed(t, stub)
+	target := newWaitDeployer(t, waitOptions(), fixture,
+		waitFallbackDefinitionYAML, waitFallbackNameTemplateYAML)
+	deployed(t, target)
 
-	g.Expect(stub.target.Wait(t.Context())).To(Succeed())
-	g.Expect(stub.target.waitTargets).To(Equal([]types.NamespacedName{
+	g.Expect(target.Wait(t.Context())).To(Succeed())
+	g.Expect(target.waitTargets).To(Equal([]types.NamespacedName{
 		{Namespace: "run-namespace", Name: "synthetic"},
 	}))
 }
@@ -352,11 +462,10 @@ func TestWaitMissingTargetFailsAfterApply(t *testing.T) {
 
 	fixture := newPrepareCluster(t)
 
-	stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
-		renderedDeployment("run-namespace", "other-controller"),
-	})
+	target := newWaitDeployer(t, waitOptions(), fixture,
+		literalControllerDefinitionYAML, waitOtherNameTemplateYAML)
 
-	result, err := stub.target.Apply(t.Context())
+	result, err := target.Apply(t.Context())
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(Equal(
 		`no rendered controller deployment matched the wait target: module synthetic controller deployment "synthetic-controller"`))
@@ -387,17 +496,16 @@ func TestWaitInitialNotFoundMayWait(t *testing.T) {
 	g := NewWithT(t)
 
 	fixture := newPrepareCluster(t)
-	fixture.frames[waitTargetKey] = []waitFrame{
+	fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = []waitFrame{
 		{err: apierrors.NewNotFound(schema.GroupResource{Group: "apps", Resource: "deployments"}, "synthetic-controller")},
 		{live: waitLive(t, waitDeployment(nil))},
 	}
 
-	stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
-		renderedDeployment("run-namespace", "synthetic-controller"),
-	})
-	deployed(t, stub)
+	target := newWaitDeployer(t, waitOptions(), fixture,
+		literalControllerDefinitionYAML, composeTemplateYAML)
+	deployed(t, target)
 
-	g.Expect(stub.target.Wait(t.Context())).To(Succeed())
+	g.Expect(target.Wait(t.Context())).To(Succeed())
 	g.Expect(fixture.gets).To(HaveLen(2))
 }
 
@@ -413,20 +521,19 @@ func TestWaitTerminatingTargetStaysPending(t *testing.T) {
 	now := metav1.Now()
 
 	fixture := newPrepareCluster(t)
-	fixture.frames[waitTargetKey] = []waitFrame{
+	fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = []waitFrame{
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.DeletionTimestamp = &now
 		}))},
 		{live: waitLive(t, waitDeployment(nil))},
 	}
 
-	stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
-		renderedDeployment("run-namespace", "synthetic-controller"),
-	})
-	deployed(t, stub)
+	target := newWaitDeployer(t, waitOptions(), fixture,
+		literalControllerDefinitionYAML, composeTemplateYAML)
+	deployed(t, target)
 
-	g.Expect(stub.target.Wait(t.Context())).To(Succeed())
-	g.Expect(stub.target.waitCompleted).To(BeTrue())
+	g.Expect(target.Wait(t.Context())).To(Succeed())
+	g.Expect(target.waitCompleted).To(BeTrue())
 	g.Expect(fixture.gets).To(HaveLen(2))
 }
 
@@ -440,7 +547,7 @@ func TestWaitFollowsReplacedDeployment(t *testing.T) {
 	g := NewWithT(t)
 
 	fixture := newPrepareCluster(t)
-	fixture.frames[waitTargetKey] = []waitFrame{
+	fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = []waitFrame{
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.UID = "deployment-uid-1"
 			d.Status.UpdatedReplicas = 0
@@ -450,12 +557,11 @@ func TestWaitFollowsReplacedDeployment(t *testing.T) {
 		}))},
 	}
 
-	stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
-		renderedDeployment("run-namespace", "synthetic-controller"),
-	})
-	deployed(t, stub)
+	target := newWaitDeployer(t, waitOptions(), fixture,
+		literalControllerDefinitionYAML, composeTemplateYAML)
+	deployed(t, target)
 
-	g.Expect(stub.target.Wait(t.Context())).To(Succeed())
+	g.Expect(target.Wait(t.Context())).To(Succeed())
 	g.Expect(fixture.gets).To(HaveLen(2))
 }
 
@@ -469,7 +575,7 @@ func TestWaitDisappearanceStaysPending(t *testing.T) {
 	g := NewWithT(t)
 
 	fixture := newPrepareCluster(t)
-	fixture.frames[waitTargetKey] = []waitFrame{
+	fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = []waitFrame{
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.Status.UpdatedReplicas = 0
 		}))},
@@ -477,12 +583,11 @@ func TestWaitDisappearanceStaysPending(t *testing.T) {
 		{live: waitLive(t, waitDeployment(nil))},
 	}
 
-	stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
-		renderedDeployment("run-namespace", "synthetic-controller"),
-	})
-	deployed(t, stub)
+	target := newWaitDeployer(t, waitOptions(), fixture,
+		literalControllerDefinitionYAML, composeTemplateYAML)
+	deployed(t, target)
 
-	g.Expect(stub.target.Wait(t.Context())).To(Succeed())
+	g.Expect(target.Wait(t.Context())).To(Succeed())
 	g.Expect(fixture.gets).To(HaveLen(3))
 }
 
@@ -494,7 +599,7 @@ func TestWaitProgressDeadlineFails(t *testing.T) {
 	g := NewWithT(t)
 
 	fixture := newPrepareCluster(t)
-	fixture.frames[waitTargetKey] = []waitFrame{
+	fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = []waitFrame{
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.Status.Conditions = []appsv1.DeploymentCondition{{
 				Type:   appsv1.DeploymentProgressing,
@@ -504,13 +609,12 @@ func TestWaitProgressDeadlineFails(t *testing.T) {
 		}))},
 	}
 
-	stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
-		renderedDeployment("run-namespace", "synthetic-controller"),
-	})
-	deployed(t, stub)
+	target := newWaitDeployer(t, waitOptions(), fixture,
+		literalControllerDefinitionYAML, composeTemplateYAML)
+	deployed(t, target)
 
-	g.Expect(stub.target.Wait(t.Context())).To(HaveOccurred())
-	g.Expect(stub.target.waitCompleted).To(BeFalse())
+	g.Expect(target.Wait(t.Context())).To(HaveOccurred())
+	g.Expect(target.waitCompleted).To(BeFalse())
 }
 
 // TestWaitPollsUntilRolledOut proves the wait keeps observing until
@@ -604,14 +708,13 @@ func TestWaitPollsUntilRolledOut(t *testing.T) {
 			g := NewWithT(t)
 
 			fixture := newPrepareCluster(t)
-			fixture.frames[waitTargetKey] = testCase.frames
+			fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = testCase.frames
 
-			stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
-				renderedDeployment("run-namespace", "synthetic-controller"),
-			})
-			deployed(t, stub)
+			target := newWaitDeployer(t, waitOptions(), fixture,
+				literalControllerDefinitionYAML, composeTemplateYAML)
+			deployed(t, target)
 
-			g.Expect(stub.target.Wait(t.Context())).To(Succeed())
+			g.Expect(target.Wait(t.Context())).To(Succeed())
 			g.Expect(fixture.gets).To(HaveLen(testCase.gets))
 		})
 	}
@@ -631,26 +734,27 @@ func TestWaitBudgetBoundaries(t *testing.T) {
 		options := testOptions()
 		options.Wait = true
 		options.WaitTimeout = 400 * time.Millisecond
+		options.WaitPollInterval = time.Millisecond
 
 		fixture := newPrepareCluster(t)
-		fixture.frames[waitTargetKey] = []waitFrame{
+		fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = []waitFrame{
 			{live: waitLive(t, waitDeployment(nil))},
 		}
 
-		stub := newWaitStub(t, options, fixture, []unstructured.Unstructured{
-			renderedDeployment("run-namespace", "synthetic-controller"),
-		})
+		target := newWaitDeployer(t, options, fixture,
+			literalControllerDefinitionYAML, composeTemplateYAML)
 
 		start := time.Now()
-		_, err := stub.target.Apply(t.Context())
+		_, err := target.Apply(t.Context())
 		g.Expect(err).NotTo(HaveOccurred())
 
 		deadline, ok := fixture.getCtxs[0].Deadline()
 		g.Expect(ok).To(BeTrue())
 		// The wait budget starts after the apply, so its deadline is
-		// the invocation start plus stub-stage overhead plus the budget; the
-		// slack bounds that overhead while the explicit 400ms cap —
-		// not the five-minute overall timeout — bounds the wait.
+		// the invocation start plus the real stages' overhead plus the
+		// budget; the slack bounds that overhead while the explicit
+		// 400ms cap — not the five-minute overall timeout — bounds
+		// the wait.
 		g.Expect(deadline).To(BeTemporally("<=", start.Add(400*time.Millisecond+stageOverheadSlack)))
 	})
 
@@ -663,25 +767,25 @@ func TestWaitBudgetBoundaries(t *testing.T) {
 		options.Timeout = 300 * time.Millisecond
 		options.Wait = true
 		options.WaitTimeout = 30 * time.Second
+		options.WaitPollInterval = time.Millisecond
 
 		fixture := newPrepareCluster(t)
-		fixture.frames[waitTargetKey] = []waitFrame{
+		fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = []waitFrame{
 			{live: waitLive(t, waitDeployment(nil))},
 		}
 
-		stub := newWaitStub(t, options, fixture, []unstructured.Unstructured{
-			renderedDeployment("run-namespace", "synthetic-controller"),
-		})
+		target := newWaitDeployer(t, options, fixture,
+			literalControllerDefinitionYAML, composeTemplateYAML)
 
 		start := time.Now()
-		_, err := stub.target.Apply(t.Context())
+		_, err := target.Apply(t.Context())
 		g.Expect(err).NotTo(HaveOccurred())
 
 		deadline, ok := fixture.getCtxs[0].Deadline()
 		g.Expect(ok).To(BeTrue())
 		// The earlier overall deadline caps the wait: a 30-second
 		// budget never extends the 300ms invocation deadline (plus
-		// the same stub-stage slack).
+		// the same real-stage slack).
 		g.Expect(deadline).To(BeTemporally("<=", start.Add(300*time.Millisecond+stageOverheadSlack)))
 	})
 }
@@ -697,19 +801,19 @@ func TestWaitTimeoutIsRuntimeError(t *testing.T) {
 	options := testOptions()
 	options.Wait = true
 	options.WaitTimeout = 40 * time.Millisecond
+	options.WaitPollInterval = time.Millisecond
 
 	fixture := newPrepareCluster(t)
-	fixture.frames[waitTargetKey] = []waitFrame{
+	fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = []waitFrame{
 		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
 			d.Status.UpdatedReplicas = 0
 		}))},
 	}
 
-	stub := newWaitStub(t, options, fixture, []unstructured.Unstructured{
-		renderedDeployment("run-namespace", "synthetic-controller"),
-	})
+	target := newWaitDeployer(t, options, fixture,
+		literalControllerDefinitionYAML, composeTemplateYAML)
 
-	result, err := stub.target.Apply(t.Context())
+	result, err := target.Apply(t.Context())
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
 	g.Expect(errors.Is(err, moduleerrors.ErrRolloutWait)).To(BeTrue())
@@ -730,7 +834,7 @@ func TestWaitTimeoutIsRuntimeError(t *testing.T) {
 	// The shared budget was spent polling the one target until it
 	// expired — never reset, never abandoned.
 	g.Expect(len(fixture.gets)).To(BeNumerically(">=", 2))
-	g.Expect(fixture.gets).To(ContainElement(waitTargetKey))
+	g.Expect(fixture.gets).To(ContainElement(waitTargetIdentity("run-namespace", "synthetic-controller")))
 }
 
 // TestWaitAPIErrorFails proves an API failure on observation fails
@@ -743,16 +847,15 @@ func TestWaitAPIErrorFails(t *testing.T) {
 	cause := errors.New("api failure")
 
 	fixture := newPrepareCluster(t)
-	fixture.frames[waitTargetKey] = []waitFrame{
+	fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = []waitFrame{
 		{err: apierrors.NewInternalError(cause)},
 	}
 
-	stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
-		renderedDeployment("run-namespace", "synthetic-controller"),
-	})
-	deployed(t, stub)
+	target := newWaitDeployer(t, waitOptions(), fixture,
+		literalControllerDefinitionYAML, composeTemplateYAML)
+	deployed(t, target)
 
-	err := stub.target.Wait(t.Context())
+	err := target.Wait(t.Context())
 	g.Expect(err).To(HaveOccurred())
 	// The API error's server-side identity is preserved through the
 	// wait's wrapping.
@@ -760,10 +863,10 @@ func TestWaitAPIErrorFails(t *testing.T) {
 	g.Expect(errors.Is(err, moduleerrors.ErrRolloutWait)).To(BeTrue())
 	g.Expect(errors.Is(err, moduleerrors.ErrOwnerPreparation)).To(BeFalse())
 
-	g.Expect(stub.target.applied).To(BeTrue())
-	g.Expect(stub.target.owner).NotTo(BeNil())
-	g.Expect(stub.target.owner.Name).To(Equal("synthetic"))
-	g.Expect(string(stub.target.owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
+	g.Expect(target.applied).To(BeTrue())
+	g.Expect(target.owner).NotTo(BeNil())
+	g.Expect(target.owner.Name).To(Equal("synthetic"))
+	g.Expect(string(target.owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
 }
 
 // TestWaitErrorIsSafeText proves the wait failure never echoes
@@ -778,21 +881,19 @@ func TestWaitErrorIsSafeText(t *testing.T) {
 	const marker = "WAIT-MARKER-8f3d91"
 
 	fixture := newPrepareCluster(t)
-	fixture.frames[waitTargetKey] = []waitFrame{
+	fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = []waitFrame{
 		{err: apierrors.NewInternalError(errors.New(marker))},
 	}
 
-	stub := newWaitStub(t, waitOptions(), fixture, []unstructured.Unstructured{
-		renderedDeployment("run-namespace", "synthetic-controller"),
-	})
-	deployed(t, stub)
+	target := newWaitDeployer(t, waitOptions(), fixture,
+		literalControllerDefinitionYAML, composeTemplateYAML)
+	deployed(t, target)
 
-	err := stub.target.Wait(t.Context())
+	err := target.Wait(t.Context())
 	g.Expect(err).To(HaveOccurred())
 
 	g.Expect(err.Error()).NotTo(ContainSubstring(marker))
 	g.Expect(err.Error()).To(ContainSubstring("run-namespace/synthetic-controller"))
-	g.Expect(err.Error()).To(ContainSubstring("errors.Is"))
 
 	var status *apierrors.StatusError
 	g.Expect(errors.As(err, &status)).To(BeTrue())
@@ -801,9 +902,9 @@ func TestWaitErrorIsSafeText(t *testing.T) {
 	g.Expect(errors.Is(err, moduleerrors.ErrRolloutWait)).To(BeTrue())
 }
 
-// TestRunRejectsNegativeWaitTimeout proves a negative wait budget on
-// a requested wait is an options error before any stage or service
-// runs.
+// TestApplyRejectsNegativeWaitTimeout proves a negative wait budget on
+// a requested wait is an options error before any stage or client
+// call runs.
 func TestApplyRejectsNegativeWaitTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -813,12 +914,14 @@ func TestApplyRejectsNegativeWaitTimeout(t *testing.T) {
 	options.Wait = true
 	options.WaitTimeout = -time.Second
 
-	stub := newStubDeployer(t, options)
+	fixture := newPrepareCluster(t)
+	target := newWaitDeployer(t, options, fixture,
+		literalControllerDefinitionYAML, composeTemplateYAML)
 
-	result, err := stub.target.Apply(t.Context())
+	result, err := target.Apply(t.Context())
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDeployOptions)).To(BeTrue())
 
 	g.Expect(result).To(Equal(Result{}))
-	g.Expect(*stub.calls).To(BeEmpty())
+	g.Expect(fixture.applies).To(BeEmpty())
 }

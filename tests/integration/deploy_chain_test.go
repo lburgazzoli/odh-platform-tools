@@ -145,7 +145,6 @@ func TestDeployChainFieldManagerCoversPreparationAndPayload(t *testing.T) {
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(errors.Is(err, moduleerrors.ErrInvalidDeployOptions)).To(BeTrue())
 		g.Expect(result).To(Equal(deployer.Result{}))
-		g.Expect(harness.connected).To(BeFalse())
 		g.Expect(harness.writes).To(BeEmpty())
 	})
 }
@@ -431,7 +430,6 @@ func TestDeployChainMissingImagesFileFailsBeforeCluster(t *testing.T) {
 
 	g.Expect(result.Attempted).To(Equal(deployer.StageLoad))
 	g.Expect(result.Owner).To(BeNil())
-	g.Expect(harness.connected).To(BeFalse())
 	g.Expect(harness.writes).To(BeEmpty())
 	g.Expect(harness.gets).To(BeEmpty())
 }
@@ -458,7 +456,6 @@ func TestDeployChainLocalFailuresStopBeforeClientOperations(t *testing.T) {
 		g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
 
 		g.Expect(result.Owner).To(BeNil())
-		g.Expect(harness.connected).To(BeFalse())
 		g.Expect(harness.writes).To(BeEmpty())
 	})
 
@@ -481,7 +478,6 @@ func TestDeployChainLocalFailuresStopBeforeClientOperations(t *testing.T) {
 		g.Expect(result.Attempted).To(Equal(deployer.StageRender))
 		g.Expect(result.Completed).To(Equal(deployer.StageLoad))
 		g.Expect(result.Owner).To(BeNil())
-		g.Expect(harness.connected).To(BeFalse())
 		g.Expect(harness.writes).To(BeEmpty())
 	})
 
@@ -821,6 +817,5 @@ func TestDeployChainHelmMalformedEnvFailsRender(t *testing.T) {
 	g.Expect(result.Completed).To(Equal(deployer.StageLoad))
 	g.Expect(result.Owner).To(BeNil())
 	g.Expect(result.ApplyCompleted).To(BeFalse())
-	g.Expect(harness.connected).To(BeFalse())
 	g.Expect(harness.writes).To(BeEmpty())
 }

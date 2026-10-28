@@ -17,7 +17,6 @@ limitations under the License.
 package deployer
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -27,62 +26,19 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
-	"sigs.k8s.io/yaml"
+	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
 
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
 
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/cluster"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/option"
 )
-
-// runnerKubeconfigYAML is a standalone kubeconfig whose context
-// carries an explicit namespace, pointing at an unreachable server:
-// namespace resolution is local preparation and never contacts it.
-const runnerKubeconfigYAML = `apiVersion: v1
-kind: Config
-clusters:
-- name: test-cluster
-  cluster:
-    server: https://127.0.0.1:6443
-contexts:
-- name: test-context
-  context:
-    cluster: test-cluster
-    user: test-user
-    namespace: run-namespace
-current-context: test-context
-users:
-- name: test-user
-  user: {}
-`
-
-// renderTargetDeploymentYAML is the controller Deployment the
-// captured injector post-renderers run over: its name and container
-// match the test definition's controller descriptor, and it carries
-// one pre-existing env entry the injected entries must preserve.
-const renderTargetDeploymentYAML = `apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: synthetic-controller
-  namespace: run-namespace
-spec:
-  template:
-    spec:
-      containers:
-      - name: manager
-        image: quay.io/example/chart-default:v1
-        env:
-        - name: LOG_LEVEL
-          value: debug
-`
 
 // composeDefinitionYAML is a Helm-format definition whose main
 // container image is a whole-token reference.
@@ -107,6 +63,30 @@ spec:
       name: synthetic-controller
       container:
         image: "{{RELATED_IMAGE_CONTROLLER}}"
+`
+
+// literalControllerDefinitionYAML is the Helm-format definition whose
+// main container image is a literal: no image environment is needed,
+// so the flows over it run in parallel.
+const literalControllerDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: helm
+    helm:
+      path: ./manifests/chart
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        image: quay.io/example/controller:v1
 `
 
 // composeChartYAML is the chart descriptor of the composition
@@ -142,28 +122,26 @@ spec:
           value: debug
 `
 
-// testGetter returns standard ConfigFlags bound to a kubeconfig whose
-// context namespace is run-namespace.
-func testGetter(t *testing.T) genericclioptions.RESTClientGetter {
-	t.Helper()
+// brokenTemplateYAML is a chart template the Helm backend cannot
+// parse: an undefined template function fails the render.
+const brokenTemplateYAML = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthetic-controller
+  namespace: "{{ .Release.Namespace }}"
+spec:
+  replicas: {{ undefinedTemplateFunction .Values }}
+`
 
-	path := filepath.Join(t.TempDir(), "kubeconfig")
-	if err := os.WriteFile(path, []byte(runnerKubeconfigYAML), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	flags := genericclioptions.NewConfigFlags(true)
-	flags.KubeConfig = &path
-
-	return flags
-}
-
-// testOptions returns valid invocation settings.
+// testOptions returns valid invocation settings without a client: the
+// harness supplies the client through WithClient, so the preset-only
+// construction path stays exercisable.
 func testOptions() Options {
 	return Options{
 		DefinitionFile:  "definition.yaml",
 		PlatformVersion: "2.19.0",
 		Timeout:         5 * time.Minute,
+		Namespace:       "run-namespace",
 	}
 }
 
@@ -199,665 +177,31 @@ func testDefinition() toolApi.PlatformModuleDefinition {
 	}
 }
 
-// stubDeployer wires a Deployer whose service seams are recording fakes
-// around one fixed loaded definition. Every seam appends its name to
-// the shared call log; the connection is the prepareCluster fake, so
-// Deploy's owner preparation runs for real against recorded applies.
-type stubDeployer struct {
-	target *Deployer
-	calls  *[]string
-
-	definition toolApi.PlatformModuleDefinition
-
-	// cluster is the fake-client connection the connect stub returns;
-	// the owner preparation and the rollout wait both run through it.
-	cluster *prepareCluster
-
-	// renderOptions captures the resolved options Render passed.
-	renderOptions *renderer.RenderOptions
-
-	// loadError, renderError, connectError, and applyError drive the
-	// stub behavior; appliedOwner, appliedRelease,
-	// appliedResources, and appliedFieldManager capture what apply
-	loadError           error
-	renderError         error
-	connectError        error
-	applyError          error
-	appliedOwner        *toolApi.PlatformModuleDefinition
-	appliedRelease      api.Release
-	appliedResources    []unstructured.Unstructured
-	appliedFieldManager string
-
-	// renderCtx and connectCtx capture the invocation contexts the
-	// stages passed to the seams.
-	renderCtx  context.Context
-	connectCtx context.Context
-
-	// renderResult, when set, replaces the render stub's default
-	// payload; the wait tests select targets out of it.
-	renderResult []unstructured.Unstructured
-
-	// renderHook and connectHook, when set, run inside the matching
-	// stub with the invocation context before it returns; the deploy
-	// tests use them to cancel the invocation at controlled points.
-	renderHook  func(ctx context.Context)
-	connectHook func(ctx context.Context)
-}
-
-// newStubDeployer returns the stub harness with the test definition.
-func newStubDeployer(t *testing.T, options Options) *stubDeployer {
+// composeRoot writes one parameterized composition fixture — the
+// definition and the chart's deployment template are the callers'
+// variants — and returns its root directory.
+func composeRoot(t *testing.T, definition string, template string) string {
 	t.Helper()
 
-	stub := &stubDeployer{
-		calls:      &[]string{},
-		definition: testDefinition(),
-		cluster:    newPrepareCluster(t),
-	}
+	root := t.TempDir()
+	writeFile(t, root, "definition.yaml", definition)
+	writeFile(t, root, "manifests/chart/Chart.yaml", composeChartYAML)
+	writeFile(t, root, "manifests/chart/values.yaml", composeValuesYAML)
+	writeFile(t, root, "manifests/chart/templates/deployment.yaml", template)
 
-	stub.target = New(
-		options,
-		testGetter(t),
-		stub.load,
-		stub.render,
-		stub.connect,
-		stub.apply,
-	)
-
-	return stub
+	return root
 }
 
-// record appends one call to the shared log.
-func (s *stubDeployer) record(name string) {
-	*s.calls = append(*s.calls, name)
-}
-
-// load is the loader stub.
-func (s *stubDeployer) load(_ context.Context, _ string, _ ...loader.LoadOption) (toolApi.PlatformModuleDefinition, error) {
-	s.record("load")
-
-	return s.definition, s.loadError
-}
-
-// render is the render stub; it resolves the supplied options to
-// RenderOptions for assertions, captures the invocation context, runs
-// the optional hook, and returns one empty resource so Deploy has a
-// payload.
-func (s *stubDeployer) render(
-	ctx context.Context,
-	_ toolApi.PlatformModuleDefinition,
-	_ string,
-	opts ...renderer.RenderOption,
-) ([]unstructured.Unstructured, error) {
-	s.record("render")
-
-	s.renderCtx = ctx
-
-	captured := renderer.RenderOptions{}
-	for _, opt := range opts {
-		if opt != nil {
-			opt.ApplyTo(&captured)
-		}
-	}
-	s.renderOptions = &captured
-
-	if s.renderHook != nil {
-		s.renderHook(ctx)
-	}
-
-	if s.renderError != nil {
-		return nil, s.renderError
-	}
-
-	if s.renderResult != nil {
-		return s.renderResult, nil
-	}
-
-	return []unstructured.Unstructured{{Object: map[string]any{
-		"apiVersion": "v1",
-		"kind":       "ConfigMap",
-		"metadata":   map[string]any{"name": "payload", "namespace": "run-namespace"},
-	}}}, nil
-}
-
-// connect is the connection stub.
-func (s *stubDeployer) connect(
-	ctx context.Context,
-	_ genericclioptions.RESTClientGetter,
-) (*cluster.Connection, error) {
-	s.record("connect")
-
-	s.connectCtx = ctx
-
-	if s.connectHook != nil {
-		s.connectHook(ctx)
-	}
-
-	return s.cluster.connection, s.connectError
-}
-
-// apply is the payload apply stub.
-func (s *stubDeployer) apply(
-	_ context.Context,
-	_ *cluster.Connection,
-	owner *toolApi.PlatformModuleDefinition,
-	release api.Release,
-	resources []unstructured.Unstructured,
-	fieldManager string,
-) error {
-	s.record("apply")
-
-	s.appliedOwner = owner
-	s.appliedRelease = release
-	s.appliedFieldManager = fieldManager
-	s.appliedResources = resources
-
-	return s.applyError
-}
-
-// TestLoadRejectsInvalidOptions proves invalid settings fail Load as
-// options errors before any service call, and the invocation is
-// terminal: later stages reject without input or output.
-func TestLoadRejectsInvalidOptions(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name    string
-		message string
-		prefix  bool
-		options func() Options
-	}{
-		{"missing definition file", "invalid deploy options: DefinitionFile is required", false, func() Options {
-			options := testOptions()
-			options.DefinitionFile = ""
-			return options
-		}},
-		{"missing platform version", "invalid deploy options: PlatformVersion is required", false, func() Options {
-			options := testOptions()
-			options.PlatformVersion = ""
-			return options
-		}},
-		{"zero timeout", "invalid deploy options: Timeout must be positive", false, func() Options {
-			options := testOptions()
-			options.Timeout = 0
-			return options
-		}},
-		{"negative timeout", "invalid deploy options: Timeout must be positive", false, func() Options {
-			options := testOptions()
-			options.Timeout = -time.Minute
-			return options
-		}},
-		{"unparsable platform version", "invalid deploy options: parsing platform version:", true, func() Options {
-			options := testOptions()
-			options.PlatformVersion = "not-a-version"
-			return options
-		}},
-		{"empty-ish whitespace field manager", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, func() Options {
-			options := testOptions()
-			options.FieldManager = " "
-			return options
-		}},
-		{"oversized field manager", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, func() Options {
-			options := testOptions()
-			options.FieldManager = strings.Repeat("a", 64)
-			return options
-		}},
-		{"field manager with slash", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, func() Options {
-			options := testOptions()
-			options.FieldManager = "example.com/team/manager"
-			return options
-		}},
-		{"field manager with space", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, func() Options {
-			options := testOptions()
-			options.FieldManager = "team manager"
-			return options
-		}},
-		{"field manager with control character", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, func() Options {
-			options := testOptions()
-			options.FieldManager = "team\x09manager"
-			return options
-		}},
-		{"field manager with unicode", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, func() Options {
-			options := testOptions()
-			options.FieldManager = "tëam-manager"
-			return options
-		}},
-		{"field manager with leading punctuation", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, func() Options {
-			options := testOptions()
-			options.FieldManager = "-team-manager"
-			return options
-		}},
-		{"field manager with trailing punctuation", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, func() Options {
-			options := testOptions()
-			options.FieldManager = "team-manager."
-			return options
-		}},
-	}
-
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-
-			g := NewWithT(t)
-
-			stub := newStubDeployer(t, testCase.options())
-
-			err := stub.target.Load(t.Context())
-			g.Expect(err).To(HaveOccurred())
-			g.Expect(errors.Is(err, moduleerrors.ErrInvalidDeployOptions)).To(BeTrue())
-			g.Expect(errors.Is(err, moduleerrors.ErrStageSequence)).To(BeFalse())
-
-			if testCase.prefix {
-				g.Expect(err.Error()).To(HavePrefix(testCase.message))
-			} else {
-				g.Expect(err.Error()).To(Equal(testCase.message))
-			}
-
-			// No service ran, and the failed invocation is terminal.
-			g.Expect(*stub.calls).To(BeEmpty())
-			g.Expect(stub.target.Render(t.Context())).NotTo(Succeed())
-			g.Expect(stub.target.Deploy(t.Context())).NotTo(Succeed())
-			g.Expect(errors.Is(stub.target.Render(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
-		})
-	}
-}
-
-// TestLoadSnapshotsImagesAndResolvesNamespace proves Load parses the
-// platform version once into the canonical release, snapshots exactly
-// the declared related keys plus the main image token, and resolves
-// the effective namespace locally with the applications namespace and
-// platform type defaults applied. The image sources come from the
-// process environment, so this test cannot run in parallel.
-func TestLoadSnapshotsImagesAndResolvesNamespace(t *testing.T) {
-	g := NewWithT(t)
-
-	t.Setenv("RELATED_IMAGE_ALPHA", "quay.io/example/alpha:v1")
-	t.Setenv("RELATED_IMAGE_CONTROLLER", "quay.io/example/controller:v2")
-	t.Setenv("UNREQUESTED_IMAGE", "quay.io/example/unrequested:v1")
-
-	stub := newStubDeployer(t, testOptions())
-
-	g.Expect(stub.target.Load(t.Context())).To(Succeed())
-
-	g.Expect(*stub.calls).To(Equal([]string{"load"}))
-	g.Expect(stub.target.images).To(Equal(map[string]string{
-		"RELATED_IMAGE_ALPHA":      "quay.io/example/alpha:v1",
-		"RELATED_IMAGE_CONTROLLER": "quay.io/example/controller:v2",
-	}))
-
-	g.Expect(stub.target.namespace).To(Equal("run-namespace"))
-	g.Expect(stub.target.applicationsNamespace).To(Equal("run-namespace"))
-	g.Expect(stub.target.platformType).To(Equal(DefaultPlatformType))
-	g.Expect(stub.target.release.Name).To(Equal(api.Platform(api.ReleasePlatform)))
-	g.Expect(stub.target.release.Version.String()).To(Equal("2.19.0"))
-}
-
-// TestLoadAcceptsNoncanonicalVersion proves a noncanonical but
-// parsable platform version produces one canonical string shared by
-// the injector and deploy stages.
-func TestLoadAcceptsNoncanonicalVersion(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	options := testOptions()
-	options.PlatformVersion = "v2.19.0+dev"
-
-	stub := newStubDeployer(t, options)
-
-	g.Expect(stub.target.Load(t.Context())).To(Succeed())
-	g.Expect(stub.target.release.Version.String()).To(Equal("2.19.0+dev"))
-}
-
-// TestLoadApplicationsNamespaceOverride proves an explicit
-// applications namespace is kept while the effective installation
-// namespace stays the standard resolution.
-func TestLoadApplicationsNamespaceOverride(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	options := testOptions()
-	options.ApplicationsNamespace = "applications"
-	options.MonitoringNamespace = "monitoring"
-
-	stub := newStubDeployer(t, options)
-
-	g.Expect(stub.target.Load(t.Context())).To(Succeed())
-
-	g.Expect(stub.target.namespace).To(Equal("run-namespace"))
-	g.Expect(stub.target.applicationsNamespace).To(Equal("applications"))
-}
-
-// TestStageSequence proves stages run exactly in Load → Render →
-// Deploy order: out-of-order, repeated, and post-success calls reject
-// with the sequence sentinel and no service call.
-func TestStageSequence(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	stub := newStubDeployer(t, testOptions())
-
-	// Render and Deploy before Load reject without any service call,
-	// with the exact stage-numbered diagnostics.
-	g.Expect(stub.target.Render(t.Context()).Error()).To(Equal(
-		"invalid deployer stage sequence: stage 2 cannot follow 0"))
-	g.Expect(stub.target.Deploy(t.Context()).Error()).To(Equal(
-		"invalid deployer stage sequence: stage 3 cannot follow 0"))
-	g.Expect(errors.Is(stub.target.Render(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
-	g.Expect(errors.Is(stub.target.Deploy(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
-	g.Expect(*stub.calls).To(BeEmpty())
-
-	g.Expect(stub.target.Load(t.Context())).To(Succeed())
-
-	// Deploy before Render, and a repeated Load, reject the same way.
-	g.Expect(errors.Is(stub.target.Deploy(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
-	g.Expect(errors.Is(stub.target.Load(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
-	g.Expect(*stub.calls).To(Equal([]string{"load"}))
-
-	g.Expect(stub.target.Render(t.Context())).To(Succeed())
-
-	g.Expect(errors.Is(stub.target.Render(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
-	g.Expect(*stub.calls).To(Equal([]string{"load", "render"}))
-
-	g.Expect(stub.target.Deploy(t.Context())).To(Succeed())
-
-	// A successful invocation accepts no further stage.
-	g.Expect(errors.Is(stub.target.Deploy(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
-	g.Expect(errors.Is(stub.target.Load(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
-	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect", "apply"}))
-}
-
-// TestFailedStageIsTerminal proves a stage failure makes the
-// invocation terminal: no later stage call performs input or output.
-func TestFailedStageIsTerminal(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	stub := newStubDeployer(t, testOptions())
-	stub.loadError = errors.New("definition failure")
-
-	g.Expect(stub.target.Load(t.Context())).NotTo(Succeed())
-
-	g.Expect(errors.Is(stub.target.Load(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
-	g.Expect(errors.Is(stub.target.Render(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
-	g.Expect(errors.Is(stub.target.Deploy(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
-	g.Expect(*stub.calls).To(Equal([]string{"load"}))
-}
-
-// TestLoadAndRenderAreClientFree proves the local stages never
-// connect: after a successful Load and Render no connection,
-// publication, or apply happened, and the render seam received the
-// applications namespace with both injector post-renderers.
-func TestLoadAndRenderAreClientFree(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	stub := newStubDeployer(t, testOptions())
-
-	g.Expect(stub.target.Load(t.Context())).To(Succeed())
-	g.Expect(stub.target.Render(t.Context())).To(Succeed())
-
-	g.Expect(*stub.calls).To(Equal([]string{"load", "render"}))
-	g.Expect(stub.renderOptions.Namespace).To(Equal("run-namespace"))
-	g.Expect(stub.renderOptions.PostRenderers).To(HaveLen(2))
-}
-
-// TestRenderFailureStopsBeforeConnection proves a render error is
-// terminal and never reaches the connection stage.
-func TestRenderFailureStopsBeforeConnection(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	stub := newStubDeployer(t, testOptions())
-
-	g.Expect(stub.target.Load(t.Context())).To(Succeed())
-
-	stub.renderError = errors.New("render failure")
-
-	g.Expect(stub.target.Render(t.Context())).To(HaveOccurred())
-	g.Expect(errors.Is(stub.target.Render(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
-	g.Expect(*stub.calls).To(Equal([]string{"load", "render"}))
-	g.Expect(stub.target.Deploy(t.Context())).NotTo(Succeed())
-	g.Expect(*stub.calls).To(Equal([]string{"load", "render"}))
-}
-
-// TestRenderWiresInjectors proves the injector post-renderers Render
-// registers are the operator's transformations bound to the loaded
-// definition and snapshot: running them over a controller Deployment
-// injects the resolved image, the related images, and the platform
-// env, and appends the platform config ConfigMap with the canonical
-// version.
-func TestRenderWiresInjectors(t *testing.T) {
-	g := NewWithT(t)
-
-	t.Setenv("RELATED_IMAGE_ALPHA", "quay.io/example/alpha:v1")
-	t.Setenv("RELATED_IMAGE_CONTROLLER", "quay.io/example/controller:v2")
-
-	options := testOptions()
-	options.PlatformVersion = "v2.19.0+dev"
-	options.MonitoringNamespace = "monitoring"
-
-	stub := newStubDeployer(t, options)
-
-	g.Expect(stub.target.Load(t.Context())).To(Succeed())
-	g.Expect(stub.target.Render(t.Context())).To(Succeed())
-
-	deployment := unstructured.Unstructured{}
-	g.Expect(yaml.Unmarshal([]byte(renderTargetDeploymentYAML), &deployment)).To(Succeed())
-
-	enriched := []unstructured.Unstructured{deployment}
-	for _, postRenderer := range stub.renderOptions.PostRenderers {
-		var err error
-		enriched, err = postRenderer(t.Context(), enriched)
-		g.Expect(err).NotTo(HaveOccurred())
-	}
-
-	g.Expect(enriched).To(HaveLen(2))
-
-	rendered := enriched[0].Object
-	g.Expect(rendered).To(SatisfyAll(
-		jq.Match(`.spec.template.spec.containers[0].image == "quay.io/example/controller:v2"`),
-		jq.Match(`.spec.template.spec.containers[0].env[0].name == "LOG_LEVEL"`),
-		jq.Match(`.spec.template.spec.containers[0].env[0].value == "debug"`),
-		jq.Match(`.spec.template.spec.containers[0].env[1].name == "RELATED_IMAGE_ALPHA"`),
-		jq.Match(`.spec.template.spec.containers[0].env[1].value == "quay.io/example/alpha:v1"`),
-		jq.Match(`.spec.template.spec.containers[0].env[2].name == "APPLICATIONS_NAMESPACE"`),
-		jq.Match(`.spec.template.spec.containers[0].env[2].value == "run-namespace"`),
-		jq.Match(`.spec.template.spec.containers[0].env[3].name == "MONITORING_NAMESPACE"`),
-		jq.Match(`.spec.template.spec.containers[0].env[3].value == "monitoring"`),
-		jq.Match(`.spec.template.spec.containers[0].env[4].name == "ODH_MODULE_OPERATOR_PLATFORM_TYPE"`),
-		jq.Match(`.spec.template.spec.containers[0].env[4].value == "OpenDataHub"`),
-		jq.Match(`.spec.template.spec.containers[0].env | length == 5`),
-	))
-
-	g.Expect(enriched[1].Object).To(SatisfyAll(
-		jq.Match(`.kind == "ConfigMap"`),
-		jq.Match(`.metadata.name == "odh-synthetic-config"`),
-		jq.Match(`.metadata.namespace == "run-namespace"`),
-		jq.Match(`.data.platformVersion == "2.19.0+dev"`),
-	))
-}
-
-// TestDeploySequencesConnectPrepareApply proves Deploy runs its remote
-// steps in order — connect, owner preparation, payload apply — with the
-// preparation performing exactly the CRD and definition applies, and
-// the payload apply receiving the server-confirmed owner, the same
-// release the injector used, and the whole rendered payload.
-func TestDeploySequencesConnectPrepareApply(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	stub := newStubDeployer(t, testOptions())
-
-	g.Expect(stub.target.Load(t.Context())).To(Succeed())
-	g.Expect(stub.target.Render(t.Context())).To(Succeed())
-	g.Expect(stub.target.Deploy(t.Context())).To(Succeed())
-
-	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect", "apply"}))
-	g.Expect(stub.target.stage).To(Equal(stageDeployed))
-	g.Expect(stub.target.applied).To(BeTrue())
-
-	// The preparation applied the embedded CRD, then the definition.
-	crdApplies, crdFirst := stub.cluster.applyIndex(prepareCRDWrite)
-	definitionApplies, definitionFirst := stub.cluster.applyIndex(prepareDefinitionWrite)
-	g.Expect(crdApplies).To(Equal(1))
-	g.Expect(definitionApplies).To(Equal(1))
-	g.Expect(definitionFirst).To(BeNumerically(">", crdFirst))
-
-	// The payload apply and the deployer hold the server-confirmed
-	// owner: the same object, carrying the assigned identity.
-	g.Expect(stub.appliedOwner).NotTo(BeNil())
-	g.Expect(stub.target.owner).To(BeIdenticalTo(stub.appliedOwner))
-	g.Expect(stub.appliedOwner.Name).To(Equal("synthetic"))
-	g.Expect(string(stub.appliedOwner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
-	g.Expect(stub.appliedRelease.Version.String()).To(Equal("2.19.0"))
-	g.Expect(stub.appliedRelease.Name).To(Equal(api.Platform(api.ReleasePlatform)))
-}
-
-// TestDeployForwardsEffectiveFieldManager proves the invocation's
-// field manager — the custom value, or the canonical platform default
-// when the option is empty — reaches both the owner preparation and
-// the payload apply seam as one resolved value.
-func TestDeployForwardsEffectiveFieldManager(t *testing.T) {
-	t.Parallel()
-
-	t.Run("custom manager", func(t *testing.T) {
-		t.Parallel()
-
-		g := NewWithT(t)
-
-		options := testOptions()
-		options.FieldManager = "team.example.deployer"
-
-		stub := newStubDeployer(t, options)
-
-		g.Expect(stub.target.Load(t.Context())).To(Succeed())
-		g.Expect(stub.target.Render(t.Context())).To(Succeed())
-		g.Expect(stub.target.Deploy(t.Context())).To(Succeed())
-
-		g.Expect(stub.appliedFieldManager).To(Equal("team.example.deployer"))
-		g.Expect(stub.cluster.applyOptions).To(HaveLen(2))
-		for _, captured := range stub.cluster.applyOptions {
-			g.Expect(captured.manager).To(Equal("team.example.deployer"))
-			g.Expect(captured.force).To(BeTrue())
-		}
-	})
-
-	t.Run("empty option means the platform default", func(t *testing.T) {
-		t.Parallel()
-
-		g := NewWithT(t)
-
-		stub := newStubDeployer(t, testOptions())
-
-		g.Expect(stub.target.Load(t.Context())).To(Succeed())
-		g.Expect(stub.target.Render(t.Context())).To(Succeed())
-		g.Expect(stub.target.Deploy(t.Context())).To(Succeed())
-
-		g.Expect(stub.appliedFieldManager).To(Equal(DefaultFieldManager))
-		g.Expect(stub.cluster.applyOptions).To(HaveLen(2))
-		for _, captured := range stub.cluster.applyOptions {
-			g.Expect(captured.manager).To(Equal(DefaultFieldManager))
-		}
-	})
-}
-
-// TestDeployPreparationFailureStopsBeforePayload proves a preparation
-// failure — the CRD apply or the definition apply refusing — stops
-// Deploy before any payload write, reports no owner, and stays
-// terminal. A nil owner never claims that no write occurred.
-func TestDeployPreparationFailureStopsBeforePayload(t *testing.T) {
-	t.Parallel()
-
-	t.Run("crd apply failure", func(t *testing.T) {
-		t.Parallel()
-
-		g := NewWithT(t)
-
-		stub := newStubDeployer(t, testOptions())
-		stub.cluster.failApply[prepareCRDWrite] = errors.New("crd refusal")
-
-		g.Expect(stub.target.Load(t.Context())).To(Succeed())
-		g.Expect(stub.target.Render(t.Context())).To(Succeed())
-
-		err := stub.target.Deploy(t.Context())
-		g.Expect(err).To(HaveOccurred())
-		g.Expect(errors.Is(err, moduleerrors.ErrStageSequence)).To(BeFalse())
-
-		// No payload apply ran, and no owner is confirmed.
-		g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect"}))
-		g.Expect(stub.appliedOwner).To(BeNil())
-		g.Expect(stub.target.owner).To(BeNil())
-		g.Expect(stub.target.applied).To(BeFalse())
-
-		// The failed invocation is terminal.
-		g.Expect(errors.Is(stub.target.Deploy(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
-	})
-
-	t.Run("definition apply failure", func(t *testing.T) {
-		t.Parallel()
-
-		g := NewWithT(t)
-
-		stub := newStubDeployer(t, testOptions())
-		stub.cluster.failApply[prepareDefinitionWrite] = errors.New("definition refusal")
-
-		g.Expect(stub.target.Load(t.Context())).To(Succeed())
-		g.Expect(stub.target.Render(t.Context())).To(Succeed())
-
-		g.Expect(stub.target.Deploy(t.Context())).To(HaveOccurred())
-
-		g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect"}))
-		g.Expect(stub.appliedOwner).To(BeNil())
-		g.Expect(stub.target.owner).To(BeNil())
-		g.Expect(stub.target.applied).To(BeFalse())
-	})
-}
-
-// TestDeployConnectFailureIsTerminal proves a connection failure
-// stops the stage before any preparation or write.
-func TestDeployConnectFailureIsTerminal(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	stub := newStubDeployer(t, testOptions())
-	stub.connectError = errors.New("connection failure")
-
-	g.Expect(stub.target.Load(t.Context())).To(Succeed())
-	g.Expect(stub.target.Render(t.Context())).To(Succeed())
-
-	g.Expect(stub.target.Deploy(t.Context())).To(HaveOccurred())
-	g.Expect(*stub.calls).To(Equal([]string{"load", "render", "connect"}))
-	g.Expect(stub.cluster.applies).To(BeEmpty())
-	g.Expect(stub.target.owner).To(BeNil())
-}
-
-// TestDeployApplyFailureRetainsOwner proves a payload apply failure
-// keeps the server-confirmed owner while marking the apply
-// incomplete.
-func TestDeployApplyFailureRetainsOwner(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	stub := newStubDeployer(t, testOptions())
-	stub.applyError = errors.New("apply failure")
-
-	g.Expect(stub.target.Load(t.Context())).To(Succeed())
-	g.Expect(stub.target.Render(t.Context())).To(Succeed())
-
-	g.Expect(stub.target.Deploy(t.Context())).To(HaveOccurred())
-
-	g.Expect(stub.target.owner).NotTo(BeNil())
-	g.Expect(stub.target.owner.Name).To(Equal("synthetic"))
-	g.Expect(string(stub.target.owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
-	g.Expect(stub.target.applied).To(BeFalse())
+// newTestDeployer wires a Deployer over the fixture's intercepted
+// client: the options preset carries the invocation settings and
+// WithClient injects the client, exactly as the composition layer
+// does in production.
+func newTestDeployer(t *testing.T, options Options, fixture *prepareCluster, root string) *Deployer {
+	t.Helper()
+
+	options.DefinitionFile = filepath.Join(root, "definition.yaml")
+
+	return New(options, WithClient(fixture.client))
 }
 
 // writeFile writes one fixture file under root, failing the test on
@@ -886,55 +230,655 @@ func findResource(resources []unstructured.Unstructured, kind, name string) *uns
 	return nil
 }
 
-// TestLoadRenderComposeRealServicesOffline proves the staged local
-// chain through the real loader and the real Helm backend with stub
-// remote seams: a chart on disk renders through the shared engine
-// into the applications namespace with the injectors applied — the
-// resolved controller image, the related images, and the platform
-// config ConfigMap with the canonical version — and nothing connects
-// until Deploy, whose stubbed connection then runs the real owner
-// preparation over the fake cluster before the payload apply receives
-// exactly that payload with the server-confirmed owner and the shared
-// release.
-func TestLoadRenderComposeRealServicesOffline(t *testing.T) {
+// TestNewResolvesOptionsInOrder proves the constructor resolves its
+// options in application order — a whole Options preset applies
+// wholesale, later WithXxx options override individual fields — and
+// ignores nil options, including a typed-nil functional option.
+func TestNewResolvesOptionsInOrder(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	fixture := newPrepareCluster(t)
+	other := newPrepareCluster(t)
+
+	empty := New()
+	g.Expect(empty.options).To(Equal(Options{}))
+	g.Expect(empty.client).To(BeNil())
+	g.Expect(empty.stage).To(Equal(stageNew))
+
+	preset := testOptions()
+	preset.FieldManager = "preset.example"
+
+	target := New(preset)
+	g.Expect(target.options).To(Equal(preset))
+	g.Expect(target.client).To(BeNil())
+
+	overridden := New(preset,
+		WithClient(fixture.client),
+		WithWaitPollInterval(5*time.Second),
+	)
+	g.Expect(overridden.options.WaitPollInterval).To(Equal(5 * time.Second))
+
+	// The preset's untouched fields survive the overrides.
+	g.Expect(overridden.options.FieldManager).To(Equal("preset.example"))
+	g.Expect(overridden.options.Namespace).To(Equal("run-namespace"))
+
+	// Client wiring is proven behaviorally: the intercepted fake
+	// clients carry function fields, so they cannot be compared by
+	// value. A probe object created through one fixture's client is
+	// visible through exactly that fixture's client.
+	fixtureProbe := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "run-namespace", Name: "fixture-wiring-probe"},
+	}
+	g.Expect(fixture.client.Create(t.Context(), fixtureProbe)).To(Succeed())
+
+	otherProbe := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "run-namespace", Name: "other-wiring-probe"},
+	}
+	g.Expect(other.client.Create(t.Context(), otherProbe)).To(Succeed())
+
+	g.Expect(servesObject(t, overridden.client, "fixture-wiring-probe")).To(BeTrue())
+	g.Expect(servesObject(t, overridden.client, "other-wiring-probe")).To(BeFalse())
+	g.Expect(servesObject(t, overridden.options.Client, "fixture-wiring-probe")).To(BeTrue())
+
+	// Later options win over earlier ones.
+	last := New(preset,
+		WithClient(fixture.client),
+		WithClient(other.client),
+	)
+	g.Expect(servesObject(t, last.client, "other-wiring-probe")).To(BeTrue())
+	g.Expect(servesObject(t, last.client, "fixture-wiring-probe")).To(BeFalse())
+
+	// A nil option and a typed-nil functional option are ignored.
+	var nilOption DeployerOption
+	g.Expect(New(preset, nilOption).options).To(Equal(preset))
+	g.Expect(New(preset, option.FunctionalOption[Options](nil)).options).To(Equal(preset))
+
+	// Separately constructed deployers hold independent state.
+	first, second := New(preset), New(preset)
+	first.fail()
+	g.Expect(first.stage).To(Equal(stageFailed))
+	g.Expect(second.stage).To(Equal(stageNew))
+}
+
+// servesObject reports whether client serves the named ConfigMap in
+// the run namespace — the behavioral identity probe for intercepted
+// clients, whose function fields make value comparison impossible.
+func servesObject(t *testing.T, client crclient.Client, name string) bool {
+	t.Helper()
+
+	probe := &corev1.ConfigMap{}
+
+	return client.Get(t.Context(),
+		crclient.ObjectKey{Namespace: "run-namespace", Name: name},
+		probe) == nil
+}
+
+// TestLoadRejectsInvalidOptions proves invalid settings fail Load as
+// options errors before any file read or client call, and the
+// invocation is terminal: later stages reject without input or
+// output.
+func TestLoadRejectsInvalidOptions(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		message     string
+		prefix      bool
+		missingFile bool
+		noClient    bool
+		options     func(root string) Options
+	}{
+		{"missing definition file", "invalid deploy options: DefinitionFile is required", false, true, false, func(string) Options {
+			options := testOptions()
+			options.DefinitionFile = ""
+			return options
+		}},
+		{"missing platform version", "invalid deploy options: PlatformVersion is required", false, false, false, func(string) Options {
+			options := testOptions()
+			options.PlatformVersion = ""
+			return options
+		}},
+		{"missing namespace", "invalid deploy options: Namespace is required", false, false, false, func(string) Options {
+			options := testOptions()
+			options.Namespace = ""
+			return options
+		}},
+		{"missing client", "invalid deploy options: Client is required", false, false, true, func(string) Options {
+			return testOptions()
+		}},
+		{"zero timeout", "invalid deploy options: Timeout must be positive", false, false, false, func(string) Options {
+			options := testOptions()
+			options.Timeout = 0
+			return options
+		}},
+		{"negative timeout", "invalid deploy options: Timeout must be positive", false, false, false, func(string) Options {
+			options := testOptions()
+			options.Timeout = -time.Minute
+			return options
+		}},
+		{"negative wait poll interval", "invalid deploy options: WaitPollInterval must not be negative", false, false, false, func(string) Options {
+			options := testOptions()
+			options.WaitPollInterval = -time.Millisecond
+			return options
+		}},
+		{"negative wait timeout on requested wait", "invalid deploy options: WaitTimeout must not be negative", false, false, false, func(string) Options {
+			options := testOptions()
+			options.Wait = true
+			options.WaitTimeout = -time.Second
+			return options
+		}},
+		{"unparsable platform version", "invalid deploy options: parsing platform version:", true, false, false, func(string) Options {
+			options := testOptions()
+			options.PlatformVersion = "not-a-version"
+			return options
+		}},
+		{"empty-ish whitespace field manager", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, false, false, func(string) Options {
+			options := testOptions()
+			options.FieldManager = " "
+			return options
+		}},
+		{"oversized field manager", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, false, false, func(string) Options {
+			options := testOptions()
+			options.FieldManager = strings.Repeat("a", 64)
+			return options
+		}},
+		{"field manager with slash", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, false, false, func(string) Options {
+			options := testOptions()
+			options.FieldManager = "example.com/team/manager"
+			return options
+		}},
+		{"field manager with space", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, false, false, func(string) Options {
+			options := testOptions()
+			options.FieldManager = "team manager"
+			return options
+		}},
+		{"field manager with control character", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, false, false, func(string) Options {
+			options := testOptions()
+			options.FieldManager = "team\x09manager"
+			return options
+		}},
+		{"field manager with unicode", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, false, false, func(string) Options {
+			options := testOptions()
+			options.FieldManager = "tëam-manager"
+			return options
+		}},
+		{"field manager with leading punctuation", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, false, false, func(string) Options {
+			options := testOptions()
+			options.FieldManager = "-team-manager"
+			return options
+		}},
+		{"field manager with trailing punctuation", "invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters", false, false, false, func(string) Options {
+			options := testOptions()
+			options.FieldManager = "team-manager."
+			return options
+		}},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := NewWithT(t)
+
+			fixture := newPrepareCluster(t)
+			root := composeRoot(t, literalControllerDefinitionYAML, composeTemplateYAML)
+
+			options := testCase.options(root)
+			if !testCase.missingFile {
+				options.DefinitionFile = filepath.Join(root, "definition.yaml")
+			}
+
+			var target *Deployer
+			if testCase.noClient {
+				target = New(options)
+			} else {
+				target = New(options, WithClient(fixture.client))
+			}
+
+			err := target.Load(t.Context())
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(errors.Is(err, moduleerrors.ErrInvalidDeployOptions)).To(BeTrue())
+			g.Expect(errors.Is(err, moduleerrors.ErrStageSequence)).To(BeFalse())
+
+			if testCase.prefix {
+				g.Expect(err.Error()).To(HavePrefix(testCase.message))
+			} else {
+				g.Expect(err.Error()).To(Equal(testCase.message))
+			}
+
+			// No client call ran, and the failed invocation is
+			// terminal.
+			g.Expect(fixture.applies).To(BeEmpty())
+			g.Expect(fixture.gets).To(BeEmpty())
+			g.Expect(target.Render(t.Context())).NotTo(Succeed())
+			g.Expect(target.Deploy(t.Context())).NotTo(Succeed())
+			g.Expect(errors.Is(target.Render(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+		})
+	}
+}
+
+// TestLoadSnapshotsImagesAndDefaults proves Load parses the platform
+// version once into the canonical release, snapshots exactly the
+// declared related keys plus the main image token from the real
+// definition file, and applies the applications namespace and platform
+// type defaults. The image sources come from the process environment,
+// so this test cannot run in parallel.
+func TestLoadSnapshotsImagesAndDefaults(t *testing.T) {
+	g := NewWithT(t)
+
+	t.Setenv("RELATED_IMAGE_ALPHA", "quay.io/example/alpha:v1")
+	t.Setenv("RELATED_IMAGE_CONTROLLER", "quay.io/example/controller:v2")
+	t.Setenv("UNREQUESTED_IMAGE", "quay.io/example/unrequested:v1")
+
+	fixture := newPrepareCluster(t)
+	root := composeRoot(t, composeDefinitionYAML, composeTemplateYAML)
+
+	target := newTestDeployer(t, testOptions(), fixture, root)
+
+	g.Expect(target.Load(t.Context())).To(Succeed())
+
+	g.Expect(target.images).To(Equal(map[string]string{
+		"RELATED_IMAGE_ALPHA":      "quay.io/example/alpha:v1",
+		"RELATED_IMAGE_CONTROLLER": "quay.io/example/controller:v2",
+	}))
+
+	g.Expect(target.namespace).To(Equal("run-namespace"))
+	g.Expect(target.platformType).To(Equal(DefaultPlatformType))
+	g.Expect(target.release.Name).To(Equal(api.Platform(api.ReleasePlatform)))
+	g.Expect(target.release.Version.String()).To(Equal("2.19.0"))
+
+	// The local stage performed no client call.
+	g.Expect(fixture.applies).To(BeEmpty())
+	g.Expect(fixture.gets).To(BeEmpty())
+}
+
+// TestLoadAcceptsNoncanonicalVersion proves a noncanonical but
+// parsable platform version produces one canonical string shared by
+// the injector and deploy stages.
+func TestLoadAcceptsNoncanonicalVersion(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	options := testOptions()
+	options.PlatformVersion = "v2.19.0+dev"
+
+	fixture := newPrepareCluster(t)
+	root := composeRoot(t, literalControllerDefinitionYAML, composeTemplateYAML)
+
+	target := newTestDeployer(t, options, fixture, root)
+
+	g.Expect(target.Load(t.Context())).To(Succeed())
+	g.Expect(target.release.Version.String()).To(Equal("2.19.0+dev"))
+}
+
+// TestLoadKeepsExplicitNamespace proves the namespace is exactly the
+// options value, applied verbatim.
+func TestLoadKeepsExplicitNamespace(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	options := testOptions()
+	options.Namespace = "applications"
+	options.MonitoringNamespace = "monitoring"
+
+	fixture := newPrepareCluster(t)
+	root := composeRoot(t, literalControllerDefinitionYAML, composeTemplateYAML)
+
+	target := newTestDeployer(t, options, fixture, root)
+
+	g.Expect(target.Load(t.Context())).To(Succeed())
+
+	g.Expect(target.namespace).To(Equal("applications"))
+}
+
+// TestStageSequence proves stages run exactly in Load → Render →
+// Deploy order: out-of-order, repeated, and post-success calls reject
+// with the sequence sentinel and no client call.
+func TestStageSequence(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	fixture := newPrepareCluster(t)
+	root := composeRoot(t, literalControllerDefinitionYAML, composeTemplateYAML)
+
+	target := newTestDeployer(t, testOptions(), fixture, root)
+
+	// Render and Deploy before Load reject without any client call,
+	// with the exact stage-numbered diagnostics.
+	g.Expect(target.Render(t.Context()).Error()).To(Equal(
+		"invalid deployer stage sequence: stage 2 cannot follow 0"))
+	g.Expect(target.Deploy(t.Context()).Error()).To(Equal(
+		"invalid deployer stage sequence: stage 3 cannot follow 0"))
+	g.Expect(errors.Is(target.Render(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(target.Deploy(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	g.Expect(fixture.applies).To(BeEmpty())
+
+	g.Expect(target.Load(t.Context())).To(Succeed())
+
+	// Deploy before Render, and a repeated Load, reject the same way.
+	g.Expect(errors.Is(target.Deploy(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(target.Load(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	g.Expect(fixture.applies).To(BeEmpty())
+
+	g.Expect(target.Render(t.Context())).To(Succeed())
+
+	g.Expect(errors.Is(target.Render(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	g.Expect(fixture.applies).To(BeEmpty())
+
+	g.Expect(target.Deploy(t.Context())).To(Succeed())
+
+	// A successful invocation accepts no further stage.
+	g.Expect(errors.Is(target.Deploy(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(target.Load(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+}
+
+// TestFailedStageIsTerminal proves a stage failure makes the
+// invocation terminal: no later stage call performs input or output.
+// The failure is a real one — a definition file the loader cannot
+// read.
+func TestFailedStageIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	fixture := newPrepareCluster(t)
+	root := composeRoot(t, literalControllerDefinitionYAML, composeTemplateYAML)
+
+	options := testOptions()
+	options.DefinitionFile = filepath.Join(root, "missing.yaml")
+
+	target := New(options, WithClient(fixture.client))
+
+	g.Expect(target.Load(t.Context())).NotTo(Succeed())
+
+	g.Expect(errors.Is(target.Load(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(target.Render(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	g.Expect(errors.Is(target.Deploy(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	g.Expect(fixture.applies).To(BeEmpty())
+}
+
+// TestLoadAndRenderAreClientFree proves the local stages perform no
+// client call of any kind, and the render lands in the applications
+// namespace.
+func TestLoadAndRenderAreClientFree(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	fixture := newPrepareCluster(t)
+	root := composeRoot(t, literalControllerDefinitionYAML, composeTemplateYAML)
+
+	target := newTestDeployer(t, testOptions(), fixture, root)
+
+	g.Expect(target.Load(t.Context())).To(Succeed())
+	g.Expect(target.Render(t.Context())).To(Succeed())
+
+	g.Expect(fixture.applies).To(BeEmpty())
+	g.Expect(fixture.gets).To(BeEmpty())
+
+	// The render went to the applications namespace with the
+	// platform config ConfigMap appended.
+	g.Expect(target.resources).To(HaveLen(2))
+	deployment := findResource(target.resources, "Deployment", "synthetic-controller")
+	g.Expect(deployment).NotTo(BeNil())
+	g.Expect(deployment.Object).To(jq.Match(`.metadata.namespace == "run-namespace"`))
+	g.Expect(findResource(target.resources, "ConfigMap", "odh-synthetic-config")).NotTo(BeNil())
+}
+
+// TestRenderFailureIsTerminal proves a real render failure — a chart
+// template the backend cannot parse — is terminal and never reaches a
+// client call.
+func TestRenderFailureIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	fixture := newPrepareCluster(t)
+	root := composeRoot(t, literalControllerDefinitionYAML, brokenTemplateYAML)
+
+	target := newTestDeployer(t, testOptions(), fixture, root)
+
+	g.Expect(target.Load(t.Context())).To(Succeed())
+	g.Expect(target.Render(t.Context())).To(HaveOccurred())
+
+	g.Expect(errors.Is(target.Render(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	g.Expect(fixture.applies).To(BeEmpty())
+	g.Expect(target.Deploy(t.Context())).NotTo(Succeed())
+	g.Expect(fixture.applies).To(BeEmpty())
+}
+
+// TestDeploySequencesPrepareApply proves Deploy runs its remote steps
+// in order — owner preparation, then the whole payload apply — with
+// the preparation performing exactly the CRD and definition applies,
+// and the payload writes landing after them with the server-confirmed
+// owner and the shared release.
+func TestDeploySequencesPrepareApply(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	fixture := newPrepareCluster(t)
+	root := composeRoot(t, literalControllerDefinitionYAML, composeTemplateYAML)
+
+	target := newTestDeployer(t, testOptions(), fixture, root)
+
+	g.Expect(target.Load(t.Context())).To(Succeed())
+	g.Expect(target.Render(t.Context())).To(Succeed())
+	g.Expect(target.Deploy(t.Context())).To(Succeed())
+
+	g.Expect(target.stage).To(Equal(stageDeployed))
+	g.Expect(target.applied).To(BeTrue())
+
+	// The preparation applied the embedded CRD, then the definition,
+	// then the payload writes.
+	crdApplies, crdFirst := fixture.applyIndex(prepareCRDWrite)
+	definitionApplies, definitionFirst := fixture.applyIndex(prepareDefinitionWrite)
+	payloadApplies, payloadFirst := fixture.applyIndex(preparePayloadDeploymentWrite)
+	g.Expect(fixture.applies).To(HaveLen(4))
+	g.Expect(crdApplies).To(Equal(1))
+	g.Expect(definitionApplies).To(Equal(1))
+	g.Expect(payloadApplies).To(Equal(1))
+	g.Expect(definitionFirst).To(BeNumerically(">", crdFirst))
+	g.Expect(payloadFirst).To(BeNumerically(">", definitionFirst))
+	configMapApplies, _ := fixture.applyIndex(preparePayloadConfigMapWrite)
+	g.Expect(configMapApplies).To(Equal(1))
+
+	// The deployer holds the server-confirmed owner: the authored
+	// name with the identity the apply response carried.
+	g.Expect(target.owner).NotTo(BeNil())
+	g.Expect(target.owner.Name).To(Equal("synthetic"))
+	g.Expect(string(target.owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
+	g.Expect(target.release.Name).To(Equal(api.Platform(api.ReleasePlatform)))
+	g.Expect(target.release.Version.String()).To(Equal("2.19.0"))
+}
+
+// TestDeployForwardsEffectiveFieldManager proves the invocation's
+// field manager — the custom value, or the canonical platform default
+// when the option is empty — reaches the owner preparation and every
+// ordinary payload apply as one resolved value.
+func TestDeployForwardsEffectiveFieldManager(t *testing.T) {
+	t.Parallel()
+
+	t.Run("custom manager", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		options := testOptions()
+		options.FieldManager = "team.example.deployer"
+
+		fixture := newPrepareCluster(t)
+		root := composeRoot(t, literalControllerDefinitionYAML, composeTemplateYAML)
+
+		target := newTestDeployer(t, options, fixture, root)
+
+		g.Expect(target.Load(t.Context())).To(Succeed())
+		g.Expect(target.Render(t.Context())).To(Succeed())
+		g.Expect(target.Deploy(t.Context())).To(Succeed())
+
+		// Every write — both preparation applies and both payload
+		// applies — claimed its fields under the invocation's
+		// manager.
+		g.Expect(fixture.applyOptions).To(HaveLen(4))
+		for _, captured := range fixture.applyOptions {
+			g.Expect(captured.manager).To(Equal("team.example.deployer"))
+			g.Expect(captured.force).To(BeTrue())
+		}
+	})
+
+	t.Run("empty option means the platform default", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		fixture := newPrepareCluster(t)
+		root := composeRoot(t, literalControllerDefinitionYAML, composeTemplateYAML)
+
+		target := newTestDeployer(t, testOptions(), fixture, root)
+
+		g.Expect(target.Load(t.Context())).To(Succeed())
+		g.Expect(target.Render(t.Context())).To(Succeed())
+		g.Expect(target.Deploy(t.Context())).To(Succeed())
+
+		g.Expect(fixture.applyOptions).To(HaveLen(4))
+		for _, captured := range fixture.applyOptions {
+			g.Expect(captured.manager).To(Equal(DefaultFieldManager))
+		}
+	})
+}
+
+// TestDeployPreparationFailureStopsBeforePayload proves a preparation
+// failure — the CRD apply or the definition apply refusing — stops
+// Deploy before any payload write, reports no owner, and stays
+// terminal. A nil owner never claims that no write occurred.
+func TestDeployPreparationFailureStopsBeforePayload(t *testing.T) {
+	t.Parallel()
+
+	t.Run("crd apply failure", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		fixture := newPrepareCluster(t)
+		fixture.failApply[prepareCRDWrite] = errors.New("crd refusal")
+
+		root := composeRoot(t, literalControllerDefinitionYAML, composeTemplateYAML)
+		target := newTestDeployer(t, testOptions(), fixture, root)
+
+		g.Expect(target.Load(t.Context())).To(Succeed())
+		g.Expect(target.Render(t.Context())).To(Succeed())
+
+		err := target.Deploy(t.Context())
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(errors.Is(err, moduleerrors.ErrStageSequence)).To(BeFalse())
+
+		// No payload write ran, and no owner is confirmed.
+		payloadApplies, _ := fixture.applyIndex(preparePayloadDeploymentWrite)
+		g.Expect(payloadApplies).To(Equal(0))
+		g.Expect(target.owner).To(BeNil())
+		g.Expect(target.applied).To(BeFalse())
+
+		// The failed invocation is terminal.
+		g.Expect(errors.Is(target.Deploy(t.Context()), moduleerrors.ErrStageSequence)).To(BeTrue())
+	})
+
+	t.Run("definition apply failure", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		fixture := newPrepareCluster(t)
+		fixture.failApply[prepareDefinitionWrite] = errors.New("definition refusal")
+
+		root := composeRoot(t, literalControllerDefinitionYAML, composeTemplateYAML)
+		target := newTestDeployer(t, testOptions(), fixture, root)
+
+		g.Expect(target.Load(t.Context())).To(Succeed())
+		g.Expect(target.Render(t.Context())).To(Succeed())
+
+		g.Expect(target.Deploy(t.Context())).To(HaveOccurred())
+
+		payloadApplies, _ := fixture.applyIndex(preparePayloadDeploymentWrite)
+		g.Expect(payloadApplies).To(Equal(0))
+		g.Expect(target.owner).To(BeNil())
+		g.Expect(target.applied).To(BeFalse())
+	})
+}
+
+// TestDeployApplyFailureRetainsOwner proves a payload apply failure
+// keeps the server-confirmed owner while marking the apply
+// incomplete, with the failure's cause reachable through Unwrap.
+func TestDeployApplyFailureRetainsOwner(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	cause := &markerError{marker: "PAYLOAD-MARKER-refusal"}
+
+	fixture := newPrepareCluster(t)
+	fixture.failApply[preparePayloadDeploymentWrite] = cause
+
+	root := composeRoot(t, literalControllerDefinitionYAML, composeTemplateYAML)
+	target := newTestDeployer(t, testOptions(), fixture, root)
+
+	g.Expect(target.Load(t.Context())).To(Succeed())
+	g.Expect(target.Render(t.Context())).To(Succeed())
+
+	err := target.Deploy(t.Context())
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, moduleerrors.ErrDeployApply)).To(BeTrue())
+
+	g.Expect(target.owner).NotTo(BeNil())
+	g.Expect(target.owner.Name).To(Equal("synthetic"))
+	g.Expect(string(target.owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
+	g.Expect(target.applied).To(BeFalse())
+
+	// The framework's raw report stays reachable through Unwrap.
+	g.Expect(errors.Is(err, moduleerrors.ErrDeployPrepare)).To(BeFalse())
+	g.Expect(err.Error()).NotTo(ContainSubstring("PAYLOAD-MARKER-refusal"))
+	var marker *markerError
+	g.Expect(errors.As(err, &marker)).To(BeTrue())
+}
+
+// TestLoadRenderComposeRealServices proves the full offline chain
+// through the real loader, the real Helm backend, and the real payload
+// apply over the fake cluster: a chart on disk renders through the
+// shared engine into the applications namespace with both injectors
+// applied — the resolved controller image, the related images, the
+// platform env, and the platform config ConfigMap with the canonical
+// version — and Deploy then applies exactly that payload with the
+// server-confirmed owner. The image sources come from the process
+// environment, so this test cannot run in parallel.
+func TestLoadRenderComposeRealServices(t *testing.T) {
 	g := NewWithT(t)
 
 	t.Setenv("RELATED_IMAGE_ALPHA", "quay.io/example/alpha:v1")
 	t.Setenv("RELATED_IMAGE_CONTROLLER", "quay.io/example/controller:v2")
 
-	root := t.TempDir()
-	writeFile(t, root, "definition.yaml", composeDefinitionYAML)
-	writeFile(t, root, "manifests/chart/Chart.yaml", composeChartYAML)
-	writeFile(t, root, "manifests/chart/values.yaml", composeValuesYAML)
-	writeFile(t, root, "manifests/chart/templates/deployment.yaml", composeTemplateYAML)
+	fixture := newPrepareCluster(t)
+	root := composeRoot(t, composeDefinitionYAML, composeTemplateYAML)
 
 	options := testOptions()
-	options.DefinitionFile = filepath.Join(root, "definition.yaml")
+	options.PlatformVersion = "v2.19.0+dev"
+	options.MonitoringNamespace = "monitoring"
 
-	stub := &stubDeployer{
-		calls:      &[]string{},
-		definition: testDefinition(),
-		cluster:    newPrepareCluster(t),
-	}
+	target := newTestDeployer(t, options, fixture, root)
 
-	composed := New(
-		options,
-		testGetter(t),
-		loader.LoadFromPath,
-		renderer.Render,
-		stub.connect,
-		stub.apply,
-	)
+	g.Expect(target.Load(t.Context())).To(Succeed())
+	g.Expect(target.Render(t.Context())).To(Succeed())
 
-	g.Expect(composed.Load(t.Context())).To(Succeed())
-	g.Expect(composed.Render(t.Context())).To(Succeed())
+	// The local stages never touched the cluster.
+	g.Expect(fixture.applies).To(BeEmpty())
+	g.Expect(fixture.gets).To(BeEmpty())
 
-	// The local stages never touched a remote seam.
-	g.Expect(*stub.calls).To(BeEmpty())
+	g.Expect(target.resources).To(HaveLen(2))
 
-	g.Expect(composed.resources).To(HaveLen(2))
-
-	deployment := findResource(composed.resources, "Deployment", "synthetic-controller")
+	deployment := findResource(target.resources, "Deployment", "synthetic-controller")
 	g.Expect(deployment).NotTo(BeNil())
 	g.Expect(deployment.Object).To(SatisfyAll(
 		jq.Match(`.metadata.namespace == "run-namespace"`),
@@ -945,39 +889,43 @@ func TestLoadRenderComposeRealServicesOffline(t *testing.T) {
 		jq.Match(`.spec.template.spec.containers[0].env[1].value == "quay.io/example/alpha:v1"`),
 		jq.Match(`.spec.template.spec.containers[0].env[2].name == "APPLICATIONS_NAMESPACE"`),
 		jq.Match(`.spec.template.spec.containers[0].env[2].value == "run-namespace"`),
-		jq.Match(`.spec.template.spec.containers[0].env[3].name == "ODH_MODULE_OPERATOR_PLATFORM_TYPE"`),
-		jq.Match(`.spec.template.spec.containers[0].env[3].value == "OpenDataHub"`),
-		jq.Match(`.spec.template.spec.containers[0].env | length == 4`),
+		jq.Match(`.spec.template.spec.containers[0].env[3].name == "MONITORING_NAMESPACE"`),
+		jq.Match(`.spec.template.spec.containers[0].env[3].value == "monitoring"`),
+		jq.Match(`.spec.template.spec.containers[0].env[4].name == "ODH_MODULE_OPERATOR_PLATFORM_TYPE"`),
+		jq.Match(`.spec.template.spec.containers[0].env[4].value == "OpenDataHub"`),
+		jq.Match(`.spec.template.spec.containers[0].env | length == 5`),
 	))
 
-	configMap := findResource(composed.resources, "ConfigMap", "odh-synthetic-config")
+	configMap := findResource(target.resources, "ConfigMap", "odh-synthetic-config")
 	g.Expect(configMap).NotTo(BeNil())
 	g.Expect(configMap.Object).To(SatisfyAll(
 		jq.Match(`.metadata.namespace == "run-namespace"`),
-		jq.Match(`.data.platformVersion == "2.19.0"`),
+		jq.Match(`.data.platformVersion == "2.19.0+dev"`),
 	))
 
-	// Deploy drives the stubbed connection, runs the real owner
-	// preparation over the fake cluster, then hands the payload apply
-	// the server-confirmed owner, the shared release, and the whole
-	// rendered payload.
-	g.Expect(composed.Deploy(t.Context())).To(Succeed())
+	// Deploy runs the real owner preparation and the real payload
+	// apply over the fake cluster: the CRD, the definition, then the
+	// whole rendered payload.
+	g.Expect(target.Deploy(t.Context())).To(Succeed())
 
-	g.Expect(*stub.calls).To(Equal([]string{"connect", "apply"}))
-
-	// The real preparation ran over the fake cluster: the embedded
-	// CRD, then the definition.
-	g.Expect(stub.cluster.applies).To(HaveLen(2))
-	_, crdFirst := stub.cluster.applyIndex(prepareCRDWrite)
-	_, definitionFirst := stub.cluster.applyIndex(prepareDefinitionWrite)
+	crdApplies, crdFirst := fixture.applyIndex(prepareCRDWrite)
+	definitionApplies, definitionFirst := fixture.applyIndex(prepareDefinitionWrite)
+	payloadDeploymentApplies, _ := fixture.applyIndex(preparePayloadDeploymentWrite)
+	payloadConfigMapApplies, _ := fixture.applyIndex(preparePayloadConfigMapWrite)
+	g.Expect(crdApplies).To(Equal(1))
+	g.Expect(definitionApplies).To(Equal(1))
+	g.Expect(payloadDeploymentApplies).To(Equal(1))
+	g.Expect(payloadConfigMapApplies).To(Equal(1))
 	g.Expect(definitionFirst).To(BeNumerically(">", crdFirst))
 
-	g.Expect(stub.appliedOwner).NotTo(BeNil())
-	g.Expect(stub.appliedOwner.Name).To(Equal("synthetic"))
-	g.Expect(string(stub.appliedOwner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
-	g.Expect(stub.appliedRelease.Name).To(Equal(api.Platform(api.ReleasePlatform)))
-	g.Expect(stub.appliedRelease.Version.String()).To(Equal("2.19.0"))
-	g.Expect(stub.appliedResources).To(HaveLen(2))
-	g.Expect(findResource(stub.appliedResources, "Deployment", "synthetic-controller")).NotTo(BeNil())
-	g.Expect(findResource(stub.appliedResources, "ConfigMap", "odh-synthetic-config")).NotTo(BeNil())
+	// The stored payload carries the owner reference of the
+	// server-confirmed definition.
+	storedDeployment := fixture.stored(t, deploymentGVK, "run-namespace", "synthetic-controller")
+	g.Expect(storedDeployment.Object).To(SatisfyAll(
+		jq.Match(`.metadata.ownerReferences[0].kind == "PlatformModuleDefinition"`),
+		jq.Match(`.metadata.ownerReferences[0].uid == "`+prepareServerUID(prepareDefinitionIdentity)+`"`),
+	))
+
+	g.Expect(target.owner).NotTo(BeNil())
+	g.Expect(string(target.owner.UID)).To(Equal(prepareServerUID(prepareDefinitionIdentity)))
 }

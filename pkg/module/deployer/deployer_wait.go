@@ -32,11 +32,6 @@ import (
 	"k8s.io/kubectl/pkg/polymorphichelpers"
 )
 
-// waitPollInterval is the pause between observation rounds. It is
-// unexported test state, not a public knob: the wait budget, not the
-// interval, is the user-facing control.
-const defaultWaitPollInterval = time.Second
-
 // Wait is the opt-in controller rollout wait: after a successful
 // Deploy, it observes the live rendered apps/v1 controller
 // Deployments until the public kubectl deployment status helper
@@ -74,13 +69,17 @@ const defaultWaitPollInterval = time.Second
 // through Unwrap for errors.Is and errors.As.
 func (r *Deployer) Wait(ctx context.Context) error {
 	if r.stage != stageDeployed {
-		return moduleerrors.New(moduleerrors.ErrStageSequence,
-			"invalid deployer stage sequence: Wait requires a successful Deploy")
+		return moduleerrors.New(
+			moduleerrors.ErrStageSequence,
+			"invalid deployer stage sequence: Wait requires a successful Deploy",
+		)
 	}
 
 	if r.waited {
-		return moduleerrors.New(moduleerrors.ErrStageSequence,
-			"invalid deployer stage sequence: Wait already ran")
+		return moduleerrors.New(
+			moduleerrors.ErrStageSequence,
+			"invalid deployer stage sequence: Wait already ran",
+		)
 	}
 
 	r.waited = true
@@ -174,7 +173,7 @@ func (r *Deployer) selectWaitTargets() []types.NamespacedName {
 func (r *Deployer) observeUntilRolledOut(ctx context.Context) error {
 	err := wait.PollUntilContextTimeout(
 		ctx,
-		r.waitPollInterval,
+		r.waitPollInterval(),
 		r.waitBudget(),
 		true,
 		r.observeRolledOut,
@@ -215,7 +214,7 @@ func (r *Deployer) observeRolledOut(ctx context.Context) (bool, error) {
 		live := &unstructured.Unstructured{}
 		live.SetGroupVersionKind(gvk.Deployment)
 
-		err := r.connection.Client().Get(ctx, target, live)
+		err := r.client.Get(ctx, target, live)
 		if err != nil {
 			if apierrors.IsNotFound(err) {
 				// An absent target is pending whenever it
@@ -225,7 +224,12 @@ func (r *Deployer) observeRolledOut(ctx context.Context) (bool, error) {
 				continue
 			}
 
-			return false, waitTargetFailure(target, "the observation failed", err)
+			return false, moduleerrors.New(
+				moduleerrors.ErrRolloutWait,
+				fmt.Sprintf("waiting for deployment %s/%s failed: the observation failed",
+					target.Namespace, target.Name),
+				moduleerrors.WithCause(err),
+			)
 		}
 
 		// A terminating target is pending — never done,
@@ -239,7 +243,12 @@ func (r *Deployer) observeRolledOut(ctx context.Context) (bool, error) {
 		// object, no revision constraint, no extra policy.
 		_, done, err := viewer.Status(live, 0)
 		if err != nil {
-			return false, waitTargetFailure(target, "the rollout status check failed", err)
+			return false, moduleerrors.New(
+				moduleerrors.ErrRolloutWait,
+				fmt.Sprintf("waiting for deployment %s/%s failed: the rollout status check failed",
+					target.Namespace, target.Name),
+				moduleerrors.WithCause(err),
+			)
 		}
 
 		if !done {
@@ -248,21 +257,4 @@ func (r *Deployer) observeRolledOut(ctx context.Context) (bool, error) {
 	}
 
 	return rolledOut, nil
-}
-
-// waitTargetFailure builds the safe failure for one waited target:
-// safe identity and the failure's own words in the text, the raw
-// cause only under Unwrap.
-func waitTargetFailure(target types.NamespacedName, detail string, cause error) error {
-	message := fmt.Sprintf("waiting for deployment %s/%s failed: %s", target.Namespace, target.Name, detail)
-
-	if cause != nil {
-		return moduleerrors.New(
-			moduleerrors.ErrRolloutWait,
-			message+"; the raw cause remains reachable through errors.Is and errors.As",
-			moduleerrors.WithCause(cause),
-		)
-	}
-
-	return moduleerrors.New(moduleerrors.ErrRolloutWait, message)
 }

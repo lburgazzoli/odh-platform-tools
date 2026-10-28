@@ -69,9 +69,9 @@ type PlatformConfigInjector struct {
 	// ConfigMap name; the deployer owns the definition's lifetime.
 	Definition *toolApi.PlatformModuleDefinition
 
-	// ApplicationsNamespace is where the platform config ConfigMap is
+	// Namespace is where the platform config ConfigMap is
 	// created and where a module-rendered one is matched for merging.
-	ApplicationsNamespace string
+	Namespace string
 
 	// PlatformVersion is the canonical platform version string the
 	// deployer parsed and supplies to both the injector and deploy.
@@ -96,7 +96,7 @@ func (inj *PlatformConfigInjector) Run(
 	cm := &corev1.ConfigMap{}
 	cm.SetGroupVersionKind(k8s.ConfigMap)
 	cm.Name = platformConfigPrefix + name + platformConfigSuffix
-	cm.Namespace = inj.ApplicationsNamespace
+	cm.Namespace = inj.Namespace
 
 	// One reverse search: the last resource of the created ConfigMap's
 	// identity — k8s.Is compares group/version/kind, namespace, and

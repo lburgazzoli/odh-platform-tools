@@ -15,8 +15,8 @@ import (
 
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module"
 	deployer "github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/cluster"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
@@ -45,16 +45,44 @@ type Deploy func(
 	options deployer.Options,
 ) (deployer.Result, error)
 
-// Action is the concrete Deploy boundary: one fresh staged Deployer
-// per invocation, wired with the real reusable services and the
-// standard getter, driven through its convenience Apply. The deployer
+// Action is the concrete Deploy boundary: it validates the
+// invocation settings, derives the invocation context from the caller's
+// context and the options' timeout, builds the standard cluster
+// connection from the getter — so REST and authentication inputs
+// share one configuration source — and drives one fresh staged
+// Deployer over the connected client through its convenience Apply.
+// The settings check precedes the client, the invocation timer, and
+// every stage, so an invalid setting is a usage failure before any
+// client construction; the client itself cannot be checked before the
+// connection that supplies it, so its requirement is enforced by the
+// deployer's first stage once construction has injected it, and a
+// broken configuration surfaces as a runtime failure. The deployer
 // holds no state across invocations.
 func Action(
 	ctx context.Context,
 	getter genericclioptions.RESTClientGetter,
 	options deployer.Options,
 ) (deployer.Result, error) {
-	return module.NewDeployer(options, getter).Apply(ctx)
+	if err := ctx.Err(); err != nil {
+		return deployer.Result{}, err
+	}
+
+	if err := options.ValidateSettings(); err != nil {
+		return deployer.Result{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, options.Timeout)
+	defer cancel()
+
+	connection, err := cluster.Connect(ctx, getter)
+	if err != nil {
+		return deployer.Result{}, err
+	}
+
+	return deployer.New(
+		options,
+		deployer.WithClient(connection.Client()),
+	).Apply(ctx)
 }
 
 // ExitError carries the process exit status of one executed deploy
@@ -117,17 +145,16 @@ func classify(err error) (string, int) {
 // deployOptions holds the parsed `module deploy` flag values of one
 // execution.
 type deployOptions struct {
-	config                string
-	platformVersion       string
-	relatedImagesFile     string
-	applicationsNamespace string
-	monitoringNamespace   string
-	platformType          string
-	fieldManager          string
-	timeout               time.Duration
-	wait                  bool
-	waitTimeout           time.Duration
-	format                outputFormat
+	config              string
+	platformVersion     string
+	relatedImagesFile   string
+	monitoringNamespace string
+	platformType        string
+	fieldManager        string
+	timeout             time.Duration
+	wait                bool
+	waitTimeout         time.Duration
+	format              outputFormat
 }
 
 // NewDeployCommand returns the `module deploy` command. It turns the
@@ -150,10 +177,13 @@ func NewDeployCommand(action Deploy, getter genericclioptions.RESTClientGetter) 
 		Long: "Loads one PlatformModuleDefinition, renders its selected " +
 			"manifest backend, publishes the definition owner, and applies " +
 			"the rendered controller package through the framework deploy " +
-			"action. Exits 0 on success, 1 on runtime, apply, wait, " +
+			"action into the namespace resolved from the standard " +
+			"--namespace flag with kubectl semantics: the explicit flag, " +
+			"else the kubeconfig context's namespace, else default. " +
+			"Exits 0 on success, 1 on runtime, connection, apply, wait, " +
 			"timeout, or cancellation failures, and 2 on usage, local " +
 			"definition, or image-file errors. The standard " +
-			"kubeconfig/context/namespace flags are inherited from the " +
+			"kubeconfig/context/namespace/auth flags are inherited from the " +
 			"root command.",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
@@ -170,8 +200,6 @@ func NewDeployCommand(action Deploy, getter genericclioptions.RESTClientGetter) 
 		"platform version, parsed once and shared by the platform config and deploy (required)")
 	flags.StringVar(&options.relatedImagesFile, "related-images-file", "",
 		"dotenv file of related image sources; no file is discovered automatically")
-	flags.StringVar(&options.applicationsNamespace, "applications-namespace", "",
-		"namespace the module controller package renders into (default: the effective installation namespace)")
 	flags.StringVar(&options.monitoringNamespace, "monitoring-namespace", "",
 		"monitoring namespace injected as MONITORING_NAMESPACE")
 	flags.StringVar(&options.platformType, "platform-type", "",
@@ -197,11 +225,13 @@ func NewDeployCommand(action Deploy, getter genericclioptions.RESTClientGetter) 
 	return command
 }
 
-// execute runs one module deploy invocation: call the action with the
-// parsed options, the command context, and the standard getter,
-// classify the outcome, write exactly one report to stdout, echo
-// execution failures to stderr, and return the classified exit
-// outcome for main.
+// execute runs one module deploy invocation: resolve the effective
+// namespace from the standard getter — kubectl semantics: the explicit
+// --namespace flag, else the kubeconfig context's namespace, else
+// default — call the action with the parsed options, the command
+// context, and the same getter, classify the outcome, write exactly
+// one report to stdout, echo execution failures to stderr, and return
+// the classified exit outcome for main.
 func (o deployOptions) execute(
 	command *cobra.Command,
 	action Deploy,
@@ -217,21 +247,32 @@ func (o deployOptions) execute(
 	// report path as every other options failure: the Go option
 	// itself treats empty as the default request.
 	if o.fieldManager == "" {
-		err = moduleerrors.New(moduleerrors.ErrInvalidDeployOptions,
-			"invalid deploy options: FieldManager must not be empty")
+		err = moduleerrors.New(
+			moduleerrors.ErrInvalidDeployOptions,
+			"invalid deploy options: FieldManager must not be empty",
+		)
 	} else {
-		result, err = action(command.Context(), getter, deployer.Options{
-			DefinitionFile:        o.config,
-			RelatedImagesFile:     o.relatedImagesFile,
-			ApplicationsNamespace: o.applicationsNamespace,
-			MonitoringNamespace:   o.monitoringNamespace,
-			PlatformType:          o.platformType,
-			PlatformVersion:       o.platformVersion,
-			FieldManager:          o.fieldManager,
-			Timeout:               o.timeout,
-			Wait:                  o.wait,
-			WaitTimeout:           o.waitTimeout,
-		})
+		var namespace string
+
+		// The namespace resolution is a local configuration read
+		// through the same getter the connection uses; its failure
+		// is a runtime one, classified with every other execution
+		// error below.
+		namespace, err = cluster.ResolveNamespace(getter)
+		if err == nil {
+			result, err = action(command.Context(), getter, deployer.Options{
+				DefinitionFile:      o.config,
+				RelatedImagesFile:   o.relatedImagesFile,
+				Namespace:           namespace,
+				MonitoringNamespace: o.monitoringNamespace,
+				PlatformType:        o.platformType,
+				PlatformVersion:     o.platformVersion,
+				FieldManager:        o.fieldManager,
+				Timeout:             o.timeout,
+				Wait:                o.wait,
+				WaitTimeout:         o.waitTimeout,
+			})
+		}
 	}
 
 	category, code := classify(err)

@@ -47,8 +47,11 @@ func Load(path string, keys []string) (map[string]string, error) {
 	// internal keys are ever read from this instance.
 	for i, key := range keys {
 		if err := env.BindEnv(strconv.Itoa(i), key); err != nil {
-			return nil, moduleerrors.New(moduleerrors.ErrImageSource,
-				"invalid related images file "+path, moduleerrors.WithCause(err))
+			return nil, moduleerrors.New(
+				moduleerrors.ErrImageSource,
+				"invalid related images file "+path,
+				moduleerrors.WithCause(err),
+			)
 		}
 	}
 
@@ -58,8 +61,11 @@ func Load(path string, keys []string) (map[string]string, error) {
 		file.SetConfigType("env")
 
 		if err := file.ReadInConfig(); err != nil {
-			return nil, moduleerrors.New(moduleerrors.ErrImageSource,
-				"invalid related images file "+path, moduleerrors.WithCause(err))
+			return nil, moduleerrors.New(
+				moduleerrors.ErrImageSource,
+				"invalid related images file "+path,
+				moduleerrors.WithCause(err),
+			)
 		}
 	}
 

@@ -73,9 +73,9 @@ type EnvInjector struct {
 	// Images is the resolved image snapshot, the images service output.
 	Images map[string]string
 
-	// ApplicationsNamespace is the installation namespace; when
+	// Namespace is the installation namespace; when
 	// nonempty it becomes the APPLICATIONS_NAMESPACE env var.
-	ApplicationsNamespace string
+	Namespace string
 
 	// MonitoringNamespace is the monitoring namespace; when nonempty
 	// it becomes the MONITORING_NAMESPACE env var.
@@ -279,8 +279,8 @@ func (inj *EnvInjector) injectedEnvVars(ctx context.Context) []corev1.EnvVar {
 		}
 	}
 
-	if inj.ApplicationsNamespace != "" {
-		envVars = append(envVars, corev1.EnvVar{Name: applicationsNamespaceEnv, Value: inj.ApplicationsNamespace})
+	if inj.Namespace != "" {
+		envVars = append(envVars, corev1.EnvVar{Name: applicationsNamespaceEnv, Value: inj.Namespace})
 	}
 
 	if inj.MonitoringNamespace != "" {

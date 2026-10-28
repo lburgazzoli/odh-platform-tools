@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -42,7 +43,6 @@ import (
 	"github.com/opendatahub-io/odh-platform-utilities/framework/api"
 
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/cluster"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
@@ -71,6 +71,12 @@ const (
 	prepareDefinitionIdentity = "config.opendatahub.io/v1alpha1, Kind=PlatformModuleDefinition synthetic"
 )
 
+// Recorded apply-identity substrings of the compose payload writes.
+const (
+	preparePayloadDeploymentWrite = "Kind=Deployment run-namespace/synthetic-controller"
+	preparePayloadConfigMapWrite  = "Kind=ConfigMap run-namespace/odh-synthetic-config"
+)
+
 // waitFrame is one scripted GET reaction: either an error, or a live
 // object map returned as the observation. The last frame of a
 // sequence repeats.
@@ -79,31 +85,43 @@ type waitFrame struct {
 	live map[string]any
 }
 
-// prepareCluster is the fake-client connection the deployer tests drive
-// the owner preparation and the rollout wait through: every apply is
-// recorded in order with its request body and effective request
-// options, a served CRD receives the establishment status a real
-// server maintains, newly created objects receive deterministic
-// server UIDs stamped into the apply response — which the framework
-// helper converts back into the typed object, exactly as a server
-// echoes its assigned identity — and scripted GET frames replace live
-// lookups of the waited workload. Fake-client results exercise the
-// preparation's request sequence and identity rules, not real SSA
-// admission semantics.
+// prepareCluster is the intercepted fake client the deployer tests
+// drive every remote operation through: every apply is recorded in
+// order with its request body and effective request options, a served
+// CRD receives the establishment status a real server maintains,
+// newly created objects receive deterministic server UIDs stamped into
+// the apply response — which the framework helper converts back into
+// the typed object, exactly as a server echoes its assigned identity
+// — and scripted GET frames replace lookups of workload objects the
+// cluster holds. Frames and the observation log are keyed by full
+// identity (GVK, namespace, name) and consulted only after the
+// delegated lookup succeeds, so the framework deploy action's
+// pre-apply lookups of objects the cluster does not hold keep the
+// fake client's real NotFound behavior and never consume a rollout
+// frame, and a same-named object of another kind never collides with
+// a scripted frame. The residual caveat: a pre-apply lookup of an
+// already-applied scripted object — a re-deploy — would consume that
+// object's next frame; no current scenario re-deploys with scripted
+// frames. Fake-client results exercise the request sequence and
+// identity rules, not real SSA admission semantics.
 type prepareCluster struct {
-	connection *cluster.Connection
+	client crclient.Client
 
 	applies  []string
 	requests []map[string]any
 	gets     []string
 	getCtxs  []context.Context
 
+	// applyCtxs records the invocation context of every apply, in
+	// order, before delegation.
+	applyCtxs []context.Context
+
 	// applyOptions captures each recorded apply's effective field
 	// manager and force flag, in order, before delegation.
 	applyOptions []prepareApplyOption
 
-	// frames maps one object key to its scripted observation
-	// sequence for unstructured lookups.
+	// frames maps one full object identity to its scripted
+	// observation sequence for unstructured lookups.
 	frames map[string][]waitFrame
 
 	// failApply maps one identity substring to the error its apply
@@ -119,7 +137,7 @@ type prepareCluster struct {
 	crdNeverEstablished bool
 }
 
-// newPrepareCluster builds the intercepted connection.
+// newPrepareCluster builds the intercepted fake client.
 func newPrepareCluster(t *testing.T) *prepareCluster {
 	t.Helper()
 
@@ -226,10 +244,11 @@ func newPrepareCluster(t *testing.T) *prepareCluster {
 			id, probe, request := applyIdentity(obj)
 			fixture.applies = append(fixture.applies, id)
 			fixture.requests = append(fixture.requests, request)
+			fixture.applyCtxs = append(fixture.applyCtxs, ctx)
 
 			// The effective request options are captured before
 			// delegation: the field manager and force flag the
-			// preparation actually sent.
+			// apply actually sent.
 			effective := &crclient.ApplyOptions{}
 			for _, opt := range opts {
 				opt.ApplyToApply(effective)
@@ -292,42 +311,54 @@ func newPrepareCluster(t *testing.T) *prepareCluster {
 			obj crclient.Object,
 			opts ...crclient.GetOption,
 		) error {
-			// Only workload observations are recorded: the CRD
-			// establishment poll reads a typed CRD and is not a
-			// workload lookup.
-			if _, ok := obj.(*unstructured.Unstructured); ok {
-				fixture.gets = append(fixture.gets, key.String())
-				fixture.getCtxs = append(fixture.getCtxs, ctx)
+			// Typed lookups — the CRD establishment poll — delegate
+			// untouched: only unstructured workload probes take part
+			// in frame scripting.
+			live, isUnstructured := obj.(*unstructured.Unstructured)
+			if !isUnstructured {
+				return c.Get(ctx, key, obj, opts...)
 			}
 
-			frames := fixture.frames[key.String()]
+			id := prepareIdentity(live.GroupVersionKind(), key.Namespace, key.Name)
+
+			// The lookup delegates first: the framework deploy
+			// action's pre-apply probes of objects the cluster does
+			// not hold keep the fake client's real NotFound behavior
+			// and never consume a rollout frame.
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+
+			frames := fixture.frames[id]
 			if len(frames) == 0 {
-				return c.Get(ctx, key, obj, opts...)
+				return nil
 			}
 
 			frame := frames[0]
 			if len(frames) > 1 {
-				fixture.frames[key.String()] = frames[1:]
+				fixture.frames[id] = frames[1:]
 			}
+
+			// Only scripted observations reach the log: pre-apply
+			// probes and unscripted read-backs do not count as wait
+			// observations.
+			fixture.gets = append(fixture.gets, id)
+			fixture.getCtxs = append(fixture.getCtxs, ctx)
 
 			if frame.err != nil {
 				return frame.err
 			}
 
-			if live, ok := obj.(*unstructured.Unstructured); ok {
-				live.Object = frame.live
-			}
+			live.Object = frame.live
 
 			return nil
 		},
 	}
 
-	fixture.connection = cluster.NewWithClient(
-		fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithInterceptorFuncs(funcs).
-			Build(),
-	)
+	fixture.client = fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithInterceptorFuncs(funcs).
+		Build()
 
 	return fixture
 }
@@ -340,6 +371,15 @@ func prepareIdentity(gvk schema.GroupVersionKind, namespace string, name string)
 
 	return gvk.String() + " " + namespace + "/" + name
 }
+
+// waitTargetIdentity renders the full recorded identity of one waited
+// apps/v1 controller Deployment.
+func waitTargetIdentity(namespace, name string) string {
+	return prepareIdentity(deploymentGVKForFrames, namespace, name)
+}
+
+// deploymentGVKForFrames is the waited workload identity.
+var deploymentGVKForFrames = schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}
 
 // prepareServerUID renders the deterministic server identity of one
 // object identity.
@@ -367,14 +407,33 @@ func (f *prepareCluster) applyIndex(substr string) (int, int) {
 }
 
 // storedDefinition reads the persisted definition back through the
-// connection client.
+// fixture client.
 func (f *prepareCluster) storedDefinition(t *testing.T) unstructured.Unstructured {
 	t.Helper()
 
 	probe := &unstructured.Unstructured{}
 	probe.SetGroupVersionKind(definitionGVK)
 
-	if err := f.connection.Client().Get(t.Context(), crclient.ObjectKey{Name: "synthetic"}, probe); err != nil {
+	if err := f.client.Get(t.Context(), crclient.ObjectKey{Name: "synthetic"}, probe); err != nil {
+		t.Fatal(err)
+	}
+
+	return *probe
+}
+
+// stored reads one live object back through the fixture client.
+func (f *prepareCluster) stored(
+	t *testing.T,
+	gvk schema.GroupVersionKind,
+	namespace string,
+	name string,
+) unstructured.Unstructured {
+	t.Helper()
+
+	probe := &unstructured.Unstructured{}
+	probe.SetGroupVersionKind(gvk)
+
+	if err := f.client.Get(t.Context(), crclient.ObjectKey{Namespace: namespace, Name: name}, probe); err != nil {
 		t.Fatal(err)
 	}
 
@@ -388,6 +447,10 @@ var definitionGVK = schema.GroupVersionKind{
 	Kind:    "PlatformModuleDefinition",
 }
 
+// payloadGVKs are the compose payload identities the assertions read
+// back.
+var deploymentGVK = schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}
+
 // markerError is a distinctive cause for safe-text assertions.
 type markerError struct {
 	marker string
@@ -395,6 +458,21 @@ type markerError struct {
 
 // Error returns the distinctive marker.
 func (e *markerError) Error() string { return e.marker }
+
+// newPrepareTarget returns a Deployer holding the authored definition
+// and the effective field manager, over the fixture client: the
+// minimum receiver state the preparation reads.
+func newPrepareTarget(
+	fixture *prepareCluster,
+	definition *toolApi.PlatformModuleDefinition,
+	fieldManager string,
+) *Deployer {
+	return &Deployer{
+		client:       fixture.client,
+		definition:   definition,
+		fieldManager: fieldManager,
+	}
+}
 
 // TestPrepareOwnerAppliesCRDThenDefinition proves the preparation
 // performs exactly two server-side applies in order — the embedded
@@ -406,8 +484,11 @@ func TestPrepareOwnerAppliesCRDThenDefinition(t *testing.T) {
 	g := NewWithT(t)
 
 	fixture := newPrepareCluster(t)
+	definition := testDefinition()
 
-	owner, err := prepareOwner(t.Context(), fixture.connection, testDefinition(), DefaultFieldManager)
+	target := newPrepareTarget(fixture, &definition, DefaultFieldManager)
+
+	owner, err := target.prepareOwner(t.Context())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	crdApplies, crdFirst := fixture.applyIndex(prepareCRDWrite)
@@ -444,8 +525,11 @@ func TestPrepareOwnerUsesGivenFieldManager(t *testing.T) {
 	g := NewWithT(t)
 
 	fixture := newPrepareCluster(t)
+	definition := testDefinition()
 
-	_, err := prepareOwner(t.Context(), fixture.connection, testDefinition(), "team.example.deployer")
+	target := newPrepareTarget(fixture, &definition, "team.example.deployer")
+
+	_, err := target.prepareOwner(t.Context())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(fixture.applyOptions).To(HaveLen(2))
@@ -464,8 +548,11 @@ func TestPrepareOwnerDefaultManagerIsPlatformIdentity(t *testing.T) {
 	g := NewWithT(t)
 
 	fixture := newPrepareCluster(t)
+	definition := testDefinition()
 
-	_, err := prepareOwner(t.Context(), fixture.connection, testDefinition(), DefaultFieldManager)
+	target := newPrepareTarget(fixture, &definition, DefaultFieldManager)
+
+	_, err := target.prepareOwner(t.Context())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(fixture.applyOptions).To(HaveLen(2))
@@ -479,7 +566,8 @@ func TestPrepareOwnerDefaultManagerIsPlatformIdentity(t *testing.T) {
 // fields never reach the definition apply request: only the authored
 // name, labels, annotations, and spec are submitted — no UID,
 // resourceVersion, namespace, owner references, finalizers, or
-// status.
+// status. The receiver's authored definition keeps its forged values:
+// sanitization operates on a copy.
 func TestPrepareOwnerSanitizesDefinitionApply(t *testing.T) {
 	t.Parallel()
 
@@ -499,7 +587,9 @@ func TestPrepareOwnerSanitizesDefinitionApply(t *testing.T) {
 		Status: api.Status{Phase: "forged", ObservedGeneration: 7},
 	}
 
-	_, err := prepareOwner(t.Context(), fixture.connection, definition, DefaultFieldManager)
+	target := newPrepareTarget(fixture, &definition, DefaultFieldManager)
+
+	owner, err := target.prepareOwner(t.Context())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	_, definitionFirst := fixture.applyIndex(prepareDefinitionWrite)
@@ -517,6 +607,13 @@ func TestPrepareOwnerSanitizesDefinitionApply(t *testing.T) {
 		jq.Match(`.status == null`),
 		jq.Match(`.spec.controller.deployment.container.image == "{{RELATED_IMAGE_CONTROLLER}}"`),
 	))
+
+	// The authored definition the receiver holds is untouched: the
+	// sanitized object is the applied copy, and the confirmed owner
+	// carries the server identity instead.
+	g.Expect(target.definition.UID).To(Equal(types.UID("forged-uid")))
+	g.Expect(target.definition.Namespace).To(Equal("forged-namespace"))
+	g.Expect(owner.UID).To(Equal(types.UID(prepareServerUID(prepareDefinitionIdentity))))
 }
 
 // TestPrepareOwnerWaitsForEstablishment proves the definition apply
@@ -531,10 +628,13 @@ func TestPrepareOwnerWaitsForEstablishment(t *testing.T) {
 	fixture := newPrepareCluster(t)
 	fixture.crdNeverEstablished = true
 
+	definition := testDefinition()
+	target := newPrepareTarget(fixture, &definition, DefaultFieldManager)
+
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 
-	owner, err := prepareOwner(ctx, fixture.connection, testDefinition(), DefaultFieldManager)
+	owner, err := target.prepareOwner(ctx)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
 	g.Expect(owner).To(BeNil())
@@ -564,7 +664,10 @@ func TestPrepareOwnerFailuresAreSafeAndBounded(t *testing.T) {
 		fixture := newPrepareCluster(t)
 		fixture.failApply[prepareCRDWrite] = cause
 
-		owner, err := prepareOwner(t.Context(), fixture.connection, testDefinition(), DefaultFieldManager)
+		definition := testDefinition()
+		target := newPrepareTarget(fixture, &definition, DefaultFieldManager)
+
+		owner, err := target.prepareOwner(t.Context())
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(owner).To(BeNil())
 
@@ -593,7 +696,10 @@ func TestPrepareOwnerFailuresAreSafeAndBounded(t *testing.T) {
 		fixture := newPrepareCluster(t)
 		fixture.failApply[prepareDefinitionWrite] = cause
 
-		owner, err := prepareOwner(t.Context(), fixture.connection, testDefinition(), DefaultFieldManager)
+		definition := testDefinition()
+		target := newPrepareTarget(fixture, &definition, DefaultFieldManager)
+
+		owner, err := target.prepareOwner(t.Context())
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(owner).To(BeNil())
 

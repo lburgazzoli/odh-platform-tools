@@ -5,6 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	rest "k8s.io/client-go/rest"
 
 	deployer "github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/images"
@@ -108,7 +113,10 @@ func executeDeploy(
 }
 
 // deployFlags are the minimal required flag arguments.
-var deployFlags = []string{"--config", "definition.yaml", "--platform-version", "2.19.0"}
+var deployFlags = []string{
+	"--config", "definition.yaml",
+	"--platform-version", "2.19.0",
+}
 
 func TestDeployCommandForwardsOptionsContextAndGetter(t *testing.T) {
 	t.Parallel()
@@ -118,6 +126,11 @@ func TestDeployCommandForwardsOptionsContextAndGetter(t *testing.T) {
 	recorder := &recordingDeploy{}
 
 	getter := genericclioptions.NewConfigFlags(true)
+	// The deploy command owns no namespace flag: the effective
+	// namespace comes from the standard getter, here an explicit
+	// standard-flag override.
+	explicitNamespace := "applications"
+	getter.Namespace = &explicitNamespace
 	command := NewDeployCommand(recorder.deploy, getter)
 
 	var stdout, stderr bytes.Buffer
@@ -127,7 +140,6 @@ func TestDeployCommandForwardsOptionsContextAndGetter(t *testing.T) {
 		"--config", "/work/modules/synthetic/definition.yaml",
 		"--platform-version", "v2.19.0+dev",
 		"--related-images-file", "/work/images.env",
-		"--applications-namespace", "applications",
 		"--monitoring-namespace", "monitoring",
 		"--platform-type", "OpenDataHub",
 		"--field-manager", "team.example.deployer",
@@ -141,20 +153,21 @@ func TestDeployCommandForwardsOptionsContextAndGetter(t *testing.T) {
 	g.Expect(command.ExecuteContext(ctx)).NotTo(HaveOccurred())
 
 	// Exactly one action call, with every flag value in a plain
-	// options struct, the caller's context, and the root's standard
-	// getter forwarded untouched.
+	// options struct — the namespace resolved from the getter — the
+	// caller's context, and the root's standard getter forwarded
+	// untouched.
 	g.Expect(recorder.calls).To(Equal(1))
 	g.Expect(recorder.options).To(Equal([]deployer.Options{{
-		DefinitionFile:        "/work/modules/synthetic/definition.yaml",
-		RelatedImagesFile:     "/work/images.env",
-		ApplicationsNamespace: "applications",
-		MonitoringNamespace:   "monitoring",
-		PlatformType:          "OpenDataHub",
-		PlatformVersion:       "v2.19.0+dev",
-		FieldManager:          "team.example.deployer",
-		Timeout:               90 * time.Second,
-		Wait:                  true,
-		WaitTimeout:           45 * time.Second,
+		DefinitionFile:      "/work/modules/synthetic/definition.yaml",
+		RelatedImagesFile:   "/work/images.env",
+		Namespace:           "applications",
+		MonitoringNamespace: "monitoring",
+		PlatformType:        "OpenDataHub",
+		PlatformVersion:     "v2.19.0+dev",
+		FieldManager:        "team.example.deployer",
+		Timeout:             90 * time.Second,
+		Wait:                true,
+		WaitTimeout:         45 * time.Second,
 	}}))
 	g.Expect(recorder.contexts).To(HaveLen(1))
 	g.Expect(recorder.contexts[0]).To(Equal(ctx))
@@ -173,10 +186,12 @@ func TestDeployCommandDefaults(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// No wait by default, the standard budgets, the canonical field
-	// manager, and text output.
+	// manager, text output, and the standard default namespace from a
+	// bare getter.
 	g.Expect(recorder.options).To(Equal([]deployer.Options{{
 		DefinitionFile:  "definition.yaml",
 		PlatformVersion: "2.19.0",
+		Namespace:       "default",
 		FieldManager:    deployer.DefaultFieldManager,
 		Timeout:         DefaultTimeout,
 		Wait:            false,
@@ -278,20 +293,20 @@ func TestDeployCommandClassification(t *testing.T) {
 		{
 			"owner preparation wrapper",
 			moduleerrors.New(moduleerrors.ErrOwnerPreparation,
-				"applying the module definition failed; the raw cause remains reachable through errors.Is and errors.As",
+				"applying the module definition failed",
 				moduleerrors.WithCause(errors.New("refused"))),
 			FailureRuntime, ExitFailure,
 		},
 		{
 			"deploy prepare wrapper",
 			moduleerrors.New(moduleerrors.ErrDeployPrepare,
-				"preparing the module deployment failed; the raw causes remain reachable through errors.Is and errors.As"),
+				"preparing the module deployment failed"),
 			FailureRuntime, ExitFailure,
 		},
 		{
 			"deploy apply wrapper",
 			moduleerrors.New(moduleerrors.ErrDeployApply,
-				"applying the module resources failed; the raw causes remain reachable through errors.Is and errors.As"),
+				"applying the module resources failed"),
 			FailureRuntime, ExitFailure,
 		},
 		{
@@ -716,4 +731,248 @@ func TestDeployCommandWriteFailuresExitAsExecutionFailures(t *testing.T) {
 // never share or mutate the shared minimal flag slice.
 func slicesClone(flags []string) []string {
 	return append([]string(nil), flags...)
+}
+
+// recordingGetter counts configuration resolutions: the standard
+// ConfigFlags delegate unchanged, with ToRESTConfig observed, so a
+// test can prove no client construction happened.
+type recordingGetter struct {
+	*genericclioptions.ConfigFlags
+	resolutions int
+}
+
+// ToRESTConfig records one resolution and delegates to the standard
+// flags.
+func (g *recordingGetter) ToRESTConfig() (*rest.Config, error) {
+	g.resolutions++
+
+	return g.ConfigFlags.ToRESTConfig()
+}
+
+// actionOptions returns settings valid for the concrete action: the
+// definition file need not exist until a stage reads it, and the
+// client arrives through the action's own connection.
+func actionOptions() deployer.Options {
+	return deployer.Options{
+		DefinitionFile:  "/work/modules/synthetic/definition.yaml",
+		PlatformVersion: "2.19.0",
+		Namespace:       "run-namespace",
+		Timeout:         5 * time.Minute,
+	}
+}
+
+// TestActionRejectsBadInvocationsBeforeClientConstruction proves the
+// concrete action rejects an already-cancelled caller and invalid
+// settings before any client construction: the configuration is never
+// resolved, no stage runs, and the result is zero.
+func TestActionRejectsBadInvocationsBeforeClientConstruction(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		options func() deployer.Options
+		ctx     func() context.Context
+		check   func(g Gomega, err error)
+	}{
+		{
+			name:    "cancelled caller",
+			options: actionOptions,
+			ctx: func() context.Context {
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+
+				return ctx
+			},
+			check: func(g Gomega, err error) {
+				g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
+			},
+		},
+		{
+			name: "invalid settings",
+			options: func() deployer.Options {
+				options := actionOptions()
+				options.FieldManager = "team/manager"
+
+				return options
+			},
+			ctx: func() context.Context { return t.Context() },
+			check: func(g Gomega, err error) {
+				g.Expect(errors.Is(err, moduleerrors.ErrInvalidDeployOptions)).To(BeTrue())
+				g.Expect(err.Error()).To(Equal(
+					"invalid deploy options: FieldManager must be a nonempty Kubernetes label value of at most 63 characters"))
+			},
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := NewWithT(t)
+
+			getter := &recordingGetter{ConfigFlags: genericclioptions.NewConfigFlags(true)}
+
+			result, err := Action(testCase.ctx(), getter, testCase.options())
+
+			testCase.check(g, err)
+			g.Expect(getter.resolutions).To(Equal(0),
+				"no client may be constructed before the invocation checks")
+			g.Expect(result).To(Equal(deployer.Result{}))
+		})
+	}
+}
+
+// TestActionConnectFailureIsTerminal proves a connection failure stops
+// the action with the runtime-classified configuration error and a
+// zero result: no stage ever runs.
+func TestActionConnectFailureIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	kubeconfig := filepath.Join(t.TempDir(), "nonexistent-kubeconfig")
+	flags := genericclioptions.NewConfigFlags(true)
+	flags.KubeConfig = &kubeconfig
+
+	getter := &recordingGetter{ConfigFlags: flags}
+
+	result, err := Action(t.Context(), getter, actionOptions())
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("resolving Kubernetes configuration"))
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDeployOptions)).To(BeFalse())
+
+	g.Expect(getter.resolutions).To(Equal(1))
+	g.Expect(result).To(Equal(deployer.Result{}))
+}
+
+// actionDefinitionYAML is a Helm-format module definition whose
+// controller image is a literal: no image environment is needed, so
+// the local stages of the deadline test run offline.
+const actionDefinitionYAML = `apiVersion: config.opendatahub.io/v1alpha1
+kind: PlatformModuleDefinition
+metadata:
+  name: synthetic
+spec:
+  instance:
+    type:
+      group: components.platform.opendatahub.io
+      version: v1alpha1
+      kind: SyntheticModule
+  manifests:
+    format: helm
+    helm:
+      path: ./manifests/chart
+  controller:
+    deployment:
+      name: synthetic-controller
+      container:
+        image: quay.io/example/controller:v1
+`
+
+// actionChartYAML is the chart descriptor of the action fixture.
+const actionChartYAML = `apiVersion: v2
+name: synthetic
+version: 0.1.0
+`
+
+// actionTemplateYAML renders the controller Deployment the deadline
+// test's apply would write.
+const actionTemplateYAML = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthetic-controller
+  namespace: "{{ .Release.Namespace }}"
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: synthetic
+    spec:
+      containers:
+      - name: manager
+        image: quay.io/example/controller:v1
+`
+
+// actionRoot writes the minimal literal-image Helm module the action
+// can load and render offline, and returns its root directory.
+func actionRoot(t *testing.T) string {
+	t.Helper()
+
+	root := t.TempDir()
+
+	files := map[string]string{
+		"definition.yaml":                           actionDefinitionYAML,
+		"manifests/chart/Chart.yaml":                actionChartYAML,
+		"manifests/chart/templates/deployment.yaml": actionTemplateYAML,
+	}
+	for name, content := range files {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	return root
+}
+
+// hangingGetter returns a getter whose configuration points at a
+// server that accepts connections and never answers: every request
+// hangs until its own deadline.
+func hangingGetter(t *testing.T) *recordingGetter {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+
+	path := filepath.Join(t.TempDir(), "kubeconfig")
+	if err := os.WriteFile(path, []byte("apiVersion: v1\nkind: Config\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	flags := genericclioptions.NewConfigFlags(true)
+	flags.KubeConfig = &path
+	serverURL := server.URL
+	flags.APIServer = &serverURL
+
+	return &recordingGetter{ConfigFlags: flags}
+}
+
+// TestActionInvocationDeadlineBoundsTheDeploy proves the options'
+// overall timeout bounds the whole concrete invocation: against a
+// server that never answers, the deploy fails with the deadline
+// identity well inside the budget, after exactly one configuration
+// resolution.
+func TestActionInvocationDeadlineBoundsTheDeploy(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := actionRoot(t)
+
+	options := actionOptions()
+	options.DefinitionFile = filepath.Join(root, "definition.yaml")
+	options.Timeout = 250 * time.Millisecond
+
+	getter := hangingGetter(t)
+
+	start := time.Now()
+	result, err := Action(t.Context(), getter, options)
+	elapsed := time.Since(start)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
+	g.Expect(elapsed).To(BeNumerically("<", 30*time.Second))
+
+	g.Expect(getter.resolutions).To(Equal(1))
+	g.Expect(result).To(Equal(deployer.Result{
+		Attempted: deployer.StageDeploy,
+		Completed: deployer.StageRender,
+	}))
 }

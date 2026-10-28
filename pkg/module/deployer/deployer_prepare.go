@@ -18,7 +18,6 @@ package deployer
 
 import (
 	"context"
-	"fmt"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,59 +29,56 @@ import (
 	configcrd "github.com/lburgazzoli/odh-platform-tools/config/crd"
 	k8scrd "github.com/lburgazzoli/odh-platform-tools/pkg/k8s/crd"
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/cluster"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
 // prepareOwner is the single preparation step ahead of the payload
-// apply: apply the embedded definition CRD, wait until the server
-// serves it, then apply the definition itself and return the
-// server-backed object. Both writes are plain create-or-update
-// server-side applies through the framework helper — the same path
-// whether the server holds the object or not, with no pre-write read
-// and no local compatibility or live-state policy: the API validates
-// the result and refuses what it must refuse. Both writes claim their
-// fields under fieldManager, the invocation's effective manager: one
-// manager owns the authored spec and the whole authored labels and
-// annotations maps, so a re-run replaces keys it no longer authors;
-// live status and fields owned by other field managers are never
-// claimed.
-func prepareOwner(
-	ctx context.Context,
-	connection *cluster.Connection,
-	definition toolApi.PlatformModuleDefinition,
-	fieldManager string,
-) (*toolApi.PlatformModuleDefinition, error) {
-	client := connection.Client()
-
+// apply, over the invocation's client: apply the embedded definition
+// CRD, wait until the server serves it, then apply the definition
+// itself and return the server-backed object. Both writes are plain
+// create-or-update server-side applies through the framework helper —
+// the same path whether the server holds the object or not, with no
+// pre-write read and no local compatibility or live-state policy: the
+// API validates the result and refuses what it must refuse. Both
+// writes claim their fields under the invocation's effective field
+// manager: one manager owns the authored spec and the whole authored
+// labels and annotations maps, so a re-run replaces keys it no longer
+// authors; live status and fields owned by other field managers are
+// never claimed.
+//
+// The authored definition the receiver holds is never mutated: a deep
+// copy is sanitized and submitted, and the copy — carrying the
+// identity the apply response returned — becomes the confirmed owner.
+func (r *Deployer) prepareOwner(ctx context.Context) (*toolApi.PlatformModuleDefinition, error) {
 	crd := &apiextensionsv1.CustomResourceDefinition{}
 	if err := yaml.Unmarshal(configcrd.PlatformModuleDefinitionYAML, crd); err != nil {
 		return nil, prepareFail("decoding the embedded definition custom resource definition", err)
 	}
 
-	if err := fwresources.Apply(ctx, client, crd,
-		crclient.FieldOwner(fieldManager), crclient.ForceOwnership); err != nil {
+	if err := fwresources.Apply(ctx, r.client, crd,
+		crclient.FieldOwner(r.fieldManager), crclient.ForceOwnership); err != nil {
 		return nil, prepareFail("applying the definition custom resource definition", err)
 	}
 
-	if err := k8scrd.WaitForCRDToBeEstablished(ctx, client, toolApi.CRDName); err != nil {
+	if err := k8scrd.WaitForCRDToBeEstablished(ctx, r.client, toolApi.CRDName); err != nil {
 		return nil, prepareFail("waiting for the definition custom resource definition", err)
 	}
 
 	// Forged authority fields — UID, resourceVersion, namespace, owner
 	// references, finalizers — never reach the apply request: the
 	// preparation claims only the authored name, labels, annotations,
-	// and spec. The server-side merge preserves the live identity and
-	// status, so re-runs reuse identities without any lock.
-	definition.ObjectMeta = metav1.ObjectMeta{
-		Name:        definition.Name,
-		Labels:      definition.Labels,
-		Annotations: definition.Annotations,
+	// and spec, over a copy of the authored definition. The
+	// server-side merge preserves the live identity and status, so
+	// re-runs reuse identities without any lock.
+	desired := r.definition.DeepCopy()
+	desired.ObjectMeta = metav1.ObjectMeta{
+		Name:        desired.Name,
+		Labels:      desired.Labels,
+		Annotations: desired.Annotations,
 	}
-	desired := &definition
 
-	if err := fwresources.Apply(ctx, client, desired,
-		crclient.FieldOwner(fieldManager), crclient.ForceOwnership); err != nil {
+	if err := fwresources.Apply(ctx, r.client, desired,
+		crclient.FieldOwner(r.fieldManager), crclient.ForceOwnership); err != nil {
 		return nil, prepareFail("applying the module definition", err)
 	}
 
@@ -95,8 +91,9 @@ func prepareOwner(
 // the raw cause stays reachable through Unwrap for errors.Is and
 // errors.As.
 func prepareFail(operation string, cause error) error {
-	return moduleerrors.New(moduleerrors.ErrOwnerPreparation,
-		fmt.Sprintf("%s failed; the raw cause remains reachable through errors.Is and errors.As",
-			operation),
-		moduleerrors.WithCause(cause))
+	return moduleerrors.New(
+		moduleerrors.ErrOwnerPreparation,
+		operation+" failed",
+		moduleerrors.WithCause(cause),
+	)
 }

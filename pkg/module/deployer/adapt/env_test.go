@@ -323,11 +323,11 @@ spec:
 // and fully populated runtime inputs.
 func newEnvInjector(definition *toolApi.PlatformModuleDefinition) *EnvInjector {
 	return &EnvInjector{
-		Definition:            definition,
-		Images:                newResolvedImages(),
-		ApplicationsNamespace: "opendatahub",
-		MonitoringNamespace:   "opendatahub-monitoring",
-		PlatformType:          "self-managed",
+		Definition:          definition,
+		Images:              newResolvedImages(),
+		Namespace:           "opendatahub",
+		MonitoringNamespace: "opendatahub-monitoring",
+		PlatformType:        "self-managed",
 	}
 }
 
@@ -518,9 +518,9 @@ func TestEnvInjectorPrecedence(t *testing.T) {
 	}
 
 	var render enginetypes.PostRenderer = (&EnvInjector{
-		Definition:            definition,
-		Images:                newResolvedImages(),
-		ApplicationsNamespace: "opendatahub",
+		Definition: definition,
+		Images:     newResolvedImages(),
+		Namespace:  "opendatahub",
 	}).Run
 
 	input, err := toolk8s.DecodeResources([]byte(deploymentWithoutInitYAML))
@@ -936,9 +936,9 @@ func TestEnvInjectorNoContainerBlock(t *testing.T) {
 	}
 
 	var render enginetypes.PostRenderer = (&EnvInjector{
-		Definition:            definition,
-		Images:                newResolvedImages(),
-		ApplicationsNamespace: "opendatahub",
+		Definition: definition,
+		Images:     newResolvedImages(),
+		Namespace:  "opendatahub",
 	}).Run
 
 	input, err := toolk8s.DecodeResources([]byte(deploymentWithoutInitYAML))

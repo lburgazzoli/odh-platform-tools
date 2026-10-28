@@ -56,14 +56,12 @@ func (r *recordingRun) run(_ context.Context, options linter.Options) (linter.Re
 }
 
 // recordingModuleDeploy is a fake deploy action boundary recording every
-// invocation, the context it received, and the namespace the standard
-// getter resolves to.
+// invocation, the context it received, and the resolved options.
 type recordingModuleDeploy struct {
-	calls      int
-	contexts   []context.Context
-	getters    []genericclioptions.RESTClientGetter
-	options    []deployer.Options
-	namespaces []string
+	calls    int
+	contexts []context.Context
+	getters  []genericclioptions.RESTClientGetter
+	options  []deployer.Options
 }
 
 // deploy records one invocation and returns a successful empty result.
@@ -76,12 +74,6 @@ func (r *recordingModuleDeploy) deploy(
 	r.contexts = append(r.contexts, ctx)
 	r.getters = append(r.getters, getter)
 	r.options = append(r.options, options)
-
-	namespace, _, err := getter.ToRawKubeConfigLoader().Namespace()
-	if err != nil {
-		return deployer.Result{}, err
-	}
-	r.namespaces = append(r.namespaces, namespace)
 
 	return deployer.Result{}, nil
 }
@@ -280,11 +272,13 @@ func TestRootCommandDeployForwardsStandardGetterAndContext(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Exactly one deploy action call, with the caller's context, the
-	// root's standard getter, and the kubeconfig context's namespace.
+	// root's standard getter, and the kubeconfig context's namespace
+	// resolved into the options.
 	g.Expect(runRecorder.calls).To(Equal(1))
 	g.Expect(runRecorder.contexts).To(HaveLen(1))
 	g.Expect(runRecorder.contexts[0]).To(Equal(ctx))
-	g.Expect(runRecorder.namespaces).To(Equal([]string{"run-namespace"}))
+	g.Expect(runRecorder.options).To(HaveLen(1))
+	g.Expect(runRecorder.options[0].Namespace).To(Equal("run-namespace"))
 
 	g.Expect(lintRecorder.calls).To(Equal(0))
 }
@@ -307,7 +301,8 @@ func TestRootCommandNamespaceOverrideWins(t *testing.T) {
 
 	// The standard -n override wins over the kubeconfig context
 	// namespace.
-	g.Expect(runRecorder.namespaces).To(Equal([]string{"override-namespace"}))
+	g.Expect(runRecorder.options).To(HaveLen(1))
+	g.Expect(runRecorder.options[0].Namespace).To(Equal("override-namespace"))
 }
 
 func TestRootCommandLintNeverResolvesKubeconfig(t *testing.T) {
