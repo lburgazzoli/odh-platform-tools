@@ -52,15 +52,15 @@ import (
 // whose stages were already driven, directly or by a previous Apply.
 func (r *Deployer) Apply(ctx context.Context) (Result, error) {
 	if err := ctx.Err(); err != nil {
-		return rejectedResult(), err
+		return Result{}, err
 	}
 
 	if err := r.options.Validate(); err != nil {
-		return rejectedResult(), err
+		return Result{}, err
 	}
 
 	if r.stage != stageNew {
-		return rejectedResult(), moduleerrors.New(
+		return Result{}, moduleerrors.New(
 			moduleerrors.ErrStageSequence,
 			"invalid deployer stage sequence: Apply requires a fresh deployer",
 		)
@@ -121,10 +121,4 @@ func (r *Deployer) reportCompleted(attempted, completed Stage, err error) (Resul
 		WaitCompleted:  r.waitCompleted,
 		WaitTargets:    r.waitTargets,
 	}, err
-}
-
-// rejectedResult is the report of an invocation rejected before any
-// stage ran: nothing was attempted, nothing was written.
-func rejectedResult() Result {
-	return Result{}
 }

@@ -52,16 +52,28 @@ import (
 func (r *Deployer) prepareOwner(ctx context.Context) (*toolApi.PlatformModuleDefinition, error) {
 	crd := &apiextensionsv1.CustomResourceDefinition{}
 	if err := yaml.Unmarshal(configcrd.PlatformModuleDefinitionYAML, crd); err != nil {
-		return nil, prepareFail("decoding the embedded definition custom resource definition", err)
+		return nil, moduleerrors.New(
+			moduleerrors.ErrOwnerPreparation,
+			"decoding the embedded definition custom resource definition failed",
+			moduleerrors.WithCause(err),
+		)
 	}
 
 	if err := fwresources.Apply(ctx, r.client, crd,
 		crclient.FieldOwner(r.fieldManager), crclient.ForceOwnership); err != nil {
-		return nil, prepareFail("applying the definition custom resource definition", err)
+		return nil, moduleerrors.New(
+			moduleerrors.ErrOwnerPreparation,
+			"applying the definition custom resource definition failed",
+			moduleerrors.WithCause(err),
+		)
 	}
 
 	if err := k8scrd.WaitForCRDToBeEstablished(ctx, r.client, toolApi.CRDName); err != nil {
-		return nil, prepareFail("waiting for the definition custom resource definition", err)
+		return nil, moduleerrors.New(
+			moduleerrors.ErrOwnerPreparation,
+			"waiting for the definition custom resource definition failed",
+			moduleerrors.WithCause(err),
+		)
 	}
 
 	// Forged authority fields — UID, resourceVersion, namespace, owner
@@ -79,21 +91,12 @@ func (r *Deployer) prepareOwner(ctx context.Context) (*toolApi.PlatformModuleDef
 
 	if err := fwresources.Apply(ctx, r.client, desired,
 		crclient.FieldOwner(r.fieldManager), crclient.ForceOwnership); err != nil {
-		return nil, prepareFail("applying the module definition", err)
+		return nil, moduleerrors.New(
+			moduleerrors.ErrOwnerPreparation,
+			"applying the module definition failed",
+			moduleerrors.WithCause(err),
+		)
 	}
 
 	return desired, nil
-}
-
-// prepareFail wraps one preparation failure in the safe shared
-// moduleerrors.ErrOwnerPreparation error: its text names the failed
-// operation only, never echoing server-returned or authored values;
-// the raw cause stays reachable through Unwrap for errors.Is and
-// errors.As.
-func prepareFail(operation string, cause error) error {
-	return moduleerrors.New(
-		moduleerrors.ErrOwnerPreparation,
-		operation+" failed",
-		moduleerrors.WithCause(cause),
-	)
 }

@@ -764,7 +764,11 @@ func TestWaitBudgetBoundaries(t *testing.T) {
 		g := NewWithT(t)
 
 		options := testOptions()
-		options.Timeout = 300 * time.Millisecond
+		// The overall timeout is deliberately well under the 30-second
+		// wait budget yet generous for the real local stages, so the
+		// deadline the wait observes is the invocation's, not the
+		// stages' overhead under load.
+		options.Timeout = 2 * time.Second
 		options.Wait = true
 		options.WaitTimeout = 30 * time.Second
 		options.WaitPollInterval = time.Millisecond
@@ -784,9 +788,9 @@ func TestWaitBudgetBoundaries(t *testing.T) {
 		deadline, ok := fixture.getCtxs[0].Deadline()
 		g.Expect(ok).To(BeTrue())
 		// The earlier overall deadline caps the wait: a 30-second
-		// budget never extends the 300ms invocation deadline (plus
-		// the same real-stage slack).
-		g.Expect(deadline).To(BeTemporally("<=", start.Add(300*time.Millisecond+stageOverheadSlack)))
+		// budget never extends the two-second invocation deadline
+		// (plus the same real-stage slack).
+		g.Expect(deadline).To(BeTemporally("<=", start.Add(2*time.Second+stageOverheadSlack)))
 	})
 }
 
