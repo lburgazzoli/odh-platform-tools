@@ -100,7 +100,7 @@ func executeDeploy(
 ) (string, string, error) {
 	t.Helper()
 
-	command := NewDeployCommand(action, genericclioptions.NewConfigFlags(true))
+	command := NewDeployCommand(action, testGetter(t))
 
 	var stdout, stderr bytes.Buffer
 	command.SetOut(&stdout)
@@ -110,6 +110,44 @@ func executeDeploy(
 	err := command.ExecuteContext(ctx)
 
 	return stdout.String(), stderr.String(), err
+}
+
+// deployTestKubeconfigYAML is a standalone kubeconfig whose context
+// carries no namespace, pointing at an unreachable server: namespace
+// resolution reads it locally and never contacts it.
+const deployTestKubeconfigYAML = `apiVersion: v1
+kind: Config
+clusters:
+- name: test-cluster
+  cluster:
+    server: https://127.0.0.1:6443
+contexts:
+- name: test-context
+  context:
+    cluster: test-cluster
+    user: test-user
+current-context: test-context
+users:
+- name: test-user
+  user: {}
+`
+
+// testGetter returns standard ConfigFlags bound to a standalone
+// no-namespace kubeconfig, so command tests never read the ambient
+// kubeconfig: the resolved namespace is deterministically the
+// standard default.
+func testGetter(t *testing.T) *genericclioptions.ConfigFlags {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "kubeconfig")
+	if err := os.WriteFile(path, []byte(deployTestKubeconfigYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	flags := genericclioptions.NewConfigFlags(true)
+	flags.KubeConfig = &path
+
+	return flags
 }
 
 // deployFlags are the minimal required flag arguments.
@@ -125,7 +163,7 @@ func TestDeployCommandForwardsOptionsContextAndGetter(t *testing.T) {
 
 	recorder := &recordingDeploy{}
 
-	getter := genericclioptions.NewConfigFlags(true)
+	getter := testGetter(t)
 	// The deploy command owns no namespace flag: the effective
 	// namespace comes from the standard getter, here an explicit
 	// standard-flag override.
@@ -186,8 +224,8 @@ func TestDeployCommandDefaults(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// No wait by default, the standard budgets, the canonical field
-	// manager, text output, and the standard default namespace from a
-	// bare getter.
+	// manager, text output, and the standard default namespace from
+	// the standalone no-namespace kubeconfig.
 	g.Expect(recorder.options).To(Equal([]deployer.Options{{
 		DefinitionFile:  "definition.yaml",
 		PlatformVersion: "2.19.0",
@@ -958,7 +996,10 @@ func TestActionInvocationDeadlineBoundsTheDeploy(t *testing.T) {
 
 	options := actionOptions()
 	options.DefinitionFile = filepath.Join(root, "definition.yaml")
-	options.Timeout = 250 * time.Millisecond
+	// The budget is generous for the real local stages yet far under
+	// any default, so under load the deadline still lands in the
+	// hanging apply, not in Load or Render.
+	options.Timeout = 2 * time.Second
 
 	getter := hangingGetter(t)
 
