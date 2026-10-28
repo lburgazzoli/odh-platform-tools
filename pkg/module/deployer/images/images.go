@@ -21,6 +21,7 @@ import (
 
 	"github.com/spf13/viper"
 
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
@@ -88,6 +89,26 @@ func Load(path string, keys []string) (map[string]string, error) {
 	}
 
 	return values, nil
+}
+
+// Snapshot snapshots the image sources of one module definition: the
+// declared related images plus the main container image's whole-token
+// source key, when it is one, resolved through Load from the selected
+// file and the process environment. A definition whose controller
+// container is absent or whose image is not a whole-token reference
+// contributes no extra key; absent and masked sources are simply
+// omitted, preserving the permissive missing-image behavior.
+func Snapshot(path string, definition toolApi.PlatformModuleDefinition) (map[string]string, error) {
+	keys := make([]string, 0, len(definition.Spec.RelatedImages)+1)
+	keys = append(keys, definition.Spec.RelatedImages...)
+
+	if container := definition.Spec.Controller.Deployment.Container; container != nil {
+		if key, ok := ImageSourceKey(container.Image); ok {
+			keys = append(keys, key)
+		}
+	}
+
+	return Load(path, keys)
 }
 
 // imageTokenPattern matches a complete {{NAME}} image reference with

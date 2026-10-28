@@ -164,7 +164,7 @@ func (r *Deployer) Load(ctx context.Context) error {
 		return err
 	}
 
-	snapshot, err := snapshotImages(r.options.RelatedImagesFile, definition)
+	snapshot, err := images.Snapshot(r.options.RelatedImagesFile, definition)
 	if err != nil {
 		r.fail()
 		return err
@@ -327,23 +327,6 @@ func (r *Deployer) begin(next stage) error {
 // identity — stays readable after it.
 func (r *Deployer) fail() {
 	r.stage = stageFailed
-}
-
-// snapshotImages snapshots the image sources of one definition: the
-// declared related images plus the main container image's whole-token
-// source key, when it is one, resolved from the selected file and the
-// process environment.
-func snapshotImages(path string, definition toolApi.PlatformModuleDefinition) (map[string]string, error) {
-	keys := make([]string, 0, len(definition.Spec.RelatedImages)+1)
-	keys = append(keys, definition.Spec.RelatedImages...)
-
-	if container := definition.Spec.Controller.Deployment.Container; container != nil {
-		if key, ok := images.ImageSourceKey(container.Image); ok {
-			keys = append(keys, key)
-		}
-	}
-
-	return images.Load(path, keys)
 }
 
 // waitPollInterval is the effective observation pause: the explicit

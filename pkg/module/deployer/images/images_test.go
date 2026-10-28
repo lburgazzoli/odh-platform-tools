@@ -9,6 +9,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
@@ -369,6 +370,89 @@ func TestResolveImage(t *testing.T) {
 			g := NewWithT(t)
 
 			g.Expect(ResolveImage(test.image, values)).To(Equal(test.want))
+		})
+	}
+}
+
+// snapshotDefinition builds one definition with the given related
+// images and controller container image, matching the deployer's
+// authored-definition shape. An empty image means no container block.
+func snapshotDefinition(relatedImages []string, image string) toolApi.PlatformModuleDefinition {
+	definition := toolApi.PlatformModuleDefinition{
+		Spec: toolApi.PlatformModuleDefinitionSpec{
+			RelatedImages: relatedImages,
+		},
+	}
+	if image != "" {
+		definition.Spec.Controller.Deployment.Container = &toolApi.ContainerDefinition{Image: image}
+	}
+
+	return definition
+}
+
+// TestSnapshotSelectsDeclaredAndContainerKeys proves the snapshot
+// requests exactly the declared related images plus the main
+// container's whole-token source key: every requested source resolves
+// and no other file or ambient entry leaks in.
+func TestSnapshotSelectsDeclaredAndContainerKeys(t *testing.T) {
+	unsetEnv(t,
+		"RELATED_IMAGE_OPERAND",
+		"RELATED_IMAGE_CONTROLLER",
+		"RELATED_IMAGE_UNREQUESTED")
+
+	g := NewWithT(t)
+
+	path := writeSources(t, "sources.env", sourcesDotenv+"\n"+
+		"RELATED_IMAGE_UNREQUESTED=quay.io/example/unrequested:v9\n")
+
+	definition := snapshotDefinition(
+		[]string{"RELATED_IMAGE_OPERAND"},
+		"{{RELATED_IMAGE_CONTROLLER}}")
+
+	values, err := Snapshot(path, definition)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(values).To(Equal(map[string]string{
+		"RELATED_IMAGE_OPERAND":    "quay.io/example/operand:v2",
+		"RELATED_IMAGE_CONTROLLER": "quay.io/example/controller:v1",
+	}))
+}
+
+// TestSnapshotContainerCases proves the container contributes a key
+// only when it exists and its image is a whole-token reference: an
+// absent container block and a literal image both snapshot only the
+// declared related images.
+func TestSnapshotContainerCases(t *testing.T) {
+	unsetEnv(t, "RELATED_IMAGE_OPERAND")
+
+	tests := []struct {
+		name       string
+		definition toolApi.PlatformModuleDefinition
+	}{
+		{
+			name: "literal container image adds no key",
+			definition: snapshotDefinition(
+				[]string{"RELATED_IMAGE_OPERAND"},
+				"quay.io/example/controller:v1"),
+		},
+		{
+			name: "absent container adds no key",
+			definition: toolApi.PlatformModuleDefinition{Spec: toolApi.PlatformModuleDefinitionSpec{
+				RelatedImages: []string{"RELATED_IMAGE_OPERAND"},
+			}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			g := NewWithT(t)
+
+			values, err := Snapshot(writeSources(t, "sources.env", sourcesDotenv), test.definition)
+
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(values).To(Equal(map[string]string{
+				"RELATED_IMAGE_OPERAND": "quay.io/example/operand:v2",
+			}))
 		})
 	}
 }
