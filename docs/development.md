@@ -53,7 +53,7 @@ examples/               Helm and Kustomize sample modules
   and call injected action functions.
 - File roles: `<name>.go`, `<name>_support.go`, `<name>_opts.go`,
   `<name>_test.go`.
-- Functional options via `pkg/util/option`; presets on value receivers.
+- Functional options combine a settings struct and functions — see below.
 - One type per parameter; never `func f(a, b string)`.
 - Errors: `pkg/module/errors` — one `ModuleError` with category sentinels;
   construct with `moduleerrors.New`, classify with `errors.Is`.
@@ -61,6 +61,41 @@ examples/               Helm and Kustomize sample modules
 - Embedded YAML/JSON documents are individually named package-level consts.
 - Retries go through `pkg/util/retry` (bounded attempts, backoff, predicate).
 - Apache-2.0 header from `hack/boilerplate.go.txt` on source files.
+
+## Functional options
+
+Optional configuration always pairs a plain settings struct with `WithXxx`
+function options over it, via `pkg/util/option`:
+
+- **Struct**: an exported `XxxOptions` struct holds the settings. It is the
+  single target every option mutates.
+- **Functions**: each setting gets a `WithXxx` constructor returning
+  `option.FunctionalOption[XxxOptions]`; an `XxxOption =
+  option.Option[XxxOptions]` alias names the parameter type.
+- **Presets**: the struct itself implements `ApplyTo` on a value receiver, so
+  a complete configuration can be passed as one option.
+- Constructors take `opts ...XxxOption`; nil options are ignored; options
+  apply in order, last write wins.
+- Option code lives in `<name>_opts.go`.
+
+```go
+type RenderOptions struct{ Namespace string }
+
+// Preset: the struct is itself an option.
+func (opts RenderOptions) ApplyTo(target *RenderOptions) { *target = opts }
+
+type RenderOption = option.Option[RenderOptions]
+
+// Function option.
+func WithNamespace(namespace string) RenderOption {
+	return option.FunctionalOption[RenderOptions](func(target *RenderOptions) {
+		target.Namespace = namespace
+	})
+}
+```
+
+Both forms compose in one call: `renderer.Render(ctx, def, file,
+RenderOptions{Namespace: ns}, WithPostRenderer(p))`.
 
 ## Hygiene
 

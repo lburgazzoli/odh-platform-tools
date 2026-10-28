@@ -18,8 +18,9 @@ one-shot deploy of a module's controller package.
 ## Conventions
 
 - File roles: `<name>.go`, `<name>_support.go`, `<name>_opts.go`, `<name>_test.go`.
-- Functional options via `pkg/util/option` (`Option[T]`); presets on value
-  receivers; constructors take `opts ...Option[T]`.
+- Functional options via `pkg/util/option` (`Option[T]`): settings struct +
+  `WithXxx` functions; presets on value receivers; constructors take
+  `opts ...Option[T]`.
 - One type per parameter — never group same-type parameter declarations.
 - Errors: `pkg/module/errors` — `moduleerrors.New(category, msg,
   moduleerrors.WithCause(err))`; classify with `errors.Is` on category
