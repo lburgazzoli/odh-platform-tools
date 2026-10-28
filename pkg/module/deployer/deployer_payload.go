@@ -48,11 +48,12 @@ const (
 	applyFailureMessage   = "applying the module resources failed"
 )
 
-// defaultPayloadRetryBackoff is the settled pause between the payload
-// action's attempts: with it the action runs five times in total —
-// the first attempt plus one after each pause. It is a per-receiver
-// schedule so tests can shorten it per instance; an unset schedule
-// means this default.
+// defaultPayloadRetryBackoff is the settled pause between the
+// resource application's attempts: with it the action runs five times
+// in total — the first attempt plus one after each pause. It is the
+// construction-time template New clones into each instance's private
+// payloadRetryBackoff; it is never mutated and never shared as
+// backing storage.
 var defaultPayloadRetryBackoff = []time.Duration{
 	time.Second,
 	2 * time.Second,
@@ -154,9 +155,6 @@ func (r *Deployer) applyResources(ctx context.Context) error {
 	quietCtx := logf.IntoContext(ctx, logr.Discard())
 
 	backoff := r.payloadRetryBackoff
-	if backoff == nil {
-		backoff = defaultPayloadRetryBackoff
-	}
 
 	// The bounded retry loop: one attempt per iteration, the settled
 	// pause between them, and a stop on success, on the invocation's

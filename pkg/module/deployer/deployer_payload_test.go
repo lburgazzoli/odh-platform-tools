@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -466,10 +467,12 @@ func (f *fakeCluster) connect(t *testing.T) (crclient.Client, *writeLog) {
 }
 
 // payloadTarget returns a Deployer holding the minimum receiver state
-// the private payload method reads: the client, the persisted owner,
-// the release, the rendered payload, and the field manager. It
-// bypasses New, so the field manager is exactly the given value —
-// including empty, which the method must reject.
+// the private resource-application method reads: the client, the
+// persisted owner, the release, the rendered payload, and the field
+// manager. It bypasses New, so the field manager is exactly the given
+// value — including empty, which the method must reject — and the
+// retry schedule is initialized explicitly to the same independent
+// default New would install.
 func payloadTarget(
 	client crclient.Client,
 	owner *toolApi.PlatformModuleDefinition,
@@ -478,11 +481,12 @@ func payloadTarget(
 	fieldManager string,
 ) *Deployer {
 	return &Deployer{
-		options:   Options{FieldManager: fieldManager},
-		client:    client,
-		owner:     owner,
-		release:   release,
-		resources: resources,
+		options:             Options{FieldManager: fieldManager},
+		client:              client,
+		owner:               owner,
+		release:             release,
+		resources:           resources,
+		payloadRetryBackoff: slices.Clone(defaultPayloadRetryBackoff),
 	}
 }
 

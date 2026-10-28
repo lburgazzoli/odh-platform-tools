@@ -325,6 +325,36 @@ func TestNewResolvesOptionsInOrder(t *testing.T) {
 	g.Expect(second.stage).To(Equal(stageNew))
 }
 
+// TestNewInitializesRetryBackoff proves every construction owns the
+// default retry schedule as independent storage: mutating one
+// instance's schedule can affect neither another instance nor a later
+// construction, and an Options preset cannot erase it.
+func TestNewInitializesRetryBackoff(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	expected := []time.Duration{
+		time.Second,
+		2 * time.Second,
+		4 * time.Second,
+		8 * time.Second,
+	}
+
+	empty := New()
+	preset := New(testOptions())
+	g.Expect(empty.payloadRetryBackoff).To(Equal(expected))
+	g.Expect(preset.payloadRetryBackoff).To(Equal(expected))
+
+	// Mutating one instance's schedule leaves the other and later
+	// constructions untouched.
+	empty.payloadRetryBackoff[0] = time.Hour
+	g.Expect(preset.payloadRetryBackoff[0]).To(Equal(time.Second))
+
+	fresh := New()
+	g.Expect(fresh.payloadRetryBackoff).To(Equal(expected))
+}
+
 // servesObject reports whether client serves the named ConfigMap in
 // the run namespace — the behavioral identity probe for intercepted
 // clients, whose function fields make value comparison impossible.

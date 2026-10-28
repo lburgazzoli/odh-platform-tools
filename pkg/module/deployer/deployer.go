@@ -41,6 +41,7 @@ package deployer
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -91,8 +92,9 @@ type Deployer struct {
 	owner   *toolApi.PlatformModuleDefinition
 	applied bool
 
-	// payloadRetryBackoff is the pause between the payload action's
-	// attempts; nil means defaultPayloadRetryBackoff.
+	// payloadRetryBackoff is the pause between the resource
+	// application's attempts; New initializes it to an independent
+	// copy of defaultPayloadRetryBackoff.
 	payloadRetryBackoff []time.Duration
 
 	waited        bool
@@ -132,10 +134,14 @@ func New(opts ...DeployerOption) *Deployer {
 		resolved.WaitPollInterval = DefaultWaitPollInterval
 	}
 
+	// The retry schedule is private configuration with its own
+	// default: each instance owns an independent copy of the settled
+	// pauses, so no construction shares mutable schedule storage.
 	return &Deployer{
-		options: resolved,
-		client:  resolved.Client,
-		stage:   stageNew,
+		options:             resolved,
+		client:              resolved.Client,
+		payloadRetryBackoff: slices.Clone(defaultPayloadRetryBackoff),
+		stage:               stageNew,
 	}
 }
 
