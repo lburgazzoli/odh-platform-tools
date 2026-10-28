@@ -151,10 +151,6 @@ func (r *Deployer) applyResources(ctx context.Context) error {
 	// matching the operator. The action carries no deploy cache.
 	bridge := adapt.NewControllerBridge(r.client)
 
-	// The action's own logs can echo server-returned error text, so
-	// it runs under a discarded logger.
-	quietCtx := logf.IntoContext(ctx, logr.Discard())
-
 	backoff := r.payloadRetryBackoff
 
 	// The bounded retry: the whole action reruns on failure through
@@ -167,7 +163,7 @@ func (r *Deployer) applyResources(ctx context.Context) error {
 		ctx,
 		backoff,
 		retry.IsRetriable,
-		func(context.Context) error {
+		func(attemptCtx context.Context) error {
 			// A fresh action configuration per attempt. Defaults keep
 			// the framework field ownership, metadata, customizers, SSA
 			// mode, the default apply-order sort (Namespaces and CRDs
@@ -181,6 +177,10 @@ func (r *Deployer) applyResources(ctx context.Context) error {
 				fwdeploy.WithContinueOnError(),
 				fwdeploy.WithFieldOwner(r.options.FieldManager),
 			)
+
+			// The action's own logs can echo server-returned error
+			// text, so it runs under a discarded logger.
+			quietCtx := logf.IntoContext(attemptCtx, logr.Discard())
 
 			// One action invocation per attempt: the invocation client,
 			// the controller bridge, the persisted definition as the
