@@ -977,7 +977,7 @@ func TestApplyStopsRetryingWhenBackoffIsCancelled(t *testing.T) {
 	// One long pause: the invocation deadline fires inside it.
 	target.payloadRetryBackoff = []time.Duration{20 * time.Second}
 
-	ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 
 	err := target.deployPayload(ctx)

@@ -170,13 +170,18 @@ func (r *Deployer) deployPayload(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				timer.Stop()
+			case <-timer.C:
+			}
 
+			// The timer and the cancellation can both be ready when
+			// the wait ends exactly at the deadline; the cancellation
+			// wins, and no further action runs.
+			if err := ctx.Err(); err != nil {
 				return moduleerrors.New(
 					moduleerrors.ErrDeployApply,
 					applyFailureMessage,
-					moduleerrors.WithCause(ctx.Err()),
+					moduleerrors.WithCause(err),
 				)
-			case <-timer.C:
 			}
 		}
 
