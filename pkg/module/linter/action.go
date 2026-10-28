@@ -102,7 +102,7 @@ func (a *Action) Run(ctx context.Context, options Options) (Result, error) {
 		return Result{}, err
 	}
 
-	slices.SortStableFunc(diagnostics, func(x, y Diagnostic) int {
+	slices.SortStableFunc(diagnostics, func(x Diagnostic, y Diagnostic) int {
 		return cmp.Or(
 			cmp.Compare(x.ID, y.ID),
 			cmp.Compare(x.GVK.String(), y.GVK.String()),

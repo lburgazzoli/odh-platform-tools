@@ -206,7 +206,7 @@ func newTestDeployer(t *testing.T, options Options, fixture *prepareCluster, roo
 
 // writeFile writes one fixture file under root, failing the test on
 // any error.
-func writeFile(t *testing.T, root, name, content string) {
+func writeFile(t *testing.T, root string, name string, content string) {
 	t.Helper()
 
 	path := filepath.Join(root, name)
@@ -220,7 +220,7 @@ func writeFile(t *testing.T, root, name, content string) {
 
 // findResource returns the first resource of the payload with the
 // given kind and name, or nil.
-func findResource(resources []unstructured.Unstructured, kind, name string) *unstructured.Unstructured {
+func findResource(resources []unstructured.Unstructured, kind string, name string) *unstructured.Unstructured {
 	for i := range resources {
 		if resources[i].GetKind() == kind && resources[i].GetName() == name {
 			return &resources[i]

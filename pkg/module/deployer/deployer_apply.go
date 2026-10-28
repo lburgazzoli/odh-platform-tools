@@ -111,7 +111,7 @@ func (r *Deployer) report(attempted Stage, err error) (Result, error) {
 // completed stage stated explicitly. Stage failures use report's
 // preceding-stage rule; a wait failure passes deploy for both — the
 // apply already completed, and only the wait failed.
-func (r *Deployer) reportCompleted(attempted, completed Stage, err error) (Result, error) {
+func (r *Deployer) reportCompleted(attempted Stage, completed Stage, err error) (Result, error) {
 	return Result{
 		Attempted:      attempted,
 		Completed:      completed,

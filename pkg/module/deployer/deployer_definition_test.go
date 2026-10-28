@@ -374,7 +374,7 @@ func prepareIdentity(gvk schema.GroupVersionKind, namespace string, name string)
 
 // waitTargetIdentity renders the full recorded identity of one waited
 // apps/v1 controller Deployment.
-func waitTargetIdentity(namespace, name string) string {
+func waitTargetIdentity(namespace string, name string) string {
 	return prepareIdentity(deploymentGVKForFrames, namespace, name)
 }
 
