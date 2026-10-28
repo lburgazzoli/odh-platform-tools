@@ -163,7 +163,7 @@ func TestApplyAcceptsBoundaryFieldManagers(t *testing.T) {
 			target := newTestDeployer(t, options, fixture, root)
 
 			g.Expect(target.Load(t.Context())).To(Succeed())
-			g.Expect(target.fieldManager).To(Equal(testCase.manager))
+			g.Expect(target.options.FieldManager).To(Equal(testCase.manager))
 		})
 	}
 }

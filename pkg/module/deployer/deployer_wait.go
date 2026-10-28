@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	gvk "github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
@@ -112,16 +111,6 @@ func (r *Deployer) Wait(ctx context.Context) error {
 	return nil
 }
 
-// waitBudget is the shared wait budget: the explicit override when
-// positive, the default otherwise.
-func (r *Deployer) waitBudget() time.Duration {
-	if r.options.WaitTimeout > 0 {
-		return r.options.WaitTimeout
-	}
-
-	return DefaultWaitTimeout
-}
-
 // controllerDeploymentName mirrors the env injector's target
 // selection: the configured controller deployment name, falling back
 // to the module's metadata.name.
@@ -173,8 +162,8 @@ func (r *Deployer) selectWaitTargets() []types.NamespacedName {
 func (r *Deployer) observeUntilRolledOut(ctx context.Context) error {
 	err := wait.PollUntilContextTimeout(
 		ctx,
-		r.waitPollInterval(),
-		r.waitBudget(),
+		r.options.WaitPollInterval,
+		r.options.WaitTimeout,
 		true,
 		r.observeRolledOut,
 	)

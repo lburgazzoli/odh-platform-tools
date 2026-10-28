@@ -468,9 +468,9 @@ func newPrepareTarget(
 	fieldManager string,
 ) *Deployer {
 	return &Deployer{
-		client:       fixture.client,
-		definition:   definition,
-		fieldManager: fieldManager,
+		options:    Options{FieldManager: fieldManager},
+		client:     fixture.client,
+		definition: definition,
 	}
 }
 

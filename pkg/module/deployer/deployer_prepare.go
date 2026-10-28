@@ -60,7 +60,7 @@ func (r *Deployer) prepareOwner(ctx context.Context) (*toolApi.PlatformModuleDef
 	}
 
 	if err := fwresources.Apply(ctx, r.client, crd,
-		crclient.FieldOwner(r.fieldManager), crclient.ForceOwnership); err != nil {
+		crclient.FieldOwner(r.options.FieldManager), crclient.ForceOwnership); err != nil {
 		return nil, moduleerrors.New(
 			moduleerrors.ErrOwnerPreparation,
 			"applying the definition custom resource definition failed",
@@ -90,7 +90,7 @@ func (r *Deployer) prepareOwner(ctx context.Context) (*toolApi.PlatformModuleDef
 	}
 
 	if err := fwresources.Apply(ctx, r.client, desired,
-		crclient.FieldOwner(r.fieldManager), crclient.ForceOwnership); err != nil {
+		crclient.FieldOwner(r.options.FieldManager), crclient.ForceOwnership); err != nil {
 		return nil, moduleerrors.New(
 			moduleerrors.ErrOwnerPreparation,
 			"applying the module definition failed",

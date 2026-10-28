@@ -467,7 +467,9 @@ func (f *fakeCluster) connect(t *testing.T) (crclient.Client, *writeLog) {
 
 // payloadTarget returns a Deployer holding the minimum receiver state
 // the private payload method reads: the client, the persisted owner,
-// the release, the rendered payload, and the field manager.
+// the release, the rendered payload, and the field manager. It
+// bypasses New, so the field manager is exactly the given value —
+// including empty, which the method must reject.
 func payloadTarget(
 	client crclient.Client,
 	owner *toolApi.PlatformModuleDefinition,
@@ -476,11 +478,11 @@ func payloadTarget(
 	fieldManager string,
 ) *Deployer {
 	return &Deployer{
-		client:       client,
-		owner:        owner,
-		release:      release,
-		resources:    resources,
-		fieldManager: fieldManager,
+		options:   Options{FieldManager: fieldManager},
+		client:    client,
+		owner:     owner,
+		release:   release,
+		resources: resources,
 	}
 }
 

@@ -82,18 +82,14 @@ type Deployer struct {
 
 	stage stage
 
-	definition   *toolApi.PlatformModuleDefinition
-	images       map[string]string
-	namespace    string
-	platformType string
-	release      api.Release
+	definition *toolApi.PlatformModuleDefinition
+	images     map[string]string
+	release    api.Release
 
 	resources []unstructured.Unstructured
 
 	owner   *toolApi.PlatformModuleDefinition
 	applied bool
-
-	fieldManager string
 
 	// payloadRetryBackoff is the pause between the payload action's
 	// attempts; nil means defaultPayloadRetryBackoff.
@@ -117,6 +113,23 @@ func New(opts ...DeployerOption) *Deployer {
 		if opt != nil {
 			opt.ApplyTo(&resolved)
 		}
+	}
+
+	// The documented defaults resolve once, here at construction: an
+	// empty or zero setting is the default request, while an invalid
+	// one stays invalid for Validate to reject. The receiver reads
+	// the resolved options directly.
+	if resolved.PlatformType == "" {
+		resolved.PlatformType = DefaultPlatformType
+	}
+	if resolved.FieldManager == "" {
+		resolved.FieldManager = DefaultFieldManager
+	}
+	if resolved.WaitTimeout == 0 {
+		resolved.WaitTimeout = DefaultWaitTimeout
+	}
+	if resolved.WaitPollInterval == 0 {
+		resolved.WaitPollInterval = DefaultWaitPollInterval
 	}
 
 	return &Deployer{
@@ -180,15 +193,6 @@ func (r *Deployer) Load(ctx context.Context) error {
 	}
 	r.definition = &definition
 	r.images = snapshot
-	r.namespace = r.options.Namespace
-	r.platformType = r.options.PlatformType
-	if r.platformType == "" {
-		r.platformType = DefaultPlatformType
-	}
-	r.fieldManager = r.options.FieldManager
-	if r.fieldManager == "" {
-		r.fieldManager = DefaultFieldManager
-	}
 	r.stage = stageLoaded
 
 	return nil
@@ -220,18 +224,18 @@ func (r *Deployer) Render(ctx context.Context) error {
 	env := &adapt.EnvInjector{
 		Definition:          r.definition,
 		Images:              r.images,
-		Namespace:           r.namespace,
+		Namespace:           r.options.Namespace,
 		MonitoringNamespace: r.options.MonitoringNamespace,
-		PlatformType:        r.platformType,
+		PlatformType:        r.options.PlatformType,
 	}
 	config := &adapt.PlatformConfigInjector{
 		Definition:      r.definition,
-		Namespace:       r.namespace,
+		Namespace:       r.options.Namespace,
 		PlatformVersion: r.release.Version.String(),
 	}
 
 	resources, err := renderer.Render(ctx, *r.definition, r.options.DefinitionFile,
-		renderer.WithNamespace(r.namespace),
+		renderer.WithNamespace(r.options.Namespace),
 		renderer.WithPostRenderer(env.Run),
 		renderer.WithPostRenderer(config.Run),
 	)
@@ -331,14 +335,4 @@ func (r *Deployer) begin(next stage) error {
 // identity — stays readable after it.
 func (r *Deployer) fail() {
 	r.stage = stageFailed
-}
-
-// waitPollInterval is the effective observation pause: the explicit
-// option when positive, the shared default otherwise.
-func (r *Deployer) waitPollInterval() time.Duration {
-	if r.options.WaitPollInterval > 0 {
-		return r.options.WaitPollInterval
-	}
-
-	return DefaultWaitPollInterval
 }

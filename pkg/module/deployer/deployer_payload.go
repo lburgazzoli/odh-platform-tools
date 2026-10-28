@@ -125,7 +125,7 @@ func (r *Deployer) deployPayload(ctx context.Context) error {
 	// The stage receives its configuration prevalidated; an empty
 	// manager is a caller defect, never a request for the framework's
 	// own default. It fails before any client access.
-	if r.fieldManager == "" {
+	if r.options.FieldManager == "" {
 		return moduleerrors.New(
 			moduleerrors.ErrDeployPrepare,
 			prepareFailureMessage,
@@ -196,7 +196,7 @@ func (r *Deployer) deployPayload(ctx context.Context) error {
 		// fixed manager.
 		action := fwdeploy.NewAction(
 			fwdeploy.WithContinueOnError(),
-			fwdeploy.WithFieldOwner(r.fieldManager),
+			fwdeploy.WithFieldOwner(r.options.FieldManager),
 		)
 
 		// One action invocation per attempt: the invocation client,

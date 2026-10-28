@@ -243,15 +243,37 @@ func TestNewResolvesOptionsInOrder(t *testing.T) {
 	other := newPrepareCluster(t)
 
 	empty := New()
-	g.Expect(empty.options).To(Equal(Options{}))
+	g.Expect(empty.options).To(Equal(Options{
+		PlatformType:     DefaultPlatformType,
+		FieldManager:     DefaultFieldManager,
+		WaitTimeout:      DefaultWaitTimeout,
+		WaitPollInterval: DefaultWaitPollInterval,
+	}))
 	g.Expect(empty.client).To(BeNil())
 	g.Expect(empty.stage).To(Equal(stageNew))
 
 	preset := testOptions()
 	preset.FieldManager = "preset.example"
 
+	// The preset survives with its unset settings resolved to the
+	// documented defaults.
+	resolvedPreset := Options{
+		DefinitionFile:      preset.DefinitionFile,
+		RelatedImagesFile:   preset.RelatedImagesFile,
+		Namespace:           preset.Namespace,
+		MonitoringNamespace: preset.MonitoringNamespace,
+		PlatformType:        DefaultPlatformType,
+		PlatformVersion:     preset.PlatformVersion,
+		Timeout:             preset.Timeout,
+		Client:              preset.Client,
+		Wait:                preset.Wait,
+		WaitTimeout:         DefaultWaitTimeout,
+		WaitPollInterval:    DefaultWaitPollInterval,
+		FieldManager:        "preset.example",
+	}
+
 	target := New(preset)
-	g.Expect(target.options).To(Equal(preset))
+	g.Expect(target.options).To(Equal(resolvedPreset))
 	g.Expect(target.client).To(BeNil())
 
 	overridden := New(preset,
@@ -290,10 +312,11 @@ func TestNewResolvesOptionsInOrder(t *testing.T) {
 	g.Expect(servesObject(t, last.client, "other-wiring-probe")).To(BeTrue())
 	g.Expect(servesObject(t, last.client, "fixture-wiring-probe")).To(BeFalse())
 
-	// A nil option and a typed-nil functional option are ignored.
+	// A nil option and a typed-nil functional option are ignored; the
+	// resolved defaults are unaffected.
 	var nilOption DeployerOption
-	g.Expect(New(preset, nilOption).options).To(Equal(preset))
-	g.Expect(New(preset, option.FunctionalOption[Options](nil)).options).To(Equal(preset))
+	g.Expect(New(preset, nilOption).options).To(Equal(resolvedPreset))
+	g.Expect(New(preset, option.FunctionalOption[Options](nil)).options).To(Equal(resolvedPreset))
 
 	// Separately constructed deployers hold independent state.
 	first, second := New(preset), New(preset)
@@ -484,8 +507,8 @@ func TestLoadSnapshotsImagesAndDefaults(t *testing.T) {
 		"RELATED_IMAGE_CONTROLLER": "quay.io/example/controller:v2",
 	}))
 
-	g.Expect(target.namespace).To(Equal("run-namespace"))
-	g.Expect(target.platformType).To(Equal(DefaultPlatformType))
+	g.Expect(target.options.Namespace).To(Equal("run-namespace"))
+	g.Expect(target.options.PlatformType).To(Equal(DefaultPlatformType))
 	g.Expect(target.release.Name).To(Equal(api.Platform(api.ReleasePlatform)))
 	g.Expect(target.release.Version.String()).To(Equal("2.19.0"))
 
@@ -532,7 +555,7 @@ func TestLoadKeepsExplicitNamespace(t *testing.T) {
 
 	g.Expect(target.Load(t.Context())).To(Succeed())
 
-	g.Expect(target.namespace).To(Equal("applications"))
+	g.Expect(target.options.Namespace).To(Equal("applications"))
 }
 
 // TestStageSequence proves stages run exactly in Load → Render →
