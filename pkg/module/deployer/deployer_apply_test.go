@@ -394,10 +394,10 @@ func TestApplyApplyFailureReports(t *testing.T) {
 
 	root := composeRoot(t, literalControllerDefinitionYAML, composeTemplateYAML)
 	target := newTestDeployer(t, testOptions(), fixture, root)
-	// The schedule is shortened to a single attempt so the test
-	// observes exactly the refused write as the framework's report;
-	// the retry behavior has its own tests.
-	target.payloadRetryBackoff = []time.Duration{}
+	// A single-attempt policy makes the test observe exactly the
+	// refused write as the framework's report; retry behavior has
+	// its own tests.
+	target.payloadRetryOptions = singleAttemptPolicy()
 
 	result, err := target.Apply(t.Context())
 	g.Expect(err).To(HaveOccurred())

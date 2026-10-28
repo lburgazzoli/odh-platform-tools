@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	meta "k8s.io/apimachinery/pkg/api/meta"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	fwdeploy "github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/deploy"
@@ -49,17 +51,37 @@ const (
 	applyFailureMessage   = "applying the module resources failed"
 )
 
-// defaultPayloadRetryBackoff is the settled pause between the
-// resource application's attempts: with it the action runs five times
-// in total — the first attempt plus one after each pause. It is the
-// construction-time template New clones into each instance's private
-// payloadRetryBackoff; it is never mutated and never shared as
-// backing storage.
-var defaultPayloadRetryBackoff = []time.Duration{
-	time.Second,
-	2 * time.Second,
-	4 * time.Second,
-	8 * time.Second,
+func defaultPayloadRetryOptions() retry.Options {
+	return retry.Options{
+		MaxAttempts: 5,
+		Backoff: retry.Backoff{
+			InitialDelay: time.Second,
+			Multiplier:   2,
+			MaxDelay:     8 * time.Second,
+		},
+		Retriable: isRetriablePayloadError,
+	}
+}
+
+// isRetriablePayloadError retries Kubernetes failures that can recover
+// without changing the requested payload. Discovery no-match errors
+// cover the short interval after a bundled CRD is applied and before
+// its API becomes available; transient API responses may recover on a
+// later attempt. Cancellation and all other errors are terminal.
+func isRetriablePayloadError(err error) bool {
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return false
+	case meta.IsNoMatchError(err),
+		apierrors.IsTimeout(err),
+		apierrors.IsServerTimeout(err),
+		apierrors.IsTooManyRequests(err),
+		apierrors.IsServiceUnavailable(err),
+		apierrors.IsInternalError(err):
+		return true
+	default:
+		return false
+	}
 }
 
 // applyResources applies the rendered module resources through the
@@ -83,9 +105,10 @@ var defaultPayloadRetryBackoff = []time.Duration{
 // serve fails through the action's own error after earlier writes,
 // reported as partial state, and there is no rollback.
 //
-// The action runs without the deploy cache and is retried with the
-// settled backoff: five total attempts, stopping on success, on the
-// invocation's cancellation or deadline, or on exhaustion. Retries
+// The action runs without the deploy cache for up to five attempts on
+// transient API or discovery failures, stopping on success,
+// on a terminal error, on the invocation's cancellation or deadline,
+// or on exhaustion. Retries
 // reapply already-successful resources — the writes are idempotent
 // server-side applies and there is no rollback — and only the
 // payload action retries: load, render, validation, and preparation
@@ -151,18 +174,11 @@ func (r *Deployer) applyResources(ctx context.Context) error {
 	// matching the operator. The action carries no deploy cache.
 	bridge := adapt.NewControllerBridge(r.client)
 
-	backoff := r.payloadRetryBackoff
-
-	// The bounded retry: the whole action reruns on failure through
-	// the shared loop, stopping on success, on a terminal error, on
-	// the invocation's cancellation or deadline, or on exhaustion.
-	// IsRetriable makes the invocation's context errors surfacing
-	// through the action terminal, and the loop itself aborts a pause
-	// the moment the context is done.
+	// The bounded retry: the whole action reruns on transient failures
+	// through the shared loop. The explicit policy sets the attempt
+	// limit, capped exponential delay, and retry classification.
 	err := retry.OnError(
 		ctx,
-		backoff,
-		retry.IsRetriable,
 		func(attemptCtx context.Context) error {
 			// A fresh action configuration per attempt. Defaults keep
 			// the framework field ownership, metadata, customizers, SSA
@@ -194,6 +210,7 @@ func (r *Deployer) applyResources(ctx context.Context) error {
 				Resources:  r.resources,
 			})
 		},
+		r.payloadRetryOptions,
 	)
 	if err != nil {
 		return moduleerrors.New(

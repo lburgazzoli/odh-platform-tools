@@ -38,6 +38,7 @@ import (
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/util/option"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/retry"
 )
 
 // composeDefinitionYAML is a Helm-format definition whose main
@@ -325,34 +326,38 @@ func TestNewResolvesOptionsInOrder(t *testing.T) {
 	g.Expect(second.stage).To(Equal(stageNew))
 }
 
-// TestNewInitializesRetryBackoff proves every construction owns the
-// default retry schedule as independent storage: mutating one
-// instance's schedule can affect neither another instance nor a later
-// construction, and an Options preset cannot erase it.
-func TestNewInitializesRetryBackoff(t *testing.T) {
+// TestNewInitializesRetryPolicy proves every construction receives the
+// settled payload retry policy and each deployer holds independent
+// value state.
+func TestNewInitializesRetryPolicy(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	expected := []time.Duration{
-		time.Second,
-		2 * time.Second,
-		4 * time.Second,
-		8 * time.Second,
+	expected := retry.Options{
+		MaxAttempts: 5,
+		Backoff: retry.Backoff{
+			InitialDelay: time.Second,
+			Multiplier:   2,
+			MaxDelay:     8 * time.Second,
+		},
 	}
 
 	empty := New()
 	preset := New(testOptions())
-	g.Expect(empty.payloadRetryBackoff).To(Equal(expected))
-	g.Expect(preset.payloadRetryBackoff).To(Equal(expected))
+	g.Expect(empty.payloadRetryOptions.MaxAttempts).To(Equal(expected.MaxAttempts))
+	g.Expect(empty.payloadRetryOptions.Backoff).To(Equal(expected.Backoff))
+	g.Expect(empty.payloadRetryOptions.Retriable).NotTo(BeNil())
+	g.Expect(preset.payloadRetryOptions.MaxAttempts).To(Equal(expected.MaxAttempts))
+	g.Expect(preset.payloadRetryOptions.Backoff).To(Equal(expected.Backoff))
 
-	// Mutating one instance's schedule leaves the other and later
-	// constructions untouched.
-	empty.payloadRetryBackoff[0] = time.Hour
-	g.Expect(preset.payloadRetryBackoff[0]).To(Equal(time.Second))
+	// Mutating one policy value leaves the other and later constructions
+	// untouched.
+	empty.payloadRetryOptions.Backoff.InitialDelay = time.Hour
+	g.Expect(preset.payloadRetryOptions.Backoff.InitialDelay).To(Equal(time.Second))
 
 	fresh := New()
-	g.Expect(fresh.payloadRetryBackoff).To(Equal(expected))
+	g.Expect(fresh.payloadRetryOptions.Backoff).To(Equal(expected.Backoff))
 }
 
 // servesObject reports whether client serves the named ConfigMap in
@@ -878,13 +883,6 @@ func TestDeployApplyFailureRetainsOwner(t *testing.T) {
 
 	root := composeRoot(t, literalControllerDefinitionYAML, composeTemplateYAML)
 	target := newTestDeployer(t, testOptions(), fixture, root)
-	// A shortened schedule keeps the exhausted-retry path fast.
-	target.payloadRetryBackoff = []time.Duration{
-		time.Millisecond,
-		time.Millisecond,
-		time.Millisecond,
-		time.Millisecond,
-	}
 
 	g.Expect(target.Load(t.Context())).To(Succeed())
 	g.Expect(target.Render(t.Context())).To(Succeed())
@@ -903,6 +901,9 @@ func TestDeployApplyFailureRetainsOwner(t *testing.T) {
 	g.Expect(err.Error()).NotTo(ContainSubstring("PAYLOAD-MARKER-refusal"))
 	var marker *markerError
 	g.Expect(errors.As(err, &marker)).To(BeTrue())
+
+	payloadApplies, _ := fixture.applyIndex(preparePayloadDeploymentWrite)
+	g.Expect(payloadApplies).To(Equal(1))
 }
 
 // TestLoadRenderComposeRealServices proves the full offline chain

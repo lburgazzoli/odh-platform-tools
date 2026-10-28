@@ -14,81 +14,99 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package retry carries the shared bounded retry loop: one function
-// over an explicit schedule of pauses, closing the gap between the
-// standard library — whose retry helpers either generate their own
-// exponential schedule, sleep through cancellation, or discard the
-// last error — and the needs of a deadline-bound invocation.
+// Package retry provides a bounded, context-aware retry loop with an
+// explicit attempt limit, backoff policy, and per-error retry predicate.
 package retry
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
+
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/option"
 )
 
-// IsRetriable is the default attempt classification for OnError:
-// every error is worth another attempt under a still-live context,
-// except the context's own cancellation and deadline, which no later
-// attempt can outlive. Wrapped context errors classify the same. An
-// operation that derives shorter per-attempt contexts and wants to
-// retry their expiry classifies its own errors instead.
-func IsRetriable(err error) bool {
-	switch {
-	case errors.Is(err, context.Canceled),
-		errors.Is(err, context.DeadlineExceeded):
-		return false
-	default:
-		return true
-	}
+// ErrInvalidOptions identifies an invalid retry configuration.
+var ErrInvalidOptions = errors.New("invalid retry options")
+
+// Options configure one OnError invocation. MaxAttempts includes
+// the initial call. A single-attempt policy needs no backoff or retry
+// predicate; policies with retries require both.
+type Options struct {
+	MaxAttempts int
+	Backoff     Backoff
+	Retriable   func(error) bool
 }
 
-// OnError runs fn until it succeeds, its error is rejected as
-// retriable, the schedule is exhausted, or ctx is done. fn runs at
-// most len(pauses)+1 times: the first attempt plus one after each
-// pause, waiting pauses[i-1] ahead of attempt i. An empty schedule
-// means a single attempt.
+// ApplyTo implements Option, so a complete retry policy can be
+// passed as a preset. Options apply in order and later values replace
+// earlier ones.
+func (opts Options) ApplyTo(target *Options) {
+	*target = opts
+}
+
+// Option customizes one retry invocation.
+type Option = option.Option[Options]
+
+// WithMaxAttempts sets the maximum total calls to fn, including the
+// initial call.
+func WithMaxAttempts(attempts int) Option {
+	return option.FunctionalOption[Options](func(target *Options) {
+		target.MaxAttempts = attempts
+	})
+}
+
+// WithBackoff sets the exponential delay policy between attempts.
+func WithBackoff(backoff Backoff) Option {
+	return option.FunctionalOption[Options](func(target *Options) {
+		target.Backoff = backoff
+	})
+}
+
+// WithRetriable sets the predicate that selects errors eligible for
+// another attempt.
+func WithRetriable(retriable func(error) bool) Option {
+	return option.FunctionalOption[Options](func(target *Options) {
+		target.Retriable = retriable
+	})
+}
+
+// OnError runs fn until it succeeds, returns a terminal error, reaches
+// MaxAttempts, or its context is done. The default policy runs fn once.
+// A retry policy requires a positive backoff and a non-nil predicate.
+// Nil options are ignored.
 //
-// The outcome is exactly one of: nil on success; the error itself
-// when retriable rejects it; the last error when the attempts are
-// exhausted; ctx.Err() when the context is done — checked before the
-// first attempt, and during every pause, where cancellation wins the
-// race with the timer firing and no further attempt runs.
-//
-// retriable classifies each failed attempt: true means the error is
-// worth another attempt, false that it is terminal and returns
-// immediately. Callers mark their own terminal conditions — most
-// commonly a context error surfacing through the operation — by
-// returning false for them.
-//
-// fn receives the same context: a per-attempt timeout or other
-// derived context belongs to the caller inside fn.
+// Context cancellation observed during a pause prevents the next call.
+// After an attempt, a successful result wins a cancellation race; when
+// an attempt fails and ctx is done, ctx.Err is returned.
 func OnError(
 	ctx context.Context,
-	pauses []time.Duration,
-	retriable func(error) bool,
 	fn func(context.Context) error,
+	opts ...Option,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	var lastErr error
+	if fn == nil {
+		return fmt.Errorf("%w: attempt function is required", ErrInvalidOptions)
+	}
 
-	for attempt := 0; ; attempt++ {
-		if attempt > 0 {
-			timer := time.NewTimer(pauses[attempt-1])
+	resolved := Options{MaxAttempts: 1}
+	for _, opt := range opts {
+		if opt != nil {
+			opt.ApplyTo(&resolved)
+		}
+	}
 
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-			case <-timer.C:
-			}
+	if err := resolved.validate(); err != nil {
+		return err
+	}
 
-			// The timer and the cancellation can both be ready when
-			// the wait ends exactly at the deadline; the cancellation
-			// wins, and no further attempt runs.
-			if err := ctx.Err(); err != nil {
+	for attempt := 1; attempt <= resolved.MaxAttempts; attempt++ {
+		if attempt > 1 {
+			if err := pause(ctx, resolved.Backoff.delay(attempt-1)); err != nil {
 				return err
 			}
 		}
@@ -98,14 +116,46 @@ func OnError(
 			return nil
 		}
 
-		if !retriable(err) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+
+		if resolved.Retriable == nil || !resolved.Retriable(err) || attempt == resolved.MaxAttempts {
 			return err
 		}
+	}
 
-		lastErr = err
+	return nil
+}
 
-		if attempt >= len(pauses) {
-			return lastErr
-		}
+func (opts Options) validate() error {
+	if opts.MaxAttempts < 1 {
+		return fmt.Errorf("%w: MaxAttempts must be positive", ErrInvalidOptions)
+	}
+
+	if opts.MaxAttempts == 1 {
+		return nil
+	}
+
+	if opts.Retriable == nil {
+		return fmt.Errorf("%w: Retriable is required when MaxAttempts exceeds one", ErrInvalidOptions)
+	}
+
+	if err := opts.Backoff.validate(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidOptions, err)
+	}
+
+	return nil
+}
+
+func pause(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return ctx.Err()
 	}
 }

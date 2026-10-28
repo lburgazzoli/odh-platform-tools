@@ -41,8 +41,6 @@ package deployer
 import (
 	"context"
 	"fmt"
-	"slices"
-	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -59,6 +57,7 @@ import (
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/retry"
 )
 
 // stage is the deployer's position in the Load → Render → Deploy
@@ -92,10 +91,9 @@ type Deployer struct {
 	owner   *toolApi.PlatformModuleDefinition
 	applied bool
 
-	// payloadRetryBackoff is the pause between the resource
-	// application's attempts; New initializes it to an independent
-	// copy of defaultPayloadRetryBackoff.
-	payloadRetryBackoff []time.Duration
+	// payloadRetryOptions is the bounded retry policy for the payload
+	// action. New gives each deployer a value copy of the defaults.
+	payloadRetryOptions retry.Options
 
 	waited        bool
 	waitCompleted bool
@@ -134,13 +132,10 @@ func New(opts ...DeployerOption) *Deployer {
 		resolved.WaitPollInterval = DefaultWaitPollInterval
 	}
 
-	// The retry schedule is private configuration with its own
-	// default: each instance owns an independent copy of the settled
-	// pauses, so no construction shares mutable schedule storage.
 	return &Deployer{
 		options:             resolved,
 		client:              resolved.Client,
-		payloadRetryBackoff: slices.Clone(defaultPayloadRetryBackoff),
+		payloadRetryOptions: defaultPayloadRetryOptions(),
 		stage:               stageNew,
 	}
 }

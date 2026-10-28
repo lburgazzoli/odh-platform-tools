@@ -20,240 +20,238 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
 	. "github.com/onsi/gomega"
+
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/option"
 )
 
-// everyErrorIsRetriable accepts any failure, so the tests exercise
-// the schedule and cancellation paths rather than classification.
 func everyErrorIsRetriable(error) bool { return true }
 
-// TestIsRetriable proves the default classification: wrapped and bare
-// context errors are terminal, everything else retries.
-func TestIsRetriable(t *testing.T) {
+func attempts(failures int) (func(context.Context) error, *int) {
+	count := 0
+
+	return func(context.Context) error {
+		count++
+		if count <= failures {
+			return fmt.Errorf("attempt %d failed", count)
+		}
+		return nil
+	}, &count
+}
+
+func TestOnErrorDefaultsToOneAttempt(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+	fn, count := attempts(5)
+
+	err := OnError(t.Context(), fn)
+	g.Expect(err).To(MatchError("attempt 1 failed"))
+	g.Expect(*count).To(Equal(1))
+}
+
+func TestOnErrorRetriesToSuccess(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+	fn, count := attempts(2)
+
+	err := OnError(
+		t.Context(),
+		fn,
+		WithMaxAttempts(3),
+		WithBackoff(Backoff{InitialDelay: time.Millisecond, Multiplier: 2, MaxDelay: 2 * time.Millisecond}),
+		WithRetriable(everyErrorIsRetriable),
+	)
+	g.Expect(err).To(Succeed())
+	g.Expect(*count).To(Equal(3))
+}
+
+func TestOnErrorReturnsLastErrorWhenExhausted(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+	fn, count := attempts(5)
+
+	err := OnError(
+		t.Context(),
+		fn,
+		WithMaxAttempts(2),
+		WithBackoff(Backoff{InitialDelay: time.Millisecond, Multiplier: 1, MaxDelay: time.Millisecond}),
+		WithRetriable(everyErrorIsRetriable),
+	)
+	g.Expect(err).To(MatchError("attempt 2 failed"))
+	g.Expect(*count).To(Equal(2))
+}
+
+func TestOnErrorStopsOnTerminalError(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+	terminal := errors.New("terminal")
+	count := 0
+
+	err := OnError(
+		t.Context(),
+		func(context.Context) error {
+			count++
+			return terminal
+		},
+		WithMaxAttempts(4),
+		WithBackoff(Backoff{InitialDelay: time.Hour, Multiplier: 2, MaxDelay: 8 * time.Hour}),
+		WithRetriable(func(err error) bool { return !errors.Is(err, terminal) }),
+	)
+	g.Expect(err).To(MatchError(terminal))
+	g.Expect(count).To(Equal(1))
+}
+
+func TestOnErrorOptionsFollowRepositoryOptionPattern(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+	first := Options{
+		MaxAttempts: 2,
+		Backoff:     Backoff{InitialDelay: time.Millisecond, Multiplier: 1, MaxDelay: time.Millisecond},
+		Retriable:   everyErrorIsRetriable,
+	}
+	second := Options{
+		MaxAttempts: 1,
+	}
+	fn, count := attempts(1)
+
+	var nilOption Option
+	err := OnError(t.Context(), fn, first, nilOption, second)
+	g.Expect(err).To(MatchError("attempt 1 failed"))
+	g.Expect(*count).To(Equal(1))
+
+	var nilFunctionalOption Option = option.FunctionalOption[Options](nil)
+	g.Expect(OnError(t.Context(), func(context.Context) error { return nil }, nilFunctionalOption)).To(Succeed())
+}
+
+func TestBackoffCapsExponentialDelay(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+	backoff := Backoff{InitialDelay: time.Second, Multiplier: 2, MaxDelay: 8 * time.Second}
+
+	g.Expect([]time.Duration{
+		backoff.delay(1),
+		backoff.delay(2),
+		backoff.delay(3),
+		backoff.delay(4),
+		backoff.delay(5),
+	}).To(Equal([]time.Duration{
+		time.Second,
+		2 * time.Second,
+		4 * time.Second,
+		8 * time.Second,
+		8 * time.Second,
+	}))
+}
+
+func TestOnErrorRejectsInvalidPolicies(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name     string
-		err      error
-		expected bool
+		name    string
+		options []Option
 	}{
-		{"cancellation", context.Canceled, false},
-		{"deadline", context.DeadlineExceeded, false},
-		{"wrapped cancellation", fmt.Errorf("action failed: %w", context.Canceled), false},
-		{"wrapped deadline", fmt.Errorf("action failed: %w", context.DeadlineExceeded), false},
-		{"ordinary failure", errors.New("apply failure"), true},
+		{name: "non-positive attempts", options: []Option{WithMaxAttempts(0)}},
+		{name: "missing classifier", options: []Option{
+			WithMaxAttempts(2),
+			WithBackoff(Backoff{InitialDelay: time.Second, Multiplier: 2, MaxDelay: 8 * time.Second}),
+		}},
+		{name: "missing backoff", options: []Option{
+			WithMaxAttempts(2),
+			WithRetriable(everyErrorIsRetriable),
+		}},
+		{name: "invalid multiplier", options: []Option{
+			WithMaxAttempts(2),
+			WithBackoff(Backoff{InitialDelay: time.Second, Multiplier: math.NaN(), MaxDelay: time.Second}),
+			WithRetriable(everyErrorIsRetriable),
+		}},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			g := NewWithT(t)
+			called := false
+			err := OnError(t.Context(), func(context.Context) error {
+				called = true
+				return nil
+			}, tc.options...)
 
-			g.Expect(IsRetriable(tc.err)).To(Equal(tc.expected))
+			g := NewWithT(t)
+			g.Expect(errors.Is(err, ErrInvalidOptions)).To(BeTrue())
+			g.Expect(called).To(BeFalse())
 		})
 	}
 }
 
-// attempts counts how many times fn ran and fails the first count
-// failures, then succeeds.
-func attempts(failures int) (func(context.Context) error, *int) {
-	count := 0
-
-	return func(context.Context) error {
-		count++
-
-		if count <= failures {
-			return errors.New("attempt failure")
-		}
-
-		return nil
-	}, &count
-}
-
-// TestOnErrorSucceedsOnFirstAttempt proves a successful fn runs once
-// and returns nil without consulting the schedule.
-func TestOnErrorSucceedsOnFirstAttempt(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	fn, count := attempts(0)
-
-	g.Expect(OnError(
-		t.Context(),
-		[]time.Duration{time.Hour},
-		everyErrorIsRetriable,
-		fn,
-	)).To(Succeed())
-	g.Expect(*count).To(Equal(1))
-}
-
-// TestOnErrorEmptyScheduleRunsOnce proves an empty schedule pins
-// single-attempt semantics: the failure is returned as-is.
-func TestOnErrorEmptyScheduleRunsOnce(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	fn, count := attempts(10)
-
-	err := OnError(t.Context(), nil, everyErrorIsRetriable, fn)
-	g.Expect(err).To(MatchError("attempt failure"))
-	g.Expect(*count).To(Equal(1))
-}
-
-// TestOnErrorRetriesUntilSuccess proves one attempt runs per
-// schedule entry plus the first: two failures need two pauses to
-// reach the successful third attempt.
-func TestOnErrorRetriesUntilSuccess(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	fn, count := attempts(2)
-
-	g.Expect(OnError(
-		t.Context(),
-		[]time.Duration{time.Millisecond, time.Millisecond},
-		everyErrorIsRetriable,
-		fn,
-	)).To(Succeed())
-	g.Expect(*count).To(Equal(3))
-}
-
-// TestOnErrorExhaustionKeepsLastError proves exhaustion after
-// len(pauses)+1 attempts returns the last failure, not an earlier
-// one: each attempt fails with its own sentinel.
-func TestOnErrorExhaustionKeepsLastError(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	first := errors.New("first attempt failure")
-	second := errors.New("second attempt failure")
-
-	count := 0
-
-	err := OnError(
-		t.Context(),
-		[]time.Duration{time.Millisecond},
-		everyErrorIsRetriable,
-		func(context.Context) error {
-			count++
-			if count == 1 {
-				return first
-			}
-			return second
-		},
-	)
-	g.Expect(err).To(MatchError(second))
-	g.Expect(err).NotTo(MatchError(first))
-	g.Expect(count).To(Equal(2))
-}
-
-// TestOnErrorStopsOnTerminalError proves a rejected error returns
-// immediately, ahead of any remaining schedule.
-func TestOnErrorStopsOnTerminalError(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	terminal := errors.New("terminal failure")
-	count := 0
-
-	err := OnError(
-		t.Context(),
-		[]time.Duration{time.Hour, time.Hour},
-		func(err error) bool { return !errors.Is(err, terminal) },
-		func(context.Context) error {
-			count++
-			return terminal
-		},
-	)
-	g.Expect(err).To(MatchError(terminal))
-	g.Expect(count).To(Equal(1))
-}
-
-// TestOnErrorRefusesCancelledContext proves a done context fails
-// before the first attempt and fn never runs.
-func TestOnErrorRefusesCancelledContext(t *testing.T) {
-	t.Parallel()
-
-	g := NewWithT(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	count := 0
-
-	err := OnError(ctx, nil, everyErrorIsRetriable, func(context.Context) error {
-		count++
-		return nil
-	})
-	g.Expect(err).To(MatchError(context.Canceled))
-	g.Expect(count).To(Equal(0))
-}
-
-// TestOnErrorCancellationDuringPause proves a deadline landing inside
-// a pause aborts the wait, returns the context error, and runs no
-// further attempt. The pause is far longer than the deadline and the
-// budget generous, so the timing holds under -race load.
 func TestOnErrorCancellationDuringPause(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 	defer cancel()
 
-	fn, count := attempts(10)
-
-	started := time.Now()
-
+	fn, count := attempts(5)
 	err := OnError(
 		ctx,
-		[]time.Duration{time.Hour},
-		everyErrorIsRetriable,
 		fn,
+		WithMaxAttempts(3),
+		WithBackoff(Backoff{InitialDelay: time.Hour, Multiplier: 2, MaxDelay: 2 * time.Hour}),
+		WithRetriable(everyErrorIsRetriable),
 	)
 	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
-	g.Expect(time.Since(started)).To(BeNumerically("<", 30*time.Second))
 	g.Expect(*count).To(Equal(1))
 }
 
-// TestOnErrorCancellationWinsTimerRace proves the convergence rule
-// when the pause timer and the cancellation are both ready when the
-// wait ends: whichever arm the select picks, the cancellation wins,
-// no further attempt runs, and the context error is returned. The
-// zero pause makes the timer ready immediately, so every iteration
-// enters the race; repeating them makes both arms near-certain to be
-// exercised.
-func TestOnErrorCancellationWinsTimerRace(t *testing.T) {
+func TestOnErrorCancellationAfterAttempt(t *testing.T) {
+	t.Parallel()
+
+	t.Run("failure returns context error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		err := OnError(ctx, func(context.Context) error {
+			cancel()
+			return errors.New("action failure")
+		}, WithMaxAttempts(1))
+		g := NewWithT(t)
+		g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
+	})
+
+	t.Run("success wins", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		err := OnError(ctx, func(context.Context) error {
+			cancel()
+			return nil
+		})
+		g := NewWithT(t)
+		g.Expect(err).To(Succeed())
+	})
+}
+
+func TestOnErrorRefusesCancelledContext(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
 
-	for range 10 {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		count := 0
-
-		err := OnError(
-			ctx,
-			[]time.Duration{0},
-			everyErrorIsRetriable,
-			func(context.Context) error {
-				count++
-				cancel()
-				return errors.New("attempt failure")
-			},
-		)
-		g.Expect(err).To(MatchError(context.Canceled))
-		g.Expect(count).To(Equal(1))
-	}
+	called := false
+	err := OnError(ctx, func(context.Context) error {
+		called = true
+		return nil
+	})
+	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
+	g.Expect(called).To(BeFalse())
 }

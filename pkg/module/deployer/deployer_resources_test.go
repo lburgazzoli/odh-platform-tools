@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -33,6 +32,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	meta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -53,6 +53,7 @@ import (
 
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/retry"
 )
 
 // definitionUID is the server-assigned identity of the synthetic
@@ -471,8 +472,8 @@ func (f *fakeCluster) connect(t *testing.T) (crclient.Client, *writeLog) {
 // persisted owner, the release, the rendered payload, and the field
 // manager. It bypasses New, so the field manager is exactly the given
 // value — including empty, which the method must reject — and the
-// retry schedule is initialized explicitly to the same independent
-// default New would install.
+// retry policy is initialized explicitly to the same default New
+// would install.
 func payloadTarget(
 	client crclient.Client,
 	owner *toolApi.PlatformModuleDefinition,
@@ -486,7 +487,61 @@ func payloadTarget(
 		owner:               owner,
 		release:             release,
 		resources:           resources,
-		payloadRetryBackoff: slices.Clone(defaultPayloadRetryBackoff),
+		payloadRetryOptions: defaultPayloadRetryOptions(),
+	}
+}
+
+func singleAttemptPolicy() retry.Options {
+	return retry.Options{MaxAttempts: 1}
+}
+
+func testRetryPolicy(attempts int, delay time.Duration) retry.Options {
+	return retry.Options{
+		MaxAttempts: attempts,
+		Backoff: retry.Backoff{
+			InitialDelay: delay,
+			Multiplier:   1,
+			MaxDelay:     delay,
+		},
+		Retriable: isRetriablePayloadError,
+	}
+}
+
+func TestIsRetriablePayloadError(t *testing.T) {
+	t.Parallel()
+
+	transient := apierrors.NewServiceUnavailable("unavailable")
+	internal := apierrors.NewInternalError(errors.New("internal"))
+	noMatch := &meta.NoKindMatchError{
+		GroupKind: schema.GroupKind{Group: "example.io", Kind: "Widget"},
+	}
+	forbidden := apierrors.NewForbidden(
+		schema.GroupResource{Group: "", Resource: "configmaps"},
+		"settings",
+		errors.New("denied"),
+	)
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "service unavailable", err: transient, want: true},
+		{name: "internal error", err: internal, want: true},
+		{name: "newly served API", err: noMatch, want: true},
+		{name: "forbidden", err: forbidden},
+		{name: "canceled", err: context.Canceled},
+		{name: "deadline", err: context.DeadlineExceeded},
+		{name: "unclassified", err: errors.New("bad resource")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := NewWithT(t)
+			g.Expect(isRetriablePayloadError(tc.err)).To(Equal(tc.want))
+		})
 	}
 }
 
@@ -804,9 +859,9 @@ func TestApplyCreatesAbsentRenderedNamespace(t *testing.T) {
 // the server refuses fails the apply stage with the framework's own
 // first report reachable through Unwrap, while the public message
 // stays the safe stage text; writes that preceded the failure stand,
-// so the failure is reported as partial state. The schedule is
-// shortened to a single attempt so the test observes exactly the
-// first report; the retry behavior has its own tests.
+// so the failure is reported as partial state. A single-attempt
+// policy makes the test observe exactly the first report; retry
+// behavior has its own tests.
 func TestApplyApplyErrorFailsStageWithFirstReport(t *testing.T) {
 	t.Parallel()
 
@@ -828,7 +883,7 @@ func TestApplyApplyErrorFailsStageWithFirstReport(t *testing.T) {
 	resources := payload(t, g, payloadCRDYAML, configMapYAML)
 
 	target := payloadTarget(connection, newDefinition(), newRelease(), resources, defaultFieldManager)
-	target.payloadRetryBackoff = []time.Duration{}
+	target.payloadRetryOptions = singleAttemptPolicy()
 
 	err := target.applyResources(t.Context())
 
@@ -848,9 +903,8 @@ func TestApplyApplyErrorFailsStageWithFirstReport(t *testing.T) {
 
 // TestApplyLookupErrorFailsStageWithFirstReport proves a read the
 // server refuses during the action's own lookup fails the apply stage
-// with the framework's continue-on-error first report; no classifier
-// of our own sits in front of it. The schedule is shortened to a
-// single attempt so the test observes exactly the first report.
+// with the framework's continue-on-error first report. A
+// single-attempt policy makes the test observe exactly that report.
 func TestApplyLookupErrorFailsStageWithFirstReport(t *testing.T) {
 	t.Parallel()
 
@@ -868,7 +922,7 @@ func TestApplyLookupErrorFailsStageWithFirstReport(t *testing.T) {
 	resources := payload(t, g, payloadCRDYAML, configMapYAML)
 
 	target := payloadTarget(connection, newDefinition(), newRelease(), resources, defaultFieldManager)
-	target.payloadRetryBackoff = []time.Duration{}
+	target.payloadRetryOptions = singleAttemptPolicy()
 
 	err := target.applyResources(t.Context())
 
@@ -901,7 +955,7 @@ func TestApplyRetriesTransientActionFailure(t *testing.T) {
 	resources := payload(t, g, payloadCRDYAML, configMapYAML)
 
 	target := payloadTarget(connection, newDefinition(), newRelease(), resources, defaultFieldManager)
-	target.payloadRetryBackoff = []time.Duration{time.Millisecond}
+	target.payloadRetryOptions = testRetryPolicy(2, time.Millisecond)
 
 	g.Expect(target.applyResources(t.Context())).To(Succeed())
 
@@ -914,11 +968,9 @@ func TestApplyRetriesTransientActionFailure(t *testing.T) {
 	g.Expect(configMap.Object).To(jq.Match(`.data["key"] == "value"`))
 }
 
-// TestApplyRetriesPersistentFailureUntilExhausted proves a payload
-// write the server keeps refusing consumes exactly the settled five
-// attempts and then fails the stage with the last action error as the
-// cause, with the public message staying the safe stage text.
-func TestApplyRetriesPersistentFailureUntilExhausted(t *testing.T) {
+// TestApplyDoesNotRetryTerminalFailure proves an authorization failure
+// is terminal and the framework's first action report stays the cause.
+func TestApplyDoesNotRetryTerminalFailure(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
@@ -939,12 +991,7 @@ func TestApplyRetriesPersistentFailureUntilExhausted(t *testing.T) {
 	resources := payload(t, g, payloadCRDYAML, configMapYAML)
 
 	target := payloadTarget(connection, newDefinition(), newRelease(), resources, defaultFieldManager)
-	target.payloadRetryBackoff = []time.Duration{
-		time.Millisecond,
-		time.Millisecond,
-		time.Millisecond,
-		time.Millisecond,
-	}
+	target.payloadRetryOptions = testRetryPolicy(5, time.Millisecond)
 
 	err := target.applyResources(t.Context())
 
@@ -954,9 +1001,8 @@ func TestApplyRetriesPersistentFailureUntilExhausted(t *testing.T) {
 	g.Expect(typed.Error()).NotTo(ContainSubstring("secret-detail"))
 	g.Expect(apierrors.IsForbidden(typed.Unwrap())).To(BeTrue())
 
-	// Five attempts in total: the first plus one after each of the
-	// four pauses.
-	g.Expect(writes.count("apply " + moduleConfigMapIdentity())).To(Equal(5))
+	// Forbidden is terminal, so only the first action runs.
+	g.Expect(writes.count("apply " + moduleConfigMapIdentity())).To(Equal(1))
 }
 
 // TestApplyStopsRetryingWhenBackoffIsCancelled proves the invocation's
@@ -981,7 +1027,7 @@ func TestApplyStopsRetryingWhenBackoffIsCancelled(t *testing.T) {
 
 	target := payloadTarget(connection, newDefinition(), newRelease(), resources, defaultFieldManager)
 	// One long pause: the invocation deadline fires inside it.
-	target.payloadRetryBackoff = []time.Duration{20 * time.Second}
+	target.payloadRetryOptions = testRetryPolicy(2, 20*time.Second)
 
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
