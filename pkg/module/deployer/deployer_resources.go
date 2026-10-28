@@ -31,6 +31,7 @@ import (
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/adapt"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/retry"
 )
 
 // errNilArgument marks a nil payload-apply argument; it carries identity
@@ -156,78 +157,53 @@ func (r *Deployer) applyResources(ctx context.Context) error {
 
 	backoff := r.payloadRetryBackoff
 
-	// The bounded retry loop: one attempt per iteration, the settled
-	// pause between them, and a stop on success, on the invocation's
-	// cancellation or deadline, or when the attempts are exhausted.
-	var lastErr error
+	// The bounded retry: the whole action reruns on failure through
+	// the shared loop, stopping on success, on a terminal error, on
+	// the invocation's cancellation or deadline, or on exhaustion.
+	// The invocation's context errors surfacing through the action
+	// are terminal; the loop itself aborts a pause the moment the
+	// context is done.
+	err := retry.OnError(
+		ctx,
+		backoff,
+		func(err error) bool {
+			return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+		},
+		func(context.Context) error {
+			// A fresh action configuration per attempt. Defaults keep
+			// the framework field ownership, metadata, customizers, SSA
+			// mode, the default apply-order sort (Namespaces and CRDs
+			// first), and the CRD field owner with ForceOwnership;
+			// WithContinueOnError finishes remaining resources and
+			// reports; WithFieldOwner names this invocation's manager
+			// for the ordinary payload apply and its fallback part-of
+			// label, leaving the bundled-CRD path on the framework's
+			// fixed manager.
+			action := fwdeploy.NewAction(
+				fwdeploy.WithContinueOnError(),
+				fwdeploy.WithFieldOwner(r.options.FieldManager),
+			)
 
-	for attempt := 0; ; attempt++ {
-		if attempt > 0 {
-			timer := time.NewTimer(backoff[attempt-1])
-
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-			case <-timer.C:
-			}
-
-			// The timer and the cancellation can both be ready when
-			// the wait ends exactly at the deadline; the cancellation
-			// wins, and no further action runs.
-			if err := ctx.Err(); err != nil {
-				return moduleerrors.New(
-					moduleerrors.ErrDeployApply,
-					applyFailureMessage,
-					moduleerrors.WithCause(err),
-				)
-			}
-		}
-
-		// A fresh action configuration per attempt. Defaults keep
-		// the framework field ownership, metadata, customizers, SSA
-		// mode, the default apply-order sort (Namespaces and CRDs
-		// first), and the CRD field owner with ForceOwnership;
-		// WithContinueOnError finishes remaining resources and
-		// reports; WithFieldOwner names this invocation's manager
-		// for the ordinary payload apply and its fallback part-of
-		// label, leaving the bundled-CRD path on the framework's
-		// fixed manager.
-		action := fwdeploy.NewAction(
-			fwdeploy.WithContinueOnError(),
-			fwdeploy.WithFieldOwner(r.options.FieldManager),
+			// One action invocation per attempt: the invocation client,
+			// the controller bridge, the persisted definition as the
+			// live instance, the runtime release, and the whole rendered
+			// payload. Conditions stay unset and SkipDeploy stays false.
+			return action(quietCtx, &odhTypes.ReconciliationRequest{
+				Client:     r.client,
+				Controller: bridge,
+				Instance:   r.owner,
+				Release:    r.release,
+				Resources:  r.resources,
+			})
+		},
+	)
+	if err != nil {
+		return moduleerrors.New(
+			moduleerrors.ErrDeployApply,
+			applyFailureMessage,
+			moduleerrors.WithCause(err),
 		)
-
-		// One action invocation per attempt: the invocation client,
-		// the controller bridge, the persisted definition as the
-		// live instance, the runtime release, and the whole rendered
-		// payload. Conditions stay unset and SkipDeploy stays false.
-		err := action(quietCtx, &odhTypes.ReconciliationRequest{
-			Client:     r.client,
-			Controller: bridge,
-			Instance:   r.owner,
-			Release:    r.release,
-			Resources:  r.resources,
-		})
-		if err == nil {
-			return nil
-		}
-
-		lastErr = err
-
-		// The invocation's cancellation or deadline observed through
-		// the action error is terminal: no further attempt runs.
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			break
-		}
-
-		if attempt >= len(backoff) {
-			break
-		}
 	}
 
-	return moduleerrors.New(
-		moduleerrors.ErrDeployApply,
-		applyFailureMessage,
-		moduleerrors.WithCause(lastErr),
-	)
+	return nil
 }
