@@ -488,7 +488,7 @@ func TestPrepareOwnerAppliesCRDThenDefinition(t *testing.T) {
 
 	target := newPrepareTarget(fixture, &definition, DefaultFieldManager)
 
-	owner, err := target.prepareOwner(t.Context())
+	owner, err := target.publishDefinition(t.Context())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	crdApplies, crdFirst := fixture.applyIndex(prepareCRDWrite)
@@ -529,7 +529,7 @@ func TestPrepareOwnerUsesGivenFieldManager(t *testing.T) {
 
 	target := newPrepareTarget(fixture, &definition, "team.example.deployer")
 
-	_, err := target.prepareOwner(t.Context())
+	_, err := target.publishDefinition(t.Context())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(fixture.applyOptions).To(HaveLen(2))
@@ -552,7 +552,7 @@ func TestPrepareOwnerDefaultManagerIsPlatformIdentity(t *testing.T) {
 
 	target := newPrepareTarget(fixture, &definition, DefaultFieldManager)
 
-	_, err := target.prepareOwner(t.Context())
+	_, err := target.publishDefinition(t.Context())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(fixture.applyOptions).To(HaveLen(2))
@@ -589,7 +589,7 @@ func TestPrepareOwnerSanitizesDefinitionApply(t *testing.T) {
 
 	target := newPrepareTarget(fixture, &definition, DefaultFieldManager)
 
-	owner, err := target.prepareOwner(t.Context())
+	owner, err := target.publishDefinition(t.Context())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	_, definitionFirst := fixture.applyIndex(prepareDefinitionWrite)
@@ -634,7 +634,7 @@ func TestPrepareOwnerWaitsForEstablishment(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 
-	owner, err := target.prepareOwner(ctx)
+	owner, err := target.publishDefinition(ctx)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
 	g.Expect(owner).To(BeNil())
@@ -667,7 +667,7 @@ func TestPrepareOwnerFailuresAreSafeAndBounded(t *testing.T) {
 		definition := testDefinition()
 		target := newPrepareTarget(fixture, &definition, DefaultFieldManager)
 
-		owner, err := target.prepareOwner(t.Context())
+		owner, err := target.publishDefinition(t.Context())
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(owner).To(BeNil())
 
@@ -699,7 +699,7 @@ func TestPrepareOwnerFailuresAreSafeAndBounded(t *testing.T) {
 		definition := testDefinition()
 		target := newPrepareTarget(fixture, &definition, DefaultFieldManager)
 
-		owner, err := target.prepareOwner(t.Context())
+		owner, err := target.publishDefinition(t.Context())
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(owner).To(BeNil())
 

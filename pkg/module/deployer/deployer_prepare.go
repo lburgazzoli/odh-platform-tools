@@ -32,7 +32,7 @@ import (
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
-// prepareOwner is the single preparation step ahead of the payload
+// publishDefinition is the single preparation step ahead of the payload
 // apply, over the invocation's client: apply the embedded definition
 // CRD, wait until the server serves it, then apply the definition
 // itself and return the server-backed object. Both writes are plain
@@ -49,7 +49,7 @@ import (
 // The authored definition the receiver holds is never mutated: a deep
 // copy is sanitized and submitted, and the copy — carrying the
 // identity the apply response returned — becomes the confirmed owner.
-func (r *Deployer) prepareOwner(ctx context.Context) (*toolApi.PlatformModuleDefinition, error) {
+func (r *Deployer) publishDefinition(ctx context.Context) (*toolApi.PlatformModuleDefinition, error) {
 	crd := &apiextensionsv1.CustomResourceDefinition{}
 	if err := yaml.Unmarshal(configcrd.PlatformModuleDefinitionYAML, crd); err != nil {
 		return nil, moduleerrors.New(

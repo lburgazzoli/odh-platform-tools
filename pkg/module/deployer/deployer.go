@@ -285,7 +285,7 @@ func (r *Deployer) Deploy(ctx context.Context) error {
 		return err
 	}
 
-	owner, err := r.prepareOwner(ctx)
+	owner, err := r.publishDefinition(ctx)
 	if err != nil {
 		r.fail()
 		return err
@@ -299,7 +299,7 @@ func (r *Deployer) Deploy(ctx context.Context) error {
 		return err
 	}
 
-	if err := r.deployPayload(ctx); err != nil {
+	if err := r.applyResources(ctx); err != nil {
 		r.fail()
 		return err
 	}

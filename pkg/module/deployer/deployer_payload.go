@@ -60,7 +60,7 @@ var defaultPayloadRetryBackoff = []time.Duration{
 	8 * time.Second,
 }
 
-// deployPayload applies the rendered module resources through the
+// applyResources applies the rendered module resources through the
 // actual framework deploy action, with the persisted definition as
 // the live owner, under the invocation's effective field manager, all
 // read from the receiver. It never publishes an owner itself and
@@ -105,7 +105,7 @@ var defaultPayloadRetryBackoff = []time.Duration{
 // moduleerrors.ErrDeployApply for the action itself — and the
 // framework's raw report stays reachable through Unwrap for
 // errors.Is and errors.As.
-func (r *Deployer) deployPayload(ctx context.Context) error {
+func (r *Deployer) applyResources(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return moduleerrors.New(
 			moduleerrors.ErrDeployPrepare,
