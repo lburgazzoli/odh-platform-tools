@@ -14,7 +14,7 @@ Run gates serialized on constrained hosts: `GOFLAGS="-p=1" make -j1 <target>`.
 | `make build` | Build all packages |
 | `make fmt` / `make fmt-check` | Format / check formatting |
 | `make vet` | `go vet ./...` |
-| `make lint` | golangci-lint (config in local, untracked `.golangci.yml`) |
+| `make lint` | golangci-lint (config: `.golangci.yml`) |
 | `make test` | Unit tests (`-race -count=1`) |
 | `make test-integration` | Offline integration suite (build tag `integration`) |
 | `make test-e2e-compile` | Compile the e2e suite without a cluster |
@@ -65,7 +65,5 @@ examples/               Helm and Kustomize sample modules
 ## Hygiene
 
 - Never commit `.context/`.
-- `.golangci.yml` is local-only (untracked); `make lint` picks it up when
-  present and falls back to golangci-lint defaults otherwise.
 - Generated code (`zz_generated.*`, `config/crd/bases`) is regenerated, never
   hand-edited.

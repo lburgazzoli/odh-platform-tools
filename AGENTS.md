@@ -40,7 +40,7 @@ make manifests    # CRD
 ## Hygiene
 
 - Never commit `.context/`.
-- `.golangci.yml` is local-only (untracked); lint config is not shared.
+- Lint configuration is tracked in `.golangci.yml`.
 - Exit codes: 0 success, 1 runtime/cancellation, 2 usage/definition.
 
 See `docs/` for development, testing, architecture, module authoring, and
