@@ -35,7 +35,7 @@ cmd/                    binary + Cobra commands (no business logic)
   module/deploy         module deploy command + reports
 pkg/
   module/api/v1alpha1   APIs, Scheme, generated code only
-  module/loader         decode + default definitions (strict)
+  module/loader         decode (unknown fields dropped) + default definitions
   module/renderer       shared render engine (helm/, kustomize/, source/)
   module/linter         lint action + checks/{types,deployments,crd}
   module/deployer       deploy orchestration (adapt/, cluster/, images/)

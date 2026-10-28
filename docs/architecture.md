@@ -14,7 +14,7 @@ imports Cobra.
 | `cmd/module/deploy` | `module deploy` command, report output, exit classification |
 | `pkg/module` | Facade wiring the default linter (`NewLinter`) |
 | `pkg/module/api/v1alpha1` | `PlatformModuleDefinition` API, Scheme, generated deepcopy |
-| `pkg/module/loader` | Strict decode of one definition document + placement defaults |
+| `pkg/module/loader` | Decode one definition document (unknown fields dropped) + placement defaults |
 | `pkg/module/renderer` | Render engine: backend selection, ordering, cancellation, reserved-resource guard |
 | `pkg/module/renderer/helm` | Helm backend (chart + literal values) |
 | `pkg/module/renderer/kustomize` | Kustomize backend |
@@ -36,7 +36,7 @@ imports Cobra.
 ## lint pipeline
 
 ```
-load (loader.LoadFromPath, strict decode + defaults)
+load (loader.LoadFromPath, decode + defaults)
   → render (renderer.Render, offline)
   → checks (types, deployments, crd)
   → report (text|json on stdout)
@@ -54,7 +54,7 @@ Load    validate options, parse platform version, load definition,
         snapshot related images (env over dotenv file)
 Render  renderer.Render with adapt post-renderers:
         EnvInjector (resolved images, namespace/platform env) and
-        PlatformConfigInjector (odh-<instance>-config ConfigMap)
+        PlatformConfigInjector (odh-<module>-config ConfigMap)
 Deploy  publishDefinition: apply embedded CRD, wait for establishment,
         apply the definition (cluster-scoped owner)
         applyResources: framework deploy action owns and applies the

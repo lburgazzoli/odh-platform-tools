@@ -34,8 +34,9 @@ spec:
         env:
         - name: LOG_LEVEL
           value: debug
-      initContainer:              # optional; name-only target
+      initContainer:              # optional; name + optional image
         name: init
+        image: '{{RELATED_IMAGE_INIT}}'   # optional; empty uses the main image
 ```
 
 For Kustomize: `manifests.format: kustomize` and optionally
@@ -54,12 +55,13 @@ directory in both backends.
 | `spec.controller.deployment.name` | Selects the controller Deployment; defaults to `metadata.name` |
 | `spec.controller.deployment.container` | Main container; `name` defaults to `manager` |
 | `spec.controller.deployment.container.image` | Literal or whole `{{VARIABLE}}` token; must resolve at deploy |
-| `spec.controller.deployment.initContainer` | Name-only target; image defaults to the main image |
+| `spec.controller.deployment.initContainer` | Required name; optional `image` (literal or whole `{{VARIABLE}}`); empty uses the main image |
 
 ## Loading rules
 
-- The file must contain exactly one document; unknown fields fail strict
-  decode (use `module lint` to check).
+- The file must contain exactly one document.
+- Decoding is permissive: unknown fields are dropped; type mismatches on
+  mapped fields and duplicate keys fail.
 - Placement defaults (`instance.name`, container `name`) are applied by the
   loader after decode.
 - `module lint` validates offline; `module deploy` renders, injects images
