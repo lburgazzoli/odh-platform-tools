@@ -126,22 +126,33 @@ func TestOnErrorRetriesUntilSuccess(t *testing.T) {
 }
 
 // TestOnErrorExhaustionKeepsLastError proves exhaustion after
-// len(pauses)+1 attempts returns the last failure.
+// len(pauses)+1 attempts returns the last failure, not an earlier
+// one: each attempt fails with its own sentinel.
 func TestOnErrorExhaustionKeepsLastError(t *testing.T) {
 	t.Parallel()
 
 	g := NewWithT(t)
 
-	fn, count := attempts(10)
+	first := errors.New("first attempt failure")
+	second := errors.New("second attempt failure")
+
+	count := 0
 
 	err := OnError(
 		t.Context(),
 		[]time.Duration{time.Millisecond},
 		everyErrorIsRetriable,
-		fn,
+		func(context.Context) error {
+			count++
+			if count == 1 {
+				return first
+			}
+			return second
+		},
 	)
-	g.Expect(err).To(MatchError("attempt failure"))
-	g.Expect(*count).To(Equal(2))
+	g.Expect(err).To(MatchError(second))
+	g.Expect(err).NotTo(MatchError(first))
+	g.Expect(count).To(Equal(2))
 }
 
 // TestOnErrorStopsOnTerminalError proves a rejected error returns
@@ -212,4 +223,37 @@ func TestOnErrorCancellationDuringPause(t *testing.T) {
 	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
 	g.Expect(time.Since(started)).To(BeNumerically("<", 30*time.Second))
 	g.Expect(*count).To(Equal(1))
+}
+
+// TestOnErrorCancellationWinsTimerRace proves the convergence rule
+// when the pause timer and the cancellation are both ready when the
+// wait ends: whichever arm the select picks, the cancellation wins,
+// no further attempt runs, and the context error is returned. The
+// zero pause makes the timer ready immediately, so every iteration
+// enters the race; repeating them makes both arms near-certain to be
+// exercised.
+func TestOnErrorCancellationWinsTimerRace(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	for range 10 {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		count := 0
+
+		err := OnError(
+			ctx,
+			[]time.Duration{0},
+			everyErrorIsRetriable,
+			func(context.Context) error {
+				count++
+				cancel()
+				return errors.New("attempt failure")
+			},
+		)
+		g.Expect(err).To(MatchError(context.Canceled))
+		g.Expect(count).To(Equal(1))
+	}
 }
