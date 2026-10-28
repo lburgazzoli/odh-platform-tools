@@ -19,6 +19,7 @@ package retry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -28,6 +29,34 @@ import (
 // everyErrorIsRetriable accepts any failure, so the tests exercise
 // the schedule and cancellation paths rather than classification.
 func everyErrorIsRetriable(error) bool { return true }
+
+// TestIsRetriable proves the default classification: wrapped and bare
+// context errors are terminal, everything else retries.
+func TestIsRetriable(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{"cancellation", context.Canceled, false},
+		{"deadline", context.DeadlineExceeded, false},
+		{"wrapped cancellation", fmt.Errorf("action failed: %w", context.Canceled), false},
+		{"wrapped deadline", fmt.Errorf("action failed: %w", context.DeadlineExceeded), false},
+		{"ordinary failure", errors.New("apply failure"), true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := NewWithT(t)
+
+			g.Expect(IsRetriable(tc.err)).To(Equal(tc.expected))
+		})
+	}
+}
 
 // attempts counts how many times fn ran and fails the first count
 // failures, then succeeds.

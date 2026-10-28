@@ -160,15 +160,13 @@ func (r *Deployer) applyResources(ctx context.Context) error {
 	// The bounded retry: the whole action reruns on failure through
 	// the shared loop, stopping on success, on a terminal error, on
 	// the invocation's cancellation or deadline, or on exhaustion.
-	// The invocation's context errors surfacing through the action
-	// are terminal; the loop itself aborts a pause the moment the
-	// context is done.
+	// IsRetriable makes the invocation's context errors surfacing
+	// through the action terminal, and the loop itself aborts a pause
+	// the moment the context is done.
 	err := retry.OnError(
 		ctx,
 		backoff,
-		func(err error) bool {
-			return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
-		},
+		retry.IsRetriable,
 		func(context.Context) error {
 			// A fresh action configuration per attempt. Defaults keep
 			// the framework field ownership, metadata, customizers, SSA

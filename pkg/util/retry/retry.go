@@ -23,8 +23,25 @@ package retry
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// IsRetriable is the default attempt classification for OnError:
+// every error is worth another attempt under a still-live context,
+// except the context's own cancellation and deadline, which no later
+// attempt can outlive. Wrapped context errors classify the same. An
+// operation that derives shorter per-attempt contexts and wants to
+// retry their expiry classifies its own errors instead.
+func IsRetriable(err error) bool {
+	switch {
+	case errors.Is(err, context.Canceled),
+		errors.Is(err, context.DeadlineExceeded):
+		return false
+	default:
+		return true
+	}
+}
 
 // OnError runs fn until it succeeds, its error is rejected as
 // retriable, the schedule is exhausted, or ctx is done. fn runs at
