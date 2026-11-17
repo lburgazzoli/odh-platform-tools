@@ -390,14 +390,29 @@ check_usage_error "unexpected positional argument" build extra
 # ------------------------------------------------------------------
 # Absent Podman
 # ------------------------------------------------------------------
-absent_path="/bin:/usr/bin"
-if PATH="$absent_path" command -v podman >/dev/null 2>&1; then
+# Build a sterile PATH instead of assuming a system directory lacks
+# Podman: on Linux, /usr/bin/podman is a normal installation, and the
+# suite must stay portable to such hosts. The sterile directory holds
+# symlinks only to the external utilities image.sh uses before it
+# requires Podman; shell builtins (cd, pwd, command, printf in most
+# shells) need no entry, and command -v reports builtins without a
+# path, which the case below skips.
+sterile_bin="$tmp/sterile-bin"
+mkdir -p "$sterile_bin"
+for util in dirname cat printf; do
+  util_path=$(command -v "$util" 2>/dev/null) || util_path=
+  case $util_path in
+    /*) ln -s "$util_path" "$sterile_bin/$util" ;;
+  esac
+done
+
+if PATH="$sterile_bin" command -v podman >/dev/null 2>&1; then
   tests=$((tests + 1))
   failures=$((failures + 1))
   printf 'FAIL absent podman: a podman binary exists in %s; test environment not sterile\n' \
-    "$absent_path"
+    "$sterile_bin"
 else
-  run_script --path "$absent_path" build
+  run_script --path "$sterile_bin" build
   assert_eq "absent podman: exit status" 1 "$run_rc"
   assert_contains "absent podman: actionable diagnostic" "podman" "$(cat "$err_file")"
 fi

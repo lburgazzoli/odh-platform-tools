@@ -85,16 +85,21 @@ podman run --rm -v "$PWD/examples:/work/examples:ro,Z" \
   module lint --config /work/examples/kustomize/module.yaml
 ```
 
-Deploying from the container mounts a kubeconfig read-only and points the
-CLI at it through the standard `KUBECONFIG` environment variable. External
-exec-auth binaries a kubeconfig may reference are not bundled in the image:
+Deploying from the container mounts the module and a kubeconfig read-only
+and points the CLI at the kubeconfig through the standard `KUBECONFIG`
+environment variable. `--config` and `--platform-version` are required; the
+example below mounts the Helm sample module. External exec-auth binaries a
+kubeconfig may reference are not bundled in the image:
 
 ```
 podman run --rm \
+  -v "$PWD/examples/helm/chart:/work/module:ro,Z" \
   -v "$HOME/.kube/config:/work/kubeconfig:ro,Z" \
   -e KUBECONFIG=/work/kubeconfig \
   quay.io/lburgazzoli/odh-platform-tools:<tag> \
-  module deploy --config /work/module.yaml
+  module deploy \
+    --config /work/module/module.yaml \
+    --platform-version <semver>
 ```
 
 An owner-only (mode 0600) kubeconfig remains readable by runtime UID 1001
@@ -104,10 +109,13 @@ the image user through a rootless user namespace:
 ```
 podman run --rm \
   --userns=keep-id:uid=1001,gid=1001 \
+  -v "$PWD/examples/helm/chart:/work/module:ro,Z" \
   -v "$HOME/.kube/config:/work/kubeconfig:ro,Z" \
   -e KUBECONFIG=/work/kubeconfig \
   quay.io/lburgazzoli/odh-platform-tools:<tag> \
-  module deploy --config /work/module.yaml
+  module deploy \
+    --config /work/module/module.yaml \
+    --platform-version <semver>
 ```
 
 ## Layout
