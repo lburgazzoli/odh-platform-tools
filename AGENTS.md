@@ -40,7 +40,6 @@ make generate     # deepcopy
 make manifests    # CRD (tracked; rerun after API edits)
 make image        # native-platform container image (Podman only)
 make image/multiarch  # local linux/amd64 + linux/arm64 manifest list
-sh hack/scripts/image_test.sh  # shell contract suite (no Make target)
 ```
 
 ## Image builds

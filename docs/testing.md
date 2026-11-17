@@ -7,7 +7,6 @@
 | Unit | — | `make test` | no |
 | Integration | `integration` | `make test-integration` | no (offline) |
 | e2e | `e2e` | `make test-e2e-kind` / `make test-e2e-external` | yes |
-| Shell contract | — | `sh hack/scripts/image_test.sh` | no |
 
 All Go targets run with `-race -count=1`.
 
@@ -36,13 +35,6 @@ podman run --init --rm --platform linux/arm64 \
 - `--init` reaps orphaned test processes.
 - `HOME`, `GOCACHE`, and `GOMODCACHE` must point at writable scratch paths.
 - `make` is the container command, so its exit status is the container's.
-
-## Shell contract tests
-
-`sh hack/scripts/image_test.sh` runs the dependency-free POSIX contract
-suite for `hack/scripts/image.sh` from any working directory. It places a
-fake `podman` on a controlled `PATH`, so it needs no container engine,
-network, or Go toolchain. There is no Make target for it.
 
 ## Style
 
