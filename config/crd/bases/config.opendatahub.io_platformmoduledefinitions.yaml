@@ -1,0 +1,255 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: platformmoduledefinitions.config.opendatahub.io
+spec:
+  group: config.opendatahub.io
+  names:
+    kind: PlatformModuleDefinition
+    listKind: PlatformModuleDefinitionList
+    plural: platformmoduledefinitions
+    singular: platformmoduledefinition
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          PlatformModuleDefinition describes a module and becomes its cluster-scoped
+          deployment owner when persisted.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: PlatformModuleDefinitionSpec configures the module identity,
+              manifests, and controller.
+            properties:
+              controller:
+                description: Controller describes the module controller deployment.
+                properties:
+                  deployment:
+                    description: ControllerDeployment selects the controller Deployment
+                      and its containers.
+                    properties:
+                      container:
+                        description: Container defaults to a block named DefaultMainContainerName
+                          with no image.
+                        properties:
+                          env:
+                            description: Env is merged into the main and configured
+                              init containers.
+                            items:
+                              description: |-
+                                EnvVar is an injected variable. A nil Value preserves absent/null separately
+                                from an explicitly empty string.
+                              properties:
+                                name:
+                                  type: string
+                                value:
+                                  nullable: true
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            type: array
+                          image:
+                            description: |-
+                              Image is a literal or whole {{VARIABLE}} token. It must resolve during deploy;
+                              lint does not resolve image sources.
+                            type: string
+                          name:
+                            description: Name defaults to DefaultMainContainerName
+                              when empty.
+                            type: string
+                        required:
+                        - image
+                        type: object
+                      initContainer:
+                        description: |-
+                          ContainerTarget selects an init container. Its image defaults to the main
+                          image, and it receives the same injected environment variables.
+                        properties:
+                          image:
+                            description: |-
+                              Image is a literal or whole {{VARIABLE}} token; empty uses the main image.
+                              The effective image must resolve during deploy.
+                            type: string
+                          name:
+                            description: Name is required when an init container is
+                              configured.
+                            type: string
+                        type: object
+                      name:
+                        description: Name defaults to the module's metadata.name when
+                          empty.
+                        type: string
+                    type: object
+                required:
+                - deployment
+                type: object
+              instance:
+                description: Instance describes the module CR identity. This tool
+                  does not create the CR.
+                properties:
+                  name:
+                    description: Name defaults to metadata.name when empty.
+                    type: string
+                  type:
+                    description: Type is the Module custom resource type the controller
+                      owns.
+                    properties:
+                      group:
+                        type: string
+                      kind:
+                        type: string
+                      version:
+                        type: string
+                    required:
+                    - group
+                    - kind
+                    - version
+                    type: object
+                required:
+                - type
+                type: object
+              manifests:
+                description: |-
+                  Manifests selects one local rendering backend. An omitted or empty path
+                  uses the definition file's directory; the other backend block must be absent.
+                properties:
+                  format:
+                    description: Format identifies the manifest backend a definition
+                      selects.
+                    type: string
+                  helm:
+                    description: HelmManifests locates a chart and supplies literal
+                      values.
+                    properties:
+                      path:
+                        description: Path is the chart root relative to the definition
+                          file; empty uses its directory.
+                        type: string
+                      values:
+                        additionalProperties:
+                          x-kubernetes-preserve-unknown-fields: true
+                        description: |-
+                          Values override chart defaults without interpolation.
+                          JSON supports arbitrary values and controller-gen deepcopy generation.
+                        type: object
+                    type: object
+                  kustomize:
+                    description: |-
+                      KustomizeManifests locates the directory containing
+                      kustomization.yaml, relative to the module root.
+                    properties:
+                      path:
+                        description: |-
+                          Path locates the kustomization relative to the definition file;
+                          empty uses its directory.
+                        type: string
+                    type: object
+                required:
+                - format
+                type: object
+              relatedImages:
+                items:
+                  type: string
+                type: array
+            required:
+            - controller
+            - instance
+            - manifests
+            type: object
+          status:
+            description: |-
+              PlatformModuleDefinitionStatus is the observed state of a module
+              definition.
+            properties:
+              conditions:
+                items:
+                  properties:
+                    lastHeartbeatTime:
+                      description: |-
+                        The last time we got an update on a given condition, this should not be set and is
+                        present only for backward compatibility reasons
+                      format: date-time
+                      type: string
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.
+                        If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: message is a human-readable message indicating
+                        details about the transition.
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration
+                        is 9, the condition is out of date with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        The value should be a CamelCase string.
+                      type: string
+                    severity:
+                      description: |-
+                        Severity with which to treat failures of this type of condition.
+                        When this is not specified, it defaults to Error.
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
+              observedGeneration:
+                description: The generation observed by the resource controller.
+                format: int64
+                type: integer
+              phase:
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

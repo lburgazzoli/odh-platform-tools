@@ -18,7 +18,6 @@ covcounters*
 *.swo
 
 # Generated (controller-gen)
-config/crd/bases/
 config/rbac/role.yaml
 
 # Generated (kustomize edit)
