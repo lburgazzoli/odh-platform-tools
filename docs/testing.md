@@ -7,8 +7,42 @@
 | Unit | — | `make test` | no |
 | Integration | `integration` | `make test-integration` | no (offline) |
 | e2e | `e2e` | `make test-e2e-kind` / `make test-e2e-external` | yes |
+| Shell contract | — | `sh hack/scripts/image_test.sh` | no |
 
-All targets run with `-race -count=1`.
+All Go targets run with `-race -count=1`.
+
+## Native Linux Go suites
+
+The process-supervision tests read Linux `/proc`. On a macOS host, run the
+Go suites in a true native linux/arm64 Go container and treat emulated runs
+as non-authoritative. Inspect the actual builder architecture first:
+
+```
+podman image inspect docker.io/library/golang:1.27 --format '{{.Os}}/{{.Architecture}}'
+```
+
+Then run the gates in the container (here `test`; substitute other targets
+as needed):
+
+```
+podman run --init --rm --platform linux/arm64 \
+  -v "$PWD":/work:Z -w /work \
+  -e HOME=/tmp -e GOCACHE=/tmp/gocache -e GOMODCACHE=/tmp/gomodcache \
+  -e GOFLAGS=-p=1 \
+  docker.io/library/golang:1.27 \
+  make -j1 test
+```
+
+- `--init` reaps orphaned test processes.
+- `HOME`, `GOCACHE`, and `GOMODCACHE` must point at writable scratch paths.
+- `make` is the container command, so its exit status is the container's.
+
+## Shell contract tests
+
+`sh hack/scripts/image_test.sh` runs the dependency-free POSIX contract
+suite for `hack/scripts/image.sh` from any working directory. It places a
+fake `podman` on a controlled `PATH`, so it needs no container engine,
+network, or Go toolchain. There is no Make target for it.
 
 ## Style
 

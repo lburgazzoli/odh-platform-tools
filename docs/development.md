@@ -3,7 +3,8 @@
 ## Prerequisites
 
 - Go 1.27.3
-- Podman or Docker + Kind for the live e2e suite
+- Podman for container image builds (no Docker path) and for running the Go
+  suites on native Linux; Podman or Docker + Kind for the live e2e suite
 
 ## Commands
 
@@ -25,6 +26,89 @@ Run gates serialized on constrained hosts: `GOFLAGS="-p=1" make -j1 <target>`.
 | `make verify` | fmt-check + vet + lint + test |
 | `make generate` | Deepcopy code (controller-gen) |
 | `make manifests` | Module definition CRD (controller-gen) |
+| `make image` | Container image for the host platform (Podman) |
+| `make image/multiarch` | Local linux/amd64 + linux/arm64 manifest list |
+
+## Container images
+
+Local CLI images are built with Podman only. There is no Docker path, no
+push target, and nothing is ever published — images and manifest lists stay
+in local storage. Public base images and Go modules need network access on
+first use; "offline" elsewhere in this repo refers to runtime lint behavior,
+not an uncached image build.
+
+The root `Containerfile` has two stages:
+
+- **Builder** — official `docker.io/library/golang:1.27`, pinned to the build
+  host's platform so the toolchain and the pinned `make manifests` CRD
+  regeneration always run natively. `TARGETOS`/`TARGETARCH` steer the final
+  static `CGO_ENABLED=0 -trimpath` cross-compile, and the runtime `HOME` is
+  prepared here, so the final stage contains no `RUN` instruction and
+  foreign-architecture builds never execute emulated code.
+- **Runtime** — `registry.access.redhat.com/ubi10/ubi-minimal` with no Go
+  toolchain, non-root UID 1001, writable `HOME=/home/default`, and the
+  exec-form entrypoint `/usr/local/bin/odh-platform-tools`.
+
+`make image` builds for the host's native platform; `make image/multiarch`
+builds a local manifest list with exactly one linux/amd64 and one
+linux/arm64 entry. The Make variables `IMAGE_REGISTRY`, `IMAGE_NAME`, and
+`IMAGE_TAG` default to `quay.io/lburgazzoli`, `odh-platform-tools`, and
+`dev`, and compose the image reference `<registry>/<name>:<tag>`.
+
+Both targets are thin one-line recipes that delegate to
+`hack/scripts/image.sh`, where all branching and validation live:
+
+```
+hack/scripts/image.sh build    --registry <registry> --name <name> --tag <tag>
+hack/scripts/image.sh multiarch --registry <registry> --name <name> --tag <tag>
+```
+
+New image logic belongs in `hack/scripts/` (POSIX `sh`, Apache-2.0 header),
+never in Make recipes or a separate `.mk` include — none exists. The script
+resolves the repository root from its own location, so it works from any
+directory.
+
+`multiarch` builds into a private temporary list and moves it onto the
+requested reference, so repeated runs never accumulate platform entries. A
+reference already held by a single-architecture image is refused rather
+than overwritten — use distinct tags for native and multiarch results.
+
+Smoke-testing the CLI against the example modules (read-only mounts):
+
+```
+podman run --rm -v "$PWD/examples:/work/examples:ro,Z" \
+  quay.io/lburgazzoli/odh-platform-tools:<tag> \
+  module lint --config /work/examples/helm/chart/module.yaml
+
+podman run --rm -v "$PWD/examples:/work/examples:ro,Z" \
+  quay.io/lburgazzoli/odh-platform-tools:<tag> \
+  module lint --config /work/examples/kustomize/module.yaml
+```
+
+Deploying from the container mounts a kubeconfig read-only and points the
+CLI at it through the standard `KUBECONFIG` environment variable. External
+exec-auth binaries a kubeconfig may reference are not bundled in the image:
+
+```
+podman run --rm \
+  -v "$HOME/.kube/config:/work/kubeconfig:ro,Z" \
+  -e KUBECONFIG=/work/kubeconfig \
+  quay.io/lburgazzoli/odh-platform-tools:<tag> \
+  module deploy --config /work/module.yaml
+```
+
+An owner-only (mode 0600) kubeconfig remains readable by runtime UID 1001
+without loosening host file permissions by mapping the invoking user onto
+the image user through a rootless user namespace:
+
+```
+podman run --rm \
+  --userns=keep-id:uid=1001,gid=1001 \
+  -v "$HOME/.kube/config:/work/kubeconfig:ro,Z" \
+  -e KUBECONFIG=/work/kubeconfig \
+  quay.io/lburgazzoli/odh-platform-tools:<tag> \
+  module deploy --config /work/module.yaml
+```
 
 ## Layout
 
@@ -43,6 +127,7 @@ pkg/
   k8s/                  shared Kubernetes helpers (configmap, deployment, crd)
   util/                 jq, option, retry
 config/crd              embedded generated CRD manifests
+hack/scripts/           POSIX helpers for image builds (called from Make)
 tests/                  integration (tag: integration), e2e (tag: e2e)
 examples/               Helm and Kustomize sample modules
 ```
@@ -101,4 +186,9 @@ RenderOptions{Namespace: ns}, WithPostRenderer(p))`.
 
 - Never commit `.context/`.
 - Generated code (`zz_generated.*`, `config/crd/bases`) is regenerated, never
-  hand-edited.
+  hand-edited. The generated CRD
+  `config/crd/bases/config.opendatahub.io_platformmoduledefinitions.yaml` is
+  tracked so clean checkouts build; regenerate it with the pinned
+  `make manifests` after API edits. Host build and test targets never
+  regenerate it automatically, and the container build regenerates it inside
+  the builder stage.

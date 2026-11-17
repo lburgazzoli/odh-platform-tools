@@ -9,7 +9,9 @@ one-shot deploy of a module's controller package.
   Root in `cmd/main.go`, subcommands in `cmd/module/{lint,deploy}`.
 - `pkg/` — reusable services. Packages under `pkg/` never import Cobra.
 - `pkg/module/api/v1alpha1` — APIs, Scheme, generated code only.
-- `config/crd` — embedded generated CRD manifests (`make manifests`).
+- `config/crd` — embedded generated CRD manifests (`make manifests`); the
+  generated CRD under `config/crd/bases/` is tracked in git.
+- `hack/scripts/` — POSIX sh helpers for image builds, called by Make.
 - `tests/{integration,e2e,support}` — offline integration suite (build tag
   `integration`) and live e2e suite (build tag `e2e`).
 - `examples/` — Helm and Kustomize sample modules.
@@ -35,8 +37,21 @@ one-shot deploy of a module's controller package.
 GOFLAGS="-p=1" make -j1 fmt
 GOFLAGS="-p=1" make -j1 build verify test-integration test-e2e-compile
 make generate     # deepcopy
-make manifests    # CRD
+make manifests    # CRD (tracked; rerun after API edits)
+make image        # native-platform container image (Podman only)
+make image/multiarch  # local linux/amd64 + linux/arm64 manifest list
+sh hack/scripts/image_test.sh  # shell contract suite (no Make target)
 ```
+
+## Image builds
+
+- Podman only; no Docker path, no push target — images stay local.
+- `IMAGE_REGISTRY`/`IMAGE_NAME`/`IMAGE_TAG` override the default reference
+  `quay.io/lburgazzoli/odh-platform-tools:dev`.
+- Make recipes stay one-line delegations to `hack/scripts/image.sh`; new
+  image logic goes there (POSIX sh), never in Make or a `.mk` include.
+- Use distinct tags for native and multiarch results; `multiarch` refuses a
+  reference held by a single-architecture image.
 
 ## Hygiene
 
