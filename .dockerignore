@@ -1,0 +1,84 @@
+# Copyright 2026 Luca Burgazzoli
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Default-deny: ignore every unrecognized path at the repository root,
+# then admit only the source inputs the image build needs.
+*
+
+# Allowed root files.
+!go.mod
+!go.sum
+!Makefile
+!LICENSE
+!Containerfile
+!.dockerignore
+
+# Allowed trees. config/ is admitted only far enough to traverse into
+# config/crd; its other children stay excluded.
+!cmd
+!pkg
+!hack
+!examples
+!config
+config/*
+!config/crd
+
+# Local state that must never enter the context, even inside allowed
+# trees.
+**/.git
+**/.git/**
+**/.context
+**/.context/**
+**/.opencode
+**/.opencode/**
+**/.devcontainer
+**/.devcontainer/**
+**/.custom-gcl.yml
+**/.idea
+**/.idea/**
+**/.vscode
+**/.vscode/**
+**/.cursor
+**/.cursor/**
+**/.kube
+**/.kube/**
+**/local.mk
+**/*.mktmp.*
+**/bin
+**/bin/**
+**/vendor
+**/vendor/**
+**/cover.out
+**/covmeta*
+**/covcounters*
+**/*.test
+**/.DS_Store
+**/*~
+**/*.swp
+**/*.swo
+
+# Credential-like files at any depth.
+**/.env
+**/.env.*
+**/*.env
+**/auth.json
+**/kubeconfig
+**/kubeconfig.*
+**/*.kubeconfig
+**/*.key
+**/*.pem
+
+# Exception: the examples images file is a tracked, non-sensitive
+# placeholder fixture both lint smoke examples rely on.
+!examples/images.env
