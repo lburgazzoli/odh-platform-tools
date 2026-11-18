@@ -27,19 +27,8 @@ package e2e
 // pipeline image, a whole-token related-image reference, or an
 // intentionally unpullable tag for nonconvergence.
 //
-// The pinned generic workload image is digest-pinned busybox: the
-// chart authors one successful no-op init container command and one
-// long-running main container command for it, with no custom
-// controller build or publication.
 
 const (
-	// workloadImage is the recorded generic workload image pin: with
-	// the chart's per-container commands it supports both a
-	// successful init container (`sh -c "exit 0"`) and a long-running
-	// main container (`sleep infinity`), with no custom controller
-	// build or publication. Injection replaces images only, so the
-	// chart authors the commands once for both containers.
-	workloadImage = "busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
 
 	// unpullableImage is an intentionally nonexistent tag: workload
 	// pods stay pending forever, proving default runs never wait for
@@ -56,13 +45,14 @@ const (
 	helmDefinitionTemplate = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
-  name: synthetic-UNIQUESUFFIX
+  name: mock-UNIQUESUFFIX
 spec:
   instance:
+    name: default-mock-UNIQUESUFFIX
     type:
       group: e2eUNIQUESUFFIX.platform.opendatahub.io
       version: v1alpha1
-      kind: SyntheticModule
+      kind: MODULEKIND
   relatedImages:
   - RELATED_IMAGE_ALPHA
   manifests:
@@ -74,7 +64,7 @@ spec:
         replicas: REPLICAS
   controller:
     deployment:
-      name: synthetic-controller
+      name: mock-controller
       container:
         image: CONTROLLERIMAGE
         env:
@@ -90,13 +80,14 @@ spec:
 	kustomizeDefinitionTemplate = `apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
-  name: synthetic-UNIQUESUFFIX
+  name: mock-UNIQUESUFFIX
 spec:
   instance:
+    name: default-mock-UNIQUESUFFIX
     type:
       group: e2eUNIQUESUFFIX.platform.opendatahub.io
       version: v1alpha1
-      kind: SyntheticModule
+      kind: MODULEKIND
   relatedImages:
   - RELATED_IMAGE_ALPHA
   manifests:
@@ -105,7 +96,7 @@ spec:
       path: ./manifests
   controller:
     deployment:
-      name: synthetic-controller
+      name: mock-controller
       container:
         image: CONTROLLERIMAGE
         env:
@@ -116,7 +107,7 @@ spec:
 `
 
 	chartYAML = `apiVersion: v2
-name: synthetic
+name: mock
 version: 1.0.0
 `
 
@@ -128,35 +119,57 @@ replicas: 1
 	// an init container sharing the controller image by name, a main
 	// container whose LOG_LEVEL starts as a valueFrom reference the
 	// injector replaces, and a replica count the authored values
-	// tune. Placement is the release namespace the template
-	// requests. The commands are authored per container for the
-	// pinned generic workload image: the init exits successfully and
-	// the main runs indefinitely — injection replaces images only.
+	// tune. The init invokes CLI help and the main runs module mock
+	// in the rendered namespace.
 	deploymentTemplate = `apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: synthetic-controller
+  name: mock-controller
   namespace: {{ .Release.Namespace }}
 spec:
   replicas: {{ .Values.replicas }}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
-      app: synthetic
+      app: mock
   template:
     metadata:
       labels:
-        app: synthetic
+        app: mock
     spec:
-      serviceAccountName: synthetic-sa
+      serviceAccountName: mock-sa
       initContainers:
       - name: installer
-        image: registry.k8s.io/pause:3.10
-        command: ["sh", "-c", "exit 0"]
+        image: CONTROLLERIMAGE
+        imagePullPolicy: IfNotPresent
+        args: ["module", "mock", "--help"]
       containers:
       - name: manager
-        image: registry.k8s.io/pause:3.10
-        command: ["sleep", "infinity"]
+        image: CONTROLLERIMAGE
+        imagePullPolicy: IfNotPresent
+        args:
+        - module
+        - mock
+        - --api-version=e2eUNIQUESUFFIX.platform.opendatahub.io/v1alpha1
+        - --kind=MODULEKIND
+        - --platform-configmap=odh-mock-UNIQUESUFFIX-config
+        ports:
+        - name: probes
+          containerPort: 8081
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: probes
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: probes
         env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         - name: LOG_LEVEL
           valueFrom:
             configMapKeyRef:
@@ -190,18 +203,19 @@ spec:
 	serviceAccountTemplate = `apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: synthetic-sa
+  name: mock-sa
   namespace: {{ .Release.Namespace }}
 `
 
 	roleTemplate = `apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: synthetic-role
+  name: mock-role
   namespace: {{ .Release.Namespace }}
 rules:
 - apiGroups: [""]
   resources: ["configmaps"]
+  resourceNames: [odh-mock-UNIQUESUFFIX-config]
   verbs: ["get", "list", "watch"]
 `
 
@@ -210,47 +224,16 @@ rules:
 	roleBindingTemplate = `apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: synthetic-binding
+  name: mock-binding
   namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: synthetic-role
+  name: mock-role
 subjects:
 - kind: ServiceAccount
-  name: synthetic-sa
+  name: mock-sa
   namespace: {{ .Release.Namespace }}
-`
-
-	// payloadCRDTemplate is the module type's own CRD: the unique
-	// per-scenario group keeps every run's payload type isolated.
-	payloadCRDTemplate = `apiVersion: apiextensions.k8s.io/v1
-kind: CustomResourceDefinition
-metadata:
-  name: syntheticmodules.e2eUNIQUESUFFIX.platform.opendatahub.io
-spec:
-  group: e2eUNIQUESUFFIX.platform.opendatahub.io
-  names:
-    plural: syntheticmodules
-    singular: syntheticmodule
-    kind: SyntheticModule
-    listKind: SyntheticModuleList
-  scope: Cluster
-  versions:
-  - name: v1alpha1
-    served: true
-    storage: true
-    subresources:
-      status: {}
-    schema:
-      openAPIV3Schema:
-        type: object
-        properties:
-          status:
-            type: object
-            properties:
-              phase:
-                type: string
 `
 
 	// valuesConfigMapTemplate renders the authored chart value,
@@ -317,10 +300,11 @@ metadata:
   name: foreign-UNIQUESUFFIX
 spec:
   instance:
+    name: default-mock-UNIQUESUFFIX
     type:
       group: e2eUNIQUESUFFIX.platform.opendatahub.io
       version: v1alpha1
-      kind: SyntheticModule
+      kind: MODULEKIND
 `
 
 	// invalidConfigMapTemplate carries a data key the API server
@@ -356,6 +340,8 @@ resources:
 - serviceaccount.yaml
 - role.yaml
 - rolebinding.yaml
+- clusterrole.yaml
+- clusterrolebinding.yaml
 - values.yaml
 - gate.yaml
 - shared.yaml
@@ -370,27 +356,51 @@ resources:
 	kustomizeDeploymentYAML = `apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: synthetic-controller
+  name: mock-controller
 spec:
-  replicas: 2
+  replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
-      app: synthetic
+      app: mock
   template:
     metadata:
       labels:
-        app: synthetic
+        app: mock
     spec:
-      serviceAccountName: synthetic-sa
+      serviceAccountName: mock-sa
       initContainers:
       - name: installer
-        image: registry.k8s.io/pause:3.10
-        command: ["sh", "-c", "exit 0"]
+        image: CONTROLLERIMAGE
+        imagePullPolicy: IfNotPresent
+        args: ["module", "mock", "--help"]
       containers:
       - name: manager
-        image: registry.k8s.io/pause:3.10
-        command: ["sleep", "infinity"]
+        image: CONTROLLERIMAGE
+        imagePullPolicy: IfNotPresent
+        args:
+        - module
+        - mock
+        - --api-version=e2eUNIQUESUFFIX.platform.opendatahub.io/v1alpha1
+        - --kind=MODULEKIND
+        - --platform-configmap=odh-mock-UNIQUESUFFIX-config
+        ports:
+        - name: probes
+          containerPort: 8081
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: probes
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: probes
         env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         - name: LOG_LEVEL
           valueFrom:
             configMapKeyRef:
@@ -401,16 +411,17 @@ spec:
 	kustomizeServiceAccountYAML = `apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: synthetic-sa
+  name: mock-sa
 `
 
 	kustomizeRoleYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: synthetic-role
+  name: mock-role
 rules:
 - apiGroups: [""]
   resources: ["configmaps"]
+  resourceNames: [odh-mock-UNIQUESUFFIX-config]
   verbs: ["get", "list", "watch"]
 `
 
@@ -419,14 +430,14 @@ rules:
 	kustomizeRoleBindingYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: synthetic-binding
+  name: mock-binding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: synthetic-role
+  name: mock-role
 subjects:
 - kind: ServiceAccount
-  name: synthetic-sa
+  name: mock-sa
 `
 
 	kustomizeValuesConfigMapYAML = `apiVersion: v1
@@ -455,3 +466,47 @@ data:
   placement: target
 `
 )
+
+// Event writes for a cluster-scoped module are recorded in default.
+const liveClusterRoleYAML = `apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mock-UNIQUESUFFIX-mock-controller
+rules:
+- apiGroups: [e2eUNIQUESUFFIX.platform.opendatahub.io]
+  resources: [MODULEPLURAL]
+  verbs: [get, list, watch]
+- apiGroups: [e2eUNIQUESUFFIX.platform.opendatahub.io]
+  resources: [MODULEPLURAL/status]
+  verbs: [get, patch, update]
+- apiGroups: [events.k8s.io]
+  resources: [events]
+  verbs: [create, patch]
+`
+
+const helmLiveClusterRoleBindingYAML = `apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mock-UNIQUESUFFIX-mock-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mock-UNIQUESUFFIX-mock-controller
+subjects:
+- kind: ServiceAccount
+  name: mock-sa
+  namespace: {{ .Release.Namespace }}
+`
+
+const kustomizeLiveClusterRoleBindingYAML = `apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mock-UNIQUESUFFIX-mock-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mock-UNIQUESUFFIX-mock-controller
+subjects:
+- kind: ServiceAccount
+  name: mock-sa
+`

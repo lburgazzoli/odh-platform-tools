@@ -25,6 +25,7 @@ import (
 	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -51,6 +52,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	deploycli "github.com/lburgazzoli/odh-platform-tools/cmd/module/deploy"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api"
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
@@ -60,11 +62,18 @@ import (
 // shared infrastructure — foreign on an external cluster — and is
 // never deleted by scenario code.
 var (
-	definitionGVK = toolApi.GroupVersion.WithKind("PlatformModuleDefinition")
-	namespaceGVK  = schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Namespace"}
-	crdGVK        = apiextensionsv1.SchemeGroupVersion.WithKind("CustomResourceDefinition")
-	configMapGVK  = corev1.SchemeGroupVersion.WithKind("ConfigMap")
+	definitionGVK         = toolApi.GroupVersion.WithKind("PlatformModuleDefinition")
+	namespaceGVK          = schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Namespace"}
+	crdGVK                = apiextensionsv1.SchemeGroupVersion.WithKind("CustomResourceDefinition")
+	configMapGVK          = corev1.SchemeGroupVersion.WithKind("ConfigMap")
+	clusterRoleGVK        = rbacv1.SchemeGroupVersion.WithKind("ClusterRole")
+	clusterRoleBindingGVK = rbacv1.SchemeGroupVersion.WithKind("ClusterRoleBinding")
+	roleGVK               = rbacv1.SchemeGroupVersion.WithKind("Role")
+	roleBindingGVK        = rbacv1.SchemeGroupVersion.WithKind("RoleBinding")
+	deploymentGVK         = appsv1.SchemeGroupVersion.WithKind("Deployment")
 )
+
+const scenarioMarkerAnnotation = "e2e.platform.opendatahub.io/run"
 
 // cliBinary is the real CLI the suite executes, built once by
 // TestMain.
@@ -88,15 +97,19 @@ type trackedObject struct {
 // spec-update scenario changes between runs; runNS is the namespace
 // the CLI renders into.
 type scenario struct {
-	suffix   string
-	root     string
-	name     string
-	group    string
-	targetNS string
-	runNS    string
-	auxNS    string
-	message  string
-	replicas string
+	suffix         string
+	marker         string
+	root           string
+	name           string
+	group          string
+	targetNS       string
+	runNS          string
+	auxNS          string
+	message        string
+	replicas       string
+	format         toolApi.Format
+	definitionFile string
+	example        bool
 
 	tracked []trackedObject
 }
@@ -110,15 +123,18 @@ func newScenario(t *testing.T) *scenario {
 	suffix := uniqueSuffix()
 
 	s := &scenario{
-		suffix:   suffix,
-		root:     t.TempDir(),
-		name:     "synthetic-" + suffix,
-		group:    "e2e" + suffix + ".platform.opendatahub.io",
-		targetNS: "run-" + suffix,
-		runNS:    "run-" + suffix,
-		auxNS:    "aux-" + suffix,
-		message:  "authored-value",
-		replicas: "2",
+		suffix:         suffix,
+		marker:         uniqueSuffix(),
+		root:           t.TempDir(),
+		name:           "mock-" + suffix,
+		group:          "e2e" + suffix + ".platform.opendatahub.io",
+		targetNS:       "run-" + suffix,
+		runNS:          "run-" + suffix,
+		auxNS:          "aux-" + suffix,
+		message:        "authored-value",
+		replicas:       "1",
+		format:         toolApi.FormatHelm,
+		definitionFile: "definition.yaml",
 	}
 
 	t.Cleanup(func() {
@@ -127,8 +143,8 @@ func newScenario(t *testing.T) *scenario {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 
-		// Reverse tracking order: namespaces first remove the
-		// contained objects, the definition goes last.
+		// Reverse tracking order removes controller RBAC and test
+		// instances before their CRD and definition.
 		for i := len(s.tracked) - 1; i >= 0; i-- {
 			owned := s.tracked[i]
 
@@ -154,15 +170,32 @@ func newScenario(t *testing.T) *scenario {
 	return s
 }
 
+func (s *scenario) moduleGVK() schema.GroupVersionKind {
+	kind := "HelmModule"
+	if s.format == toolApi.FormatKustomize {
+		kind = "KustomizeModule"
+	}
+
+	return schema.GroupVersionKind{Group: s.group, Version: "v1alpha1", Kind: kind}
+}
+
+func (s *scenario) moduleResource() string { return strings.ToLower(s.moduleGVK().Kind) + "s" }
+
+func (s *scenario) clusterRoleName() string { return s.name + "-mock-controller" }
+
+func (s *scenario) platformConfigName() string { return "odh-" + s.name + "-config" }
+
 // render substitutes the scenario's unique suffix, its controller
 // image strategy, and its authored values into one fixture template.
-func (s *scenario) render(template string, controllerImage string) string {
-	rendered := strings.ReplaceAll(template, "UNIQUESUFFIX", s.suffix)
-	rendered = strings.ReplaceAll(rendered, "CONTROLLERIMAGE", controllerImage)
-	rendered = strings.ReplaceAll(rendered, "VALUEMESSAGE", s.message)
-	rendered = strings.ReplaceAll(rendered, "REPLICAS", s.replicas)
-
-	return rendered
+func (s *scenario) render(template string, imageRef string) string {
+	return strings.NewReplacer(
+		"UNIQUESUFFIX", s.suffix,
+		"CONTROLLERIMAGE", imageRef,
+		"VALUEMESSAGE", s.message,
+		"REPLICAS", s.replicas,
+		"MODULEKIND", s.moduleGVK().Kind,
+		"MODULEPLURAL", s.moduleResource(),
+	).Replace(template)
 }
 
 // writeModuleFile writes content at a module-root-relative path.
@@ -179,54 +212,142 @@ func (s *scenario) writeModuleFile(t *testing.T, rel string, content string) {
 	}
 }
 
+// markManifest carries independent ownership proof for resources that do not
+// receive the definition owner reference, including the definition itself.
+func (s *scenario) markManifest(t *testing.T, content string) string {
+	t.Helper()
+
+	g := NewWithT(t)
+	objects, err := k8s.DecodeResources([]byte(content))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(objects).To(HaveLen(1))
+	object := &objects[0]
+	annotations := object.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[scenarioMarkerAnnotation] = s.marker
+	object.SetAnnotations(annotations)
+	marked, err := yaml.Marshal(object)
+	g.Expect(err).NotTo(HaveOccurred())
+	return string(marked)
+}
+
 // writeHelmModule materializes the Helm scenario tree: the controller
 // package, the payload CRD, the value, co-located, and gate maps, the
 // payload-supplied Namespace, and any scenario-specific extra
 // templates.
 func (s *scenario) writeHelmModule(
 	t *testing.T,
-	controllerImage string,
+	imageRef string,
 	extraTemplates map[string]string,
 ) {
 	t.Helper()
 
-	s.writeModuleFile(t, "definition.yaml", s.render(helmDefinitionTemplate, controllerImage))
+	s.writeModuleFile(t, "definition.yaml", s.markManifest(t, s.render(helmDefinitionTemplate, imageRef)))
 	s.writeModuleFile(t, "manifests/chart/Chart.yaml", chartYAML)
 	s.writeModuleFile(t, "manifests/chart/values.yaml", chartValuesYAML)
-	s.writeModuleFile(t, "manifests/chart/templates/deployment.yaml", deploymentTemplate)
+	s.writeModuleFile(t, "manifests/chart/templates/deployment.yaml", s.render(deploymentTemplate, controllerImage(t)))
 	s.writeModuleFile(t, "manifests/chart/templates/unrelated.yaml", unrelatedDeploymentTemplate)
 	s.writeModuleFile(t, "manifests/chart/templates/serviceaccount.yaml", serviceAccountTemplate)
-	s.writeModuleFile(t, "manifests/chart/templates/role.yaml", roleTemplate)
+	s.writeModuleFile(t, "manifests/chart/templates/role.yaml", s.render(roleTemplate, imageRef))
 	s.writeModuleFile(t, "manifests/chart/templates/rolebinding.yaml", roleBindingTemplate)
-	s.writeModuleFile(t, "manifests/chart/templates/crd.yaml", s.render(payloadCRDTemplate, controllerImage))
+	s.writeModuleFile(t, "manifests/chart/templates/clusterrole.yaml", s.render(liveClusterRoleYAML, imageRef))
+	s.writeModuleFile(t, "manifests/chart/templates/clusterrolebinding.yaml", s.render(helmLiveClusterRoleBindingYAML, imageRef))
+	s.writeModuleFile(t, "manifests/chart/templates/crd.yaml", s.exampleCRD(t))
 	s.writeModuleFile(t, "manifests/chart/templates/values-cm.yaml", valuesConfigMapTemplate)
-	s.writeModuleFile(t, "manifests/chart/templates/shared-target.yaml", s.render(sharedTargetConfigMapTemplate, controllerImage))
-	s.writeModuleFile(t, "manifests/chart/templates/shared-aux.yaml", s.render(sharedAuxConfigMapTemplate, controllerImage))
+	s.writeModuleFile(t, "manifests/chart/templates/shared-target.yaml", s.render(sharedTargetConfigMapTemplate, imageRef))
+	s.writeModuleFile(t, "manifests/chart/templates/shared-aux.yaml", s.render(sharedAuxConfigMapTemplate, imageRef))
 	s.writeModuleFile(t, "manifests/chart/templates/gate-cm.yaml", gateConfigMapTemplate)
-	s.writeModuleFile(t, "manifests/chart/templates/namespace.yaml", s.render(auxNamespaceTemplate, controllerImage))
+	s.writeModuleFile(t, "manifests/chart/templates/namespace.yaml", s.markManifest(t, s.render(auxNamespaceTemplate, imageRef)))
 
 	for _, name := range sortedKeys(extraTemplates) {
-		s.writeModuleFile(t, "manifests/chart/templates/"+name, s.render(extraTemplates[name], controllerImage))
+		s.writeModuleFile(t, "manifests/chart/templates/"+name, s.render(extraTemplates[name], imageRef))
 	}
 }
 
 // writeKustomizeModule materializes the Kustomize scenario tree:
 // plain resources placed by the engine's real namespace plugin.
-func (s *scenario) writeKustomizeModule(t *testing.T, controllerImage string) {
+func (s *scenario) writeKustomizeModule(t *testing.T, imageRef string) {
 	t.Helper()
 
-	s.writeModuleFile(t, "definition.yaml", s.render(kustomizeDefinitionTemplate, controllerImage))
+	s.writeModuleFile(t, "definition.yaml", s.markManifest(t, s.render(kustomizeDefinitionTemplate, imageRef)))
 	s.writeModuleFile(t, "manifests/kustomization.yaml", kustomizationYAML)
 	s.writeModuleFile(t, "manifests/base/kustomization.yaml", baseKustomizationYAML)
-	s.writeModuleFile(t, "manifests/base/deployment.yaml", kustomizeDeploymentYAML)
-	s.writeModuleFile(t, "manifests/crd.yaml", s.render(payloadCRDTemplate, controllerImage))
-	s.writeModuleFile(t, "manifests/namespace.yaml", s.render(auxNamespaceTemplate, controllerImage))
+	s.writeModuleFile(t, "manifests/base/deployment.yaml", s.render(kustomizeDeploymentYAML, controllerImage(t)))
+	s.writeModuleFile(t, "manifests/crd.yaml", s.exampleCRD(t))
+	s.writeModuleFile(t, "manifests/namespace.yaml", s.markManifest(t, s.render(auxNamespaceTemplate, imageRef)))
 	s.writeModuleFile(t, "manifests/serviceaccount.yaml", kustomizeServiceAccountYAML)
-	s.writeModuleFile(t, "manifests/role.yaml", kustomizeRoleYAML)
+	s.writeModuleFile(t, "manifests/role.yaml", s.render(kustomizeRoleYAML, imageRef))
 	s.writeModuleFile(t, "manifests/rolebinding.yaml", kustomizeRoleBindingYAML)
+	s.writeModuleFile(t, "manifests/clusterrole.yaml", s.render(liveClusterRoleYAML, imageRef))
+	s.writeModuleFile(t, "manifests/clusterrolebinding.yaml", s.render(kustomizeLiveClusterRoleBindingYAML, imageRef))
 	s.writeModuleFile(t, "manifests/values.yaml", kustomizeValuesConfigMapYAML)
 	s.writeModuleFile(t, "manifests/gate.yaml", kustomizeGateConfigMapYAML)
 	s.writeModuleFile(t, "manifests/shared.yaml", kustomizeSharedConfigMapYAML)
+}
+
+func (s *scenario) exampleSource() fs.FS {
+	return os.DirFS(filepath.Join("..", "..", "examples", string(s.format)))
+}
+
+func (s *scenario) isolateExample(source []byte) string {
+	return strings.NewReplacer(
+		"components.platform.opendatahub.io", s.group,
+		string(s.format)+"-module", s.name,
+	).Replace(string(source))
+}
+
+func (s *scenario) exampleCRDPath() string {
+	if s.format == toolApi.FormatHelm {
+		return "chart/templates/crd.yaml"
+	}
+	return "crd.yaml"
+}
+
+func (s *scenario) exampleCRD(t *testing.T) string {
+	t.Helper()
+
+	data, err := fs.ReadFile(s.exampleSource(), s.exampleCRDPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return s.markManifest(t, s.isolateExample(data))
+}
+
+// writeExample copies the real package into the scenario's private
+// directory, isolates its identities, and marks its definition and CRD.
+func (s *scenario) writeExample(t *testing.T) {
+	t.Helper()
+
+	s.example = true
+	s.definitionFile = "module.yaml"
+	if s.format == toolApi.FormatHelm {
+		s.definitionFile = "chart/module.yaml"
+	}
+	source := s.exampleSource()
+	err := fs.WalkDir(source, ".", func(path string, entry fs.DirEntry, err error) error {
+		switch {
+		case err != nil:
+			return err
+		case entry.IsDir():
+			return nil
+		}
+		data, err := fs.ReadFile(source, path)
+		if err != nil {
+			return err
+		}
+		content := s.isolateExample(data)
+		if path == s.definitionFile || path == s.exampleCRDPath() {
+			content = s.markManifest(t, content)
+		}
+		s.writeModuleFile(t, path, content)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 // sortedKeys returns the map's keys in sorted order, so module trees
@@ -254,7 +375,9 @@ func (s *scenario) failClosed(t *testing.T) {
 		what string
 	}{
 		{definitionGVK, s.name, "definition"},
-		{crdGVK, "syntheticmodules." + s.group, "payload CRD"},
+		{crdGVK, s.moduleResource() + "." + s.group, "payload CRD"},
+		{clusterRoleGVK, s.clusterRoleName(), "controller ClusterRole"},
+		{clusterRoleBindingGVK, s.clusterRoleName(), "controller ClusterRoleBinding"},
 		{namespaceGVK, s.targetNS, "target namespace"},
 		{namespaceGVK, s.auxNS, "payload namespace"},
 	}
@@ -295,41 +418,41 @@ func (s *scenario) createNamespace(t *testing.T, name string) {
 
 	g.Expect(engine(t).Client().Create(t.Context(), namespace)).To(Succeed())
 
-	s.track(t, namespaceGVK, "", name)
+	s.record(t, namespaceGVK, namespace)
 }
 
-// track records one existing object's server identity for the
-// scenario's exact-UID cleanup.
-func (s *scenario) track(t *testing.T, gvk schema.GroupVersionKind, namespace string, name string) {
+func (s *scenario) trackedUID(gvk schema.GroupVersionKind, key crclient.ObjectKey) types.UID {
+	for _, object := range s.tracked {
+		if object.gvk == gvk && object.namespace == key.Namespace && object.name == key.Name {
+			return object.uid
+		}
+	}
+	return ""
+}
+
+// record keeps the original UID even if a later lookup finds a replacement.
+func (s *scenario) record(t *testing.T, gvk schema.GroupVersionKind, object metav1.Object) bool {
 	t.Helper()
 
-	client := engine(t).Client()
-
-	found := &unstructured.Unstructured{}
-	found.SetGroupVersionKind(gvk)
-
-	err := client.Get(t.Context(), crclient.ObjectKey{Namespace: namespace, Name: name}, found)
-	if err != nil {
-		t.Fatalf("tracking %s %s/%s: %v", gvk.Kind, namespace, name, err)
+	key := crclient.ObjectKey{Namespace: object.GetNamespace(), Name: object.GetName()}
+	uid := object.GetUID()
+	switch existing := s.trackedUID(gvk, key); {
+	case uid == "":
+		t.Errorf("refusing to track %s %s without a UID", gvk.Kind, key)
+		return false
+	case existing == uid:
+		return true
+	case existing != "":
+		t.Errorf("refusing to replace tracked %s %s UID %s with %s", gvk.Kind, key, existing, uid)
+		return false
 	}
-
 	s.tracked = append(s.tracked, trackedObject{
 		gvk:       gvk,
-		namespace: namespace,
-		name:      name,
-		uid:       found.GetUID(),
+		namespace: key.Namespace,
+		name:      key.Name,
+		uid:       uid,
 	})
-}
-
-// trackRunObjects records the objects a successful run created: the
-// persisted definition, the payload CRD, and the payload-supplied
-// Namespace.
-func (s *scenario) trackRunObjects(t *testing.T) {
-	t.Helper()
-
-	s.track(t, definitionGVK, "", s.name)
-	s.track(t, crdGVK, "", "syntheticmodules."+s.group)
-	s.track(t, namespaceGVK, "", s.auxNS)
+	return true
 }
 
 // runCLI executes the real CLI binary against the engine's cluster
@@ -351,11 +474,14 @@ func (s *scenario) runCLIWithEnv(
 	t.Helper()
 
 	live := engine(t)
+	watchCtx, cancelWatches := context.WithCancel(t.Context())
+	defer cancelWatches()
+	targets := s.watchRunObjects(t, watchCtx)
 
 	args := []string{
 		"module",
 		"deploy",
-		"--config", filepath.Join(s.root, "definition.yaml"),
+		"--config", filepath.Join(s.root, s.definitionFile),
 		"--platform-version", "2.19.0",
 		"--kubeconfig", live.KubeconfigPath(),
 		"--context", live.ContextName(),
@@ -370,9 +496,11 @@ func (s *scenario) runCLIWithEnv(
 	command := exec.CommandContext(t.Context(), cliBinary, args...)
 	command.Stdout = &stdout
 	command.Stderr = &stderr
-	if env != nil {
-		command.Env = append(os.Environ(), env...)
-	}
+	inherited := slices.DeleteFunc(os.Environ(), func(entry string) bool {
+		key, _, _ := strings.Cut(entry, "=")
+		return key == "RELATED_IMAGE_MOCK_CONTROLLER" || key == "RELATED_IMAGE_ALPHA"
+	})
+	command.Env = append(inherited, env...)
 
 	exitCode := deploycli.ExitSuccess
 	if err := command.Run(); err != nil {
@@ -383,6 +511,7 @@ func (s *scenario) runCLIWithEnv(
 			exitCode = deploycli.ExitFailure
 		}
 	}
+	s.trackRunObjects(t, targets)
 
 	var report deploycli.Report
 	if stdout.Len() > 0 {
@@ -476,7 +605,7 @@ func (s *scenario) payloadCRD(t *testing.T) *apiextensionsv1.CustomResourceDefin
 	crd := &apiextensionsv1.CustomResourceDefinition{}
 
 	if err := engine(t).Client().Get(t.Context(),
-		crclient.ObjectKey{Name: "syntheticmodules." + s.group}, crd); err != nil {
+		crclient.ObjectKey{Name: s.moduleResource() + "." + s.group}, crd); err != nil {
 		t.Fatalf("reading the payload CRD: %v", err)
 	}
 

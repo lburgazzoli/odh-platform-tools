@@ -52,8 +52,8 @@ func NewMockCommand(action Run, getter genericclioptions.RESTClientGetter) *cobr
 		Use:   "mock",
 		Short: "Run a status-only mock module controller",
 		Long: "Watch a compatible cluster-scoped singleton custom resource and report " +
-			"condition controls and the platform version from a ConfigMap. The inherited " +
-			"--namespace flag selects the ConfigMap namespace.",
+			"condition controls and the platform version from a ConfigMap. In-cluster " +
+			"runs use the Pod namespace by default. The inherited --namespace flag can override it.",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			options, err := input.options(getter)

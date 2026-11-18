@@ -19,6 +19,7 @@ limitations under the License.
 package e2e
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -70,7 +71,7 @@ func TestDeployLiveHelmAppliesAndOwns(t *testing.T) {
 	s := newScenario(t)
 	s.failClosed(t)
 	s.createNamespace(t, s.targetNS)
-	s.writeHelmModule(t, workloadImage, nil)
+	s.writeHelmModule(t, controllerImage(t), nil)
 
 	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA", "quay.io/example/alpha:v3")
 
@@ -85,8 +86,6 @@ func TestDeployLiveHelmAppliesAndOwns(t *testing.T) {
 	g.Expect(report.Owner.Name).To(Equal(s.name))
 	g.Expect(report.Owner.Kind).To(Equal("PlatformModuleDefinition"))
 	g.Expect(report.Owner.UID).NotTo(BeEmpty())
-
-	s.trackRunObjects(t)
 
 	// The persisted definition keeps the authored, unexpanded spec —
 	// the chart path and the authored values — and its server
@@ -113,15 +112,15 @@ func TestDeployLiveHelmAppliesAndOwns(t *testing.T) {
 	// main/init literal image with no hash, the injected env on both
 	// the main and init containers, with the chart's valueFrom
 	// replaced.
-	deployment := s.deployment(t, s.targetNS, "synthetic-controller")
+	deployment := s.deployment(t, s.targetNS, "mock-controller")
 
-	g.Expect(*deployment.Spec.Replicas).To(Equal(int32(2)))
+	g.Expect(*deployment.Spec.Replicas).To(Equal(int32(1)))
 
 	installer := containerByName(t, deployment.Spec.Template.Spec, "installer")
 	manager := containerByName(t, deployment.Spec.Template.Spec, "manager")
 
-	g.Expect(installer.Image).To(Equal(workloadImage))
-	g.Expect(manager.Image).To(Equal(workloadImage))
+	g.Expect(installer.Image).To(Equal(controllerImage(t)))
+	g.Expect(manager.Image).To(Equal(controllerImage(t)))
 
 	level, present := envVar(manager, "LOG_LEVEL")
 	g.Expect(present).To(BeTrue())
@@ -148,8 +147,8 @@ func TestDeployLiveHelmAppliesAndOwns(t *testing.T) {
 	g.Expect(installerApplications.Value).To(Equal(s.targetNS))
 
 	// The RBAC references point inside the real placement.
-	binding := s.roleBinding(t, s.targetNS, "synthetic-binding")
-	g.Expect(binding.RoleRef.Name).To(Equal("synthetic-role"))
+	binding := s.roleBinding(t, s.targetNS, "mock-binding")
+	g.Expect(binding.RoleRef.Name).To(Equal("mock-role"))
 	g.Expect(binding.Subjects).To(HaveLen(1))
 	g.Expect(binding.Subjects[0].Namespace).To(Equal(s.targetNS))
 
@@ -185,6 +184,9 @@ func TestDeployLiveHelmAppliesAndOwns(t *testing.T) {
 	g.Expect(rerun.Status).To(Equal(deploycli.StatusApplied))
 	g.Expect(rerun.Owner.UID).To(Equal(report.Owner.UID))
 	g.Expect(s.definition(t).UID).To(Equal(definition.UID))
+
+	instance := s.createModuleInstance(t, nil)
+	awaitMockStatus(t, instance, readyMock("True", "2.19.0"))
 }
 
 // TestDeployLiveFieldManagerClaimsManagedFields proves the
@@ -200,7 +202,7 @@ func TestDeployLiveFieldManagerClaimsManagedFields(t *testing.T) {
 	s := newScenario(t)
 	s.failClosed(t)
 	s.createNamespace(t, s.targetNS)
-	s.writeHelmModule(t, workloadImage, nil)
+	s.writeHelmModule(t, controllerImage(t), nil)
 
 	custom := "e2e" + s.suffix + ".example"
 
@@ -208,8 +210,6 @@ func TestDeployLiveFieldManagerClaimsManagedFields(t *testing.T) {
 	g.Expect(exitCode).To(Equal(deploycli.ExitSuccess))
 	g.Expect(first.Status).To(Equal(deploycli.StatusApplied))
 	g.Expect(first.Owner).NotTo(BeNil())
-
-	s.trackRunObjects(t)
 
 	// The default invocation claims the definition and the ordinary
 	// payload under the canonical platform manager, as the server
@@ -262,24 +262,22 @@ func TestDeployLiveHelmSpecUpdateAcrossNamespaces(t *testing.T) {
 	s := newScenario(t)
 	s.failClosed(t)
 	s.createNamespace(t, s.targetNS)
-	s.writeHelmModule(t, workloadImage, nil)
+	s.writeHelmModule(t, controllerImage(t), nil)
 
 	first, _, exitCode := s.runCLI(t)
 
 	g.Expect(exitCode).To(Equal(deploycli.ExitSuccess))
 	g.Expect(first.Owner).NotTo(BeNil())
 
-	s.trackRunObjects(t)
-
 	// The updated authored values, rendered into a second target
 	// namespace.
 	s.message = "updated-value"
-	s.replicas = "3"
+	s.replicas = "0"
 
 	secondNS := "run2-" + s.suffix
 	s.createNamespace(t, secondNS)
 	s.runNS = secondNS
-	s.writeHelmModule(t, workloadImage, nil)
+	s.writeHelmModule(t, controllerImage(t), nil)
 
 	second, _, exitCode := s.runCLI(t)
 
@@ -292,12 +290,12 @@ func TestDeployLiveHelmSpecUpdateAcrossNamespaces(t *testing.T) {
 
 	// The new namespace carries the updated workload; the old one is
 	// untouched — no auto-pruning, no migration promise.
-	updated := s.deployment(t, secondNS, "synthetic-controller")
-	g.Expect(*updated.Spec.Replicas).To(Equal(int32(3)))
+	updated := s.deployment(t, secondNS, "mock-controller")
+	g.Expect(*updated.Spec.Replicas).To(Equal(int32(0)))
 	g.Expect(s.configMap(t, secondNS, "values-cm").Data["message"]).To(Equal("updated-value"))
 
-	previous := s.deployment(t, s.targetNS, "synthetic-controller")
-	g.Expect(*previous.Spec.Replicas).To(Equal(int32(2)))
+	previous := s.deployment(t, s.targetNS, "mock-controller")
+	g.Expect(*previous.Spec.Replicas).To(Equal(int32(1)))
 	g.Expect(s.configMap(t, s.targetNS, "values-cm").Data["message"]).To(Equal("authored-value"))
 }
 
@@ -310,24 +308,30 @@ func TestDeployLiveImageSourcePrecedence(t *testing.T) {
 	s.failClosed(t)
 	s.createNamespace(t, s.targetNS)
 
-	// The controller image is a whole-token related-image reference.
-	s.writeHelmModule(t, sourceImageRef, nil)
+	// Give the authored containers and the source file distinct images
+	// so the applied image proves the environment won over both.
+	s.writeHelmModule(t, sourceImageRef, map[string]string{
+		"deployment.yaml": strings.ReplaceAll(deploymentTemplate, "CONTROLLERIMAGE", unpullableImage),
+	})
 
 	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA", "quay.io/example/alpha:file")
 
 	report, _, exitCode := s.runCLIWithEnv(t,
-		[]string{"RELATED_IMAGE_ALPHA=quay.io/example/alpha:env"},
+		[]string{"RELATED_IMAGE_ALPHA=" + controllerImage(t)},
 		"--related-images-file", imagesFile)
 
 	g.Expect(exitCode).To(Equal(deploycli.ExitSuccess))
 	g.Expect(report.Status).To(Equal(deploycli.StatusApplied))
 
-	s.trackRunObjects(t)
-
-	deployment := s.deployment(t, s.targetNS, "synthetic-controller")
+	deployment := s.deployment(t, s.targetNS, "mock-controller")
 	manager := containerByName(t, deployment.Spec.Template.Spec, "manager")
 
-	g.Expect(manager.Image).To(Equal("quay.io/example/alpha:env"))
+	g.Expect(manager.Image).To(Equal(controllerImage(t)))
+	installer := containerByName(t, deployment.Spec.Template.Spec, "installer")
+	g.Expect(installer.Image).To(Equal(controllerImage(t)))
+	source, present := envVar(installer, "RELATED_IMAGE_ALPHA")
+	g.Expect(present).To(BeTrue())
+	g.Expect(source.Value).To(Equal(controllerImage(t)))
 }
 
 // TestDeployLiveKustomizeApplies proves the Kustomize chain on a real
@@ -338,9 +342,10 @@ func TestDeployLiveKustomizeApplies(t *testing.T) {
 	g := NewWithT(t)
 
 	s := newScenario(t)
+	s.format = toolApi.FormatKustomize
 	s.failClosed(t)
 	s.createNamespace(t, s.targetNS)
-	s.writeKustomizeModule(t, workloadImage)
+	s.writeKustomizeModule(t, controllerImage(t))
 
 	report, _, exitCode := s.runCLI(t)
 
@@ -348,24 +353,22 @@ func TestDeployLiveKustomizeApplies(t *testing.T) {
 	g.Expect(report.Status).To(Equal(deploycli.StatusApplied))
 	g.Expect(report.Owner).NotTo(BeNil())
 
-	s.trackRunObjects(t)
+	deployment := s.deployment(t, s.targetNS, "mock-controller")
 
-	deployment := s.deployment(t, s.targetNS, "synthetic-controller")
-
-	g.Expect(*deployment.Spec.Replicas).To(Equal(int32(2)))
+	g.Expect(*deployment.Spec.Replicas).To(Equal(int32(1)))
 
 	installer := containerByName(t, deployment.Spec.Template.Spec, "installer")
 	manager := containerByName(t, deployment.Spec.Template.Spec, "manager")
 
-	g.Expect(installer.Image).To(Equal(workloadImage))
-	g.Expect(manager.Image).To(Equal(workloadImage))
+	g.Expect(installer.Image).To(Equal(controllerImage(t)))
+	g.Expect(manager.Image).To(Equal(controllerImage(t)))
 
 	level, present := envVar(manager, "LOG_LEVEL")
 	g.Expect(present).To(BeTrue())
 	g.Expect(level.Value).To(Equal("debug"))
 	g.Expect(level.ValueFrom).To(BeNil())
 
-	binding := s.roleBinding(t, s.targetNS, "synthetic-binding")
+	binding := s.roleBinding(t, s.targetNS, "mock-binding")
 	g.Expect(binding.Subjects).To(HaveLen(1))
 	g.Expect(binding.Subjects[0].Namespace).To(Equal(s.targetNS))
 
@@ -376,6 +379,9 @@ func TestDeployLiveKustomizeApplies(t *testing.T) {
 	g.Expect(values.OwnerReferences).To(HaveLen(1))
 
 	g.Expect(s.namespace(t, s.auxNS).OwnerReferences).To(BeEmpty())
+
+	instance := s.createModuleInstance(t, nil)
+	awaitMockStatus(t, instance, readyMock("True", "2.19.0"))
 }
 
 // TestDeployLiveForeignAdoption proves the approved production
@@ -397,9 +403,9 @@ func TestDeployLiveForeignAdoption(t *testing.T) {
 	foreign.Data = map[string]string{"foreign": "true"}
 
 	g.Expect(engine(t).Client().Create(t.Context(), foreign)).To(Succeed())
-	s.track(t, configMapGVK, s.targetNS, "adopted-cm")
+	s.record(t, configMapGVK, foreign)
 
-	s.writeHelmModule(t, workloadImage, map[string]string{
+	s.writeHelmModule(t, controllerImage(t), map[string]string{
 		"foreign-cm.yaml": foreignConfigMapTemplate,
 	})
 
@@ -407,8 +413,6 @@ func TestDeployLiveForeignAdoption(t *testing.T) {
 
 	g.Expect(exitCode).To(Equal(deploycli.ExitSuccess))
 	g.Expect(report.Status).To(Equal(deploycli.StatusApplied))
-
-	s.trackRunObjects(t)
 
 	adopted := s.configMap(t, s.targetNS, "adopted-cm")
 
@@ -427,7 +431,7 @@ func TestDeployLiveReservedPayloadRejectedAtRender(t *testing.T) {
 
 	s := newScenario(t)
 	s.failClosed(t)
-	s.writeHelmModule(t, workloadImage, map[string]string{
+	s.writeHelmModule(t, controllerImage(t), map[string]string{
 		"reserved.yaml": reservedResourceTemplate,
 	})
 
@@ -460,7 +464,7 @@ func TestDeployLiveInvalidPayloadRetainsOwner(t *testing.T) {
 	s := newScenario(t)
 	s.failClosed(t)
 	s.createNamespace(t, s.targetNS)
-	s.writeHelmModule(t, workloadImage, map[string]string{
+	s.writeHelmModule(t, controllerImage(t), map[string]string{
 		"invalid-cm.yaml": invalidConfigMapTemplate,
 	})
 
@@ -479,8 +483,6 @@ func TestDeployLiveInvalidPayloadRetainsOwner(t *testing.T) {
 	definition := s.definition(t)
 	g.Expect(definition.UID).To(Equal(types.UID(report.Owner.UID)))
 
-	s.trackRunObjects(t)
-
 	// The object the server rejected is absent; everything else the
 	// action could apply stands as partial state.
 	rejected := &unstructured.Unstructured{}
@@ -492,9 +494,9 @@ func TestDeployLiveInvalidPayloadRetainsOwner(t *testing.T) {
 
 	g.Expect(s.configMap(t, s.targetNS, "values-cm").Data["message"]).To(Equal("authored-value"))
 
-	deployment := s.deployment(t, s.targetNS, "synthetic-controller")
+	deployment := s.deployment(t, s.targetNS, "mock-controller")
 	manager := containerByName(t, deployment.Spec.Template.Spec, "manager")
-	g.Expect(manager.Image).To(Equal(workloadImage))
+	g.Expect(manager.Image).To(Equal(controllerImage(t)))
 }
 
 // TestDeployLiveDefaultDoesNotWaitForWorkload proves default command
@@ -518,18 +520,16 @@ func TestDeployLiveDefaultDoesNotWaitForWorkload(t *testing.T) {
 	g.Expect(report.Wait).To(BeNil())
 	g.Expect(time.Since(started)).To(BeNumerically("<", 2*time.Minute))
 
-	s.trackRunObjects(t)
-
 	// The workload exists and can never converge: the unpullable
 	// image is exactly what was applied, no hash.
-	deployment := s.deployment(t, s.targetNS, "synthetic-controller")
+	deployment := s.deployment(t, s.targetNS, "mock-controller")
 	manager := containerByName(t, deployment.Spec.Template.Spec, "manager")
 	g.Expect(manager.Image).To(Equal(unpullableImage))
 }
 
 // TestDeployLiveWaitCompletesRollout proves the opt-in wait observes
-// the real controller rollout — with a file-resolved image source
-// converging through the pinned generic image — and reports exactly
+// the real controller rollout through a file-resolved image source
+// and reports exactly
 // the selected controller Deployment as its target.
 func TestDeployLiveWaitCompletesRollout(t *testing.T) {
 	g := NewWithT(t)
@@ -538,9 +538,11 @@ func TestDeployLiveWaitCompletesRollout(t *testing.T) {
 	s.failClosed(t)
 	s.createNamespace(t, s.targetNS)
 
-	s.writeHelmModule(t, sourceImageRef, nil)
+	s.writeHelmModule(t, sourceImageRef, map[string]string{
+		"deployment.yaml": strings.ReplaceAll(deploymentTemplate, "CONTROLLERIMAGE", unpullableImage),
+	})
 
-	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA", workloadImage)
+	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA", controllerImage(t))
 
 	report, _, exitCode := s.runCLI(t,
 		"--related-images-file", imagesFile,
@@ -553,19 +555,17 @@ func TestDeployLiveWaitCompletesRollout(t *testing.T) {
 	g.Expect(report.Wait.Requested).To(BeTrue())
 	g.Expect(report.Wait.Completed).To(BeTrue())
 	g.Expect(report.Wait.Targets).To(Equal([]deploycli.Target{
-		{Namespace: s.targetNS, Name: "synthetic-controller"},
+		{Namespace: s.targetNS, Name: "mock-controller"},
 	}))
-
-	s.trackRunObjects(t)
 
 	// The file-resolved image converged: the rollout really finished.
 	g.Eventually(func() int32 {
-		return s.deployment(t, s.targetNS, "synthetic-controller").Status.ReadyReplicas
-	}).WithTimeout(time.Minute).WithPolling(2 * time.Second).Should(Equal(int32(2)))
+		return s.deployment(t, s.targetNS, "mock-controller").Status.ReadyReplicas
+	}).WithTimeout(time.Minute).WithPolling(2 * time.Second).Should(Equal(int32(1)))
 
 	manager := containerByName(t,
-		s.deployment(t, s.targetNS, "synthetic-controller").Spec.Template.Spec, "manager")
-	g.Expect(manager.Image).To(Equal(workloadImage))
+		s.deployment(t, s.targetNS, "mock-controller").Spec.Template.Spec, "manager")
+	g.Expect(manager.Image).To(Equal(controllerImage(t)))
 }
 
 // TestDeployLiveWaitShortTimeoutRetainsOwner proves a wait that cannot
@@ -588,27 +588,25 @@ func TestDeployLiveWaitShortTimeoutRetainsOwner(t *testing.T) {
 	report, _, exitCode := s.runCLI(t,
 		"--related-images-file", imagesFile,
 		"--wait",
-		"--wait-timeout", "15s")
+		"--wait-timeout", "15.5s")
 
 	g.Expect(exitCode).To(Equal(deploycli.ExitFailure))
 	g.Expect(report.Status).To(Equal(deploycli.StatusFailed))
 	g.Expect(report.Failure).NotTo(BeNil())
-	g.Expect(report.Failure.Category).To(Equal(deploycli.FailureCancelled))
+	g.Expect(report.Failure.Category).To(Equal(deploycli.FailureCancelled), "%s", report.Failure.Message)
 	g.Expect(report.Owner).NotTo(BeNil())
 	g.Expect(report.ApplyCompleted).To(BeTrue())
 	g.Expect(report.Wait).NotTo(BeNil())
 	g.Expect(report.Wait.Completed).To(BeFalse())
 	g.Expect(report.Wait.Targets).To(Equal([]deploycli.Target{
-		{Namespace: s.targetNS, Name: "synthetic-controller"},
+		{Namespace: s.targetNS, Name: "mock-controller"},
 	}))
-	g.Expect(time.Since(started)).To(BeNumerically(">=", 15*time.Second))
+	g.Expect(time.Since(started)).To(BeNumerically(">=", 15*time.Second+500*time.Millisecond))
 	g.Expect(time.Since(started)).To(BeNumerically("<", 2*time.Minute))
 
 	// The confirmed owner is retained on the server.
 	definition := s.definition(t)
 	g.Expect(definition.UID).To(Equal(types.UID(report.Owner.UID)))
-
-	s.trackRunObjects(t)
 }
 
 // TestDeployLiveWaitOverallDeadlineWins proves the requested wait
@@ -645,6 +643,4 @@ func TestDeployLiveWaitOverallDeadlineWins(t *testing.T) {
 	// budget.
 	elapsed := time.Since(started)
 	g.Expect(elapsed).To(BeNumerically("<", 2*time.Minute))
-
-	s.trackRunObjects(t)
 }

@@ -49,14 +49,13 @@ const mockExampleImage = "quay.io/lburgazzoli/odh-platform-tools:dev"
 
 func TestMockExamplePackagesUseScopedRBACAndSeparateInstances(t *testing.T) {
 	for _, example := range []struct {
-		backend      string
-		source       string
-		kind         string
-		resource     string
-		namespaceArg string
+		backend  string
+		source   string
+		kind     string
+		resource string
 	}{
-		{backend: "helm", source: "chart", kind: "HelmModule", resource: "helmmodules", namespaceArg: "--namespace=" + mockExampleNamespace},
-		{backend: "kustomize", kind: "KustomizeModule", resource: "kustomizemodules", namespaceArg: "--namespace=$(POD_NAMESPACE)"},
+		{backend: "helm", source: "chart", kind: "HelmModule", resource: "helmmodules"},
+		{backend: "kustomize", kind: "KustomizeModule", resource: "kustomizemodules"},
 	} {
 		t.Run(example.backend, func(t *testing.T) {
 			g := NewWithT(t)
@@ -136,7 +135,7 @@ func TestMockExamplePackagesUseScopedRBACAndSeparateInstances(t *testing.T) {
 			g.Expect(manager.Command).To(BeEmpty())
 			g.Expect(manager.Args).To(Equal([]string{
 				"module", "mock", "--api-version=" + mockExampleAPIVersion,
-				"--kind=" + example.kind, "--platform-configmap=" + configMapName, example.namespaceArg,
+				"--kind=" + example.kind, "--platform-configmap=" + configMapName,
 			}))
 			g.Expect(byKind["Deployment"].Object).To(SatisfyAll(
 				jq.Match(`.spec.template.spec.securityContext.runAsNonRoot`),
@@ -144,12 +143,8 @@ func TestMockExamplePackagesUseScopedRBACAndSeparateInstances(t *testing.T) {
 				jq.Match(`.spec.template.spec.containers[0].ports[0].containerPort == 8081`),
 				jq.Match(`.spec.template.spec.containers[0].livenessProbe.httpGet == {"path": "/healthz", "port": "probes"}`),
 				jq.Match(`.spec.template.spec.containers[0].readinessProbe.httpGet == {"path": "/readyz", "port": "probes"}`),
+				jq.Match(`.spec.template.spec.containers[0].env | any(.name == "POD_NAMESPACE" and .valueFrom.fieldRef.fieldPath == "metadata.namespace")`),
 			))
-			if example.backend == "kustomize" {
-				g.Expect(byKind["Deployment"].Object).To(jq.Match(
-					`.spec.template.spec.containers[0].env | any(.name == "POD_NAMESPACE" and .valueFrom.fieldRef.fieldPath == "metadata.namespace")`,
-				))
-			}
 
 			serviceAccount := byKind["ServiceAccount"]
 			g.Expect(deployment.Spec.Template.Spec.ServiceAccountName).To(Equal(serviceAccount.GetName()))
