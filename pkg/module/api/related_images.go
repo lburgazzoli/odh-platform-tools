@@ -14,7 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package api defines file contracts for module tooling.
+// Package api defines contracts shared by module tooling.
+// The mock module object is registered under a runtime-selected GVK.
+//
+// +kubebuilder:skip
 package api
 
 // RelatedImagesConfig is the document supplied to --related-images-file.

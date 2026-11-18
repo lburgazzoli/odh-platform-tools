@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	moduleapi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
@@ -90,7 +91,7 @@ func moduleMapper(gvk schema.GroupVersionKind, resources []metav1.APIResource) (
 }
 
 func (c *Controller) reconcileStatus(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
-	obj := rr.Instance.(*ModuleObject)
+	obj := rr.Instance.(*moduleapi.ModuleObject)
 	previous := obj.GetStatus().DeepCopy().Conditions
 	injected, version, err := c.readInputs(ctx, rr.Client, obj)
 	desired := desiredConditions(injected, obj.Generation)
@@ -118,7 +119,7 @@ func (c *Controller) reconcileStatus(ctx context.Context, rr *fwtypes.Reconcilia
 	return err
 }
 
-func (c *Controller) readInputs(ctx context.Context, reader client.Reader, obj *ModuleObject) ([]frameworkapi.Condition, string, error) {
+func (c *Controller) readInputs(ctx context.Context, reader client.Reader, obj *moduleapi.ModuleObject) ([]frameworkapi.Condition, string, error) {
 	conditions, err := readConditions(obj.Annotations, obj.Generation)
 	if err != nil {
 		return invalidInputConditions(obj.Generation, "InvalidMockAnnotation", err), "", nil
@@ -172,7 +173,7 @@ func readPlatformVersion(ctx context.Context, reader client.Reader, key client.O
 
 func moduleRequests(reader client.Reader) handler.MapFunc {
 	return func(ctx context.Context, _ client.Object) []ctrl.Request {
-		var instances ModuleObjectList
+		var instances moduleapi.ModuleObjectList
 		if err := reader.List(ctx, &instances); err != nil {
 			log.FromContext(ctx).Error(err, "list module instances after platform ConfigMap change")
 			return nil

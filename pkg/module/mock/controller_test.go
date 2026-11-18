@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
+	moduleapi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
@@ -52,7 +53,7 @@ func TestStatusActionReportsVersionAndConditionControls(t *testing.T) {
 		Namespace: key.Namespace,
 		Data:      map[string]string{platformVersionKey: "v3.12"},
 	}
-	obj := &ModuleObject{
+	obj := &moduleapi.ModuleObject{
 		Generation:  4,
 		Annotations: map[string]string{conditionsAnnotation: yamlConditionControls},
 	}
@@ -106,7 +107,7 @@ func TestStatusActionPreservesPersistedReleaseOnInputFailure(t *testing.T) {
 					Data:      scenario.config,
 				})
 			}
-			obj := &ModuleObject{Generation: 5}
+			obj := &moduleapi.ModuleObject{Generation: 5}
 			obj.GetReleaseStatus().SetPlatformRelease("3.0.0")
 			if scenario.annotation != "" {
 				obj.Annotations = map[string]string{conditionsAnnotation: scenario.annotation}
@@ -140,7 +141,7 @@ func TestStatusActionReturnsRealAPIErrors(t *testing.T) {
 			return apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, key.Name, errors.New("access denied"))
 		},
 	}).Build()
-	obj := &ModuleObject{Generation: 2}
+	obj := &moduleapi.ModuleObject{Generation: 2}
 	request := &fwtypes.ReconciliationRequest{Client: reader, Instance: obj}
 
 	err := runMockStatusAction(t.Context(), key, request)
@@ -174,7 +175,7 @@ func TestConfigMapEventsEnqueueTheDiscoveredInstanceForDataChanges(t *testing.T)
 
 	gvk := schema.GroupVersionKind{Group: "testing.example.org", Version: "v1", Kind: "SelectedModule"}
 	scheme := newModuleScheme(gvk)
-	obj := &ModuleObject{Name: "discovered-singleton"}
+	obj := &moduleapi.ModuleObject{Name: "discovered-singleton"}
 	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(obj).Build()
 
 	g.Expect(moduleRequests(reader)(t.Context(), changed)).To(ConsistOf(

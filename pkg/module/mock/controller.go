@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package mock runs the platform module status simulator.
 package mock
 
 import (
@@ -34,6 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -44,10 +46,19 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
+	moduleapi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
 const probeAddress = ":8081"
+
+func newModuleScheme(gvk schema.GroupVersionKind) *runtime.Scheme {
+	scheme := runtime.NewScheme()
+	scheme.AddKnownTypeWithName(gvk, &moduleapi.ModuleObject{})
+	scheme.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &moduleapi.ModuleObjectList{})
+
+	return scheme
+}
 
 // Controller runs the framework's status-only reconciler for one module kind.
 type Controller struct {
@@ -131,7 +142,7 @@ func (c *Controller) configure(ctx context.Context, mgr ctrl.Manager) error {
 		return fmt.Errorf("configure initial mock condition manager: %w", err)
 	}
 
-	if _, err := reconciler.ReconcilerFor(mgr, &ModuleObject{}).
+	if _, err := reconciler.ReconcilerFor(mgr, &moduleapi.ModuleObject{}).
 		WithReconcilerOpts(reconciler.WithConditionAggregator(bootstrap), reconciler.WithFinalizerName("")).
 		WithAction(c.reconcileStatus).
 		WithPostStatusFn(finishMockStatus).

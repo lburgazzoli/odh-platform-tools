@@ -14,14 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package mock implements the platform module status simulator.
-package mock
+package api
 
 import (
 	frameworkapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // ModuleStatus is the framework status reported by a mock module.
@@ -49,14 +46,6 @@ type ModuleObjectList struct {
 
 var _ frameworkapi.PlatformObject = (*ModuleObject)(nil)
 var _ frameworkapi.WithReleases = (*ModuleObject)(nil)
-
-func newModuleScheme(gvk schema.GroupVersionKind) *runtime.Scheme {
-	scheme := runtime.NewScheme()
-	scheme.AddKnownTypeWithName(gvk, &ModuleObject{})
-	scheme.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &ModuleObjectList{})
-
-	return scheme
-}
 
 // GetStatus implements frameworkapi.WithStatus.
 func (obj *ModuleObject) GetStatus() *frameworkapi.Status {
