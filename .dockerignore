@@ -78,7 +78,3 @@ config/*
 **/*.kubeconfig
 **/*.key
 **/*.pem
-
-# Exception: the examples images file is a tracked, non-sensitive
-# placeholder fixture both lint smoke examples rely on.
-!examples/images.env

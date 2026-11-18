@@ -3,7 +3,7 @@
 // The offline deploy chain harness.
 //
 // Real boundaries: the strict loader over real files, Viper image
-// resolution over a real dotenv file and the process environment,
+// resolution over a real YAML file and the process environment,
 // both shared manifest engines with the library apply-order
 // post-renderer and both struct injectors, the real deployer-internal
 // owner preparation, the real framework deploy action with its
@@ -437,12 +437,12 @@ func deployOptions(root string) deployer.Options {
 	}
 }
 
-// runImagesFile writes the dotenv related-images file into one
+// runImagesFile writes a related-images YAML file into one
 // module root and returns its path.
 func runImagesFile(t *testing.T, root string, content string) string {
 	t.Helper()
 
-	path := filepath.Join(root, "images.env")
+	path := filepath.Join(root, "related-images.yaml")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}

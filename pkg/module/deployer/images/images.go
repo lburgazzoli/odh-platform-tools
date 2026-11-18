@@ -1,27 +1,39 @@
-// Package images resolves requested image sources from dotenv files and the
-// environment. Viper's dotenv parser may expand ambient variables in quoted values.
+/*
+Copyright 2026 Luca Burgazzoli
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// Package images resolves requested image sources from YAML and the environment.
 package images
 
 import (
+	"os"
 	"regexp"
-	"strconv"
 
-	"github.com/spf13/viper"
-
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api"
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/config"
 )
 
-// Load resolves only the requested keys. Environment values override the
-// optional dotenv file; explicitly empty values mask file values and are omitted.
-// Environment names are case-sensitive; file keys follow Viper's case folding.
+// Load resolves requested names case-sensitively. Environment values override the
+// optional YAML file, and explicitly empty environment values mask file values.
+// The result contains only nonempty values.
 func Load(path string, keys []string) (map[string]string, error) {
-	env := viper.New()
-	env.AllowEmptyEnv(true)
-
-	// Use indexed lookup keys so case-distinct environment names cannot alias.
-	for i, key := range keys {
-		if err := env.BindEnv(strconv.Itoa(i), key); err != nil {
+	var file api.RelatedImagesConfig
+	if path != "" {
+		if err := config.LoadFromPath(path, &file); err != nil {
 			return nil, moduleerrors.New(
 				moduleerrors.ErrImageSource,
 				"invalid related images file "+path,
@@ -30,29 +42,16 @@ func Load(path string, keys []string) (map[string]string, error) {
 		}
 	}
 
-	file := viper.New()
-	if path != "" {
-		file.SetConfigFile(path)
-		file.SetConfigType("env")
-
-		if err := file.ReadInConfig(); err != nil {
-			return nil, moduleerrors.New(
-				moduleerrors.ErrImageSource,
-				"invalid related images file "+path,
-				moduleerrors.WithCause(err),
-			)
-		}
+	fileValues := make(map[string]string, len(file.RelatedImages))
+	for _, entry := range file.RelatedImages {
+		fileValues[entry.Name] = entry.Value
 	}
 
 	values := make(map[string]string, len(keys))
-	for i, key := range keys {
-		value := ""
-
-		// An empty environment value masks the file; an unset one falls back.
-		if bound, ok := env.Get(strconv.Itoa(i)).(string); ok {
-			value = bound
-		} else if fromFile, ok := file.Get(key).(string); ok {
-			value = fromFile
+	for _, key := range keys {
+		value, present := os.LookupEnv(key)
+		if !present {
+			value = fileValues[key]
 		}
 
 		if value != "" {

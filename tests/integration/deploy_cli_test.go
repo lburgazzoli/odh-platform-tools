@@ -73,6 +73,8 @@ func TestCLIDeployHelp(t *testing.T) {
 		ContainSubstring("module deploy"),
 		ContainSubstring("--config"),
 		ContainSubstring("--platform-version"),
+		ContainSubstring("--related-images-file"),
+		ContainSubstring("YAML file of related image sources (no automatic discovery)"),
 		ContainSubstring("--wait"),
 		ContainSubstring("--field-manager"),
 		ContainSubstring("platform.opendatahub.io"),
@@ -191,6 +193,32 @@ func TestCLIDeployImageFileFailure(t *testing.T) {
 	g.Expect(report.Failure).NotTo(BeNil())
 	g.Expect(report.Failure.Category).To(Equal(deploy.FailureImageFile))
 	g.Expect(report.Owner).To(BeNil())
+}
+
+func TestCLIDeployRejectsMalformedRelatedImagesYAML(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+	root := t.TempDir()
+	writeDeployHelmModule(t, root)
+	path := runImagesFile(t, root, runMalformedImagesYAML)
+
+	stdout, stderr, exitCode := runCLIDeploy(root,
+		"--output", "json", "--related-images-file", path)
+
+	message := "invalid related images file " + path
+	g.Expect(exitCode).To(Equal(deploy.ExitUsage))
+	g.Expect(stderr).To(ContainSubstring(deploy.FailureImageFile + ": " + message))
+	g.Expect(stdout).NotTo(ContainSubstring("private-image-fixture"))
+	g.Expect(stderr).NotTo(ContainSubstring("private-image-fixture"))
+
+	var report deploy.Report
+	g.Expect(json.Unmarshal([]byte(stdout), &report)).To(Succeed())
+	g.Expect(report.Status).To(Equal(deploy.StatusFailed))
+	g.Expect(report.Owner).To(BeNil())
+	g.Expect(report.Failure).NotTo(BeNil())
+	g.Expect(report.Failure.Category).To(Equal(deploy.FailureImageFile))
+	g.Expect(report.Failure.Message).To(Equal(message))
 }
 
 // TestCLIDeployFieldManagerValidation proves the real binary's
@@ -315,10 +343,7 @@ func TestLintChainIgnoresImageSources(t *testing.T) {
 	root := t.TempDir()
 	writeHelmModule(t, root)
 
-	malformed := filepath.Join(root, "images.env")
-	if err := os.WriteFile(malformed, []byte("this is not dotenv content \x00\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	runImagesFile(t, root, runMalformedImagesYAML)
 
 	result, err := runLint(t, root)
 

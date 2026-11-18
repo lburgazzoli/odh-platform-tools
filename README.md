@@ -27,7 +27,7 @@ go run github.com/lburgazzoli/odh-platform-tools/cmd module deploy \
   --config examples/helm/chart/module.yaml \
   --platform-version 2.19.0 \
   --namespace odh-example \
-  --related-images-file examples/images.env \
+  --related-images-file examples/related-images.yaml \
   --wait
 ```
 

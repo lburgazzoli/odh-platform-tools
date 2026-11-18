@@ -51,7 +51,7 @@ directory in both backends.
 | `spec.instance.type` | Required GVK of the module CR |
 | `spec.manifests.format` | `helm` or `kustomize`; the other backend block must be absent |
 | `spec.manifests.helm.values` | Literal JSON values; no interpolation |
-| `spec.relatedImages` | Image source keys; resolved from environment over the `--related-images-file` dotenv file |
+| `spec.relatedImages` | Names of image sources to inject as environment variables. Values come from the process environment or the YAML file selected by `--related-images-file`. |
 | `spec.controller.deployment.name` | Selects the controller Deployment; defaults to `metadata.name` |
 | `spec.controller.deployment.container` | Main container; `name` defaults to `manager` |
 | `spec.controller.deployment.container.image` | Literal or whole `{{VARIABLE}}` token; must resolve at deploy |

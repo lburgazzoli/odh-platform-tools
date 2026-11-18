@@ -168,7 +168,7 @@ func TestDeployChainHelmComposesStages(t *testing.T) {
 	harness := newDeployHarness(t)
 
 	options := deployOptions(root)
-	options.RelatedImagesFile = runImagesFile(t, root, runImagesEnv)
+	options.RelatedImagesFile = runImagesFile(t, root, runImagesYAML)
 
 	result, err := harness.deploy(t.Context(), options)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -273,7 +273,7 @@ func TestDeployChainKustomizeComposesStages(t *testing.T) {
 	harness := newDeployHarness(t)
 
 	options := deployOptions(root)
-	options.RelatedImagesFile = runImagesFile(t, root, runImagesEnv)
+	options.RelatedImagesFile = runImagesFile(t, root, runImagesYAML)
 
 	result, err := harness.deploy(t.Context(), options)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -325,7 +325,7 @@ func TestDeployChainImageSourceResolution(t *testing.T) {
 		harness := newDeployHarness(t)
 
 		options := deployOptions(root)
-		options.RelatedImagesFile = runImagesFile(t, root, runImagesEnv)
+		options.RelatedImagesFile = runImagesFile(t, root, runImagesYAML)
 
 		_, err := harness.deploy(t.Context(), options)
 		g.Expect(err).NotTo(HaveOccurred())
@@ -345,7 +345,7 @@ func TestDeployChainImageSourceResolution(t *testing.T) {
 		harness := newDeployHarness(t)
 
 		options := deployOptions(root)
-		options.RelatedImagesFile = runImagesFile(t, root, runImagesEnv)
+		options.RelatedImagesFile = runImagesFile(t, root, runImagesYAML)
 
 		// The masked controller image does not resolve, and the
 		// strict policy fails the deploy instead of keeping the chart
@@ -361,7 +361,7 @@ func TestDeployChainImageSourceResolution(t *testing.T) {
 		harness := newDeployHarness(t)
 
 		options := deployOptions(root)
-		options.RelatedImagesFile = runImagesFile(t, root, runImagesEnv)
+		options.RelatedImagesFile = runImagesFile(t, root, runImagesYAML)
 
 		_, err := harness.deploy(t.Context(), options)
 		g.Expect(err).NotTo(HaveOccurred())
@@ -386,11 +386,10 @@ func TestDeployChainUnrequestedAmbientVariablesNotInjected(t *testing.T) {
 	harness := newDeployHarness(t)
 
 	options := deployOptions(root)
-	options.RelatedImagesFile = runImagesFile(t, root, runImagesEnv)
 
 	// The declared source is unresolved (no environment, the file
 	// does not carry it): only the platform env is injected.
-	options.RelatedImagesFile = runImagesFile(t, root, "UNRELATED=nothing\n")
+	options.RelatedImagesFile = runImagesFile(t, root, runUnrelatedImagesYAML)
 
 	_, err := harness.deploy(t.Context(), options)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -428,6 +427,25 @@ func TestDeployChainMissingImagesFileFailsBeforeCluster(t *testing.T) {
 	g.Expect(errors.As(err, &imageErr)).To(BeTrue())
 	g.Expect(errors.Is(err, fs.ErrNotExist)).To(BeTrue())
 
+	g.Expect(result.Attempted).To(Equal(deployer.StageLoad))
+	g.Expect(result.Owner).To(BeNil())
+	g.Expect(harness.writes).To(BeEmpty())
+	g.Expect(harness.gets).To(BeEmpty())
+}
+
+func TestDeployChainMalformedImagesFileFailsBeforeCluster(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+	root := t.TempDir()
+	writeDeployHelmModule(t, root)
+	harness := newDeployHarness(t)
+	options := deployOptions(root)
+	options.RelatedImagesFile = runImagesFile(t, root, runMalformedImagesYAML)
+
+	result, err := harness.deploy(t.Context(), options)
+
+	g.Expect(err).To(MatchError(moduleerrors.ErrImageSource))
 	g.Expect(result.Attempted).To(Equal(deployer.StageLoad))
 	g.Expect(result.Owner).To(BeNil())
 	g.Expect(harness.writes).To(BeEmpty())
@@ -615,7 +633,7 @@ func TestDeployChainDefaultMakesNoWorkloadObservations(t *testing.T) {
 	harness := newDeployHarness(t)
 
 	options := deployOptions(root)
-	options.RelatedImagesFile = runImagesFile(t, root, runImagesEnv)
+	options.RelatedImagesFile = runImagesFile(t, root, runImagesYAML)
 
 	result, err := harness.deploy(t.Context(), options)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -647,7 +665,7 @@ func TestDeployChainWaitCompletion(t *testing.T) {
 	}
 
 	options := deployOptions(root)
-	options.RelatedImagesFile = runImagesFile(t, root, runImagesEnv)
+	options.RelatedImagesFile = runImagesFile(t, root, runImagesYAML)
 	options.Wait = true
 	options.WaitTimeout = 5 * time.Second
 
@@ -685,7 +703,7 @@ func TestDeployChainWaitShortBudgetTimesOut(t *testing.T) {
 	}
 
 	options := deployOptions(root)
-	options.RelatedImagesFile = runImagesFile(t, root, runImagesEnv)
+	options.RelatedImagesFile = runImagesFile(t, root, runImagesYAML)
 	options.Wait = true
 	options.WaitTimeout = 50 * time.Millisecond
 
@@ -723,7 +741,7 @@ func TestDeployChainWaitOverallDeadlineWins(t *testing.T) {
 	}
 
 	options := deployOptions(root)
-	options.RelatedImagesFile = runImagesFile(t, root, runImagesEnv)
+	options.RelatedImagesFile = runImagesFile(t, root, runImagesYAML)
 	options.Wait = true
 	options.WaitTimeout = 30 * time.Second
 	options.Timeout = 2 * time.Second
@@ -755,7 +773,7 @@ func TestDeployChainIdempotentRerun(t *testing.T) {
 	harness := newDeployHarness(t)
 
 	options := deployOptions(root)
-	options.RelatedImagesFile = runImagesFile(t, root, runImagesEnv)
+	options.RelatedImagesFile = runImagesFile(t, root, runImagesYAML)
 
 	first, err := harness.deploy(t.Context(), options)
 	g.Expect(err).NotTo(HaveOccurred())

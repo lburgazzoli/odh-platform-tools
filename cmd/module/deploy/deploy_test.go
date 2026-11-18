@@ -156,6 +156,25 @@ var deployFlags = []string{
 	"--platform-version", "2.19.0",
 }
 
+func TestDeployHelpDescribesRelatedImagesFile(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+	recorder := &recordingDeploy{}
+	command := NewDeployCommand(recorder.deploy, testGetter(t))
+
+	var stdout bytes.Buffer
+	command.SetOut(&stdout)
+	command.SetArgs([]string{"--help"})
+
+	g.Expect(command.ExecuteContext(t.Context())).To(Succeed())
+	g.Expect(stdout.String()).To(SatisfyAll(
+		ContainSubstring("--related-images-file"),
+		ContainSubstring("YAML file of related image sources (no automatic discovery)"),
+	))
+	g.Expect(recorder.calls).To(BeZero())
+}
+
 func TestDeployCommandForwardsOptionsContextAndGetter(t *testing.T) {
 	t.Parallel()
 
@@ -177,7 +196,7 @@ func TestDeployCommandForwardsOptionsContextAndGetter(t *testing.T) {
 	command.SetArgs([]string{
 		"--config", "/work/modules/synthetic/definition.yaml",
 		"--platform-version", "v2.19.0+dev",
-		"--related-images-file", "/work/images.env",
+		"--related-images-file", "/work/related-images.yaml",
 		"--monitoring-namespace", "monitoring",
 		"--platform-type", "OpenDataHub",
 		"--field-manager", "team.example.deployer",
@@ -197,7 +216,7 @@ func TestDeployCommandForwardsOptionsContextAndGetter(t *testing.T) {
 	g.Expect(recorder.calls).To(Equal(1))
 	g.Expect(recorder.options).To(Equal([]deployer.Options{{
 		DefinitionFile:      "/work/modules/synthetic/definition.yaml",
-		RelatedImagesFile:   "/work/images.env",
+		RelatedImagesFile:   "/work/related-images.yaml",
 		Namespace:           "applications",
 		MonitoringNamespace: "monitoring",
 		PlatformType:        "OpenDataHub",

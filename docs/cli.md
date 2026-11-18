@@ -30,14 +30,14 @@ deploy action. One-shot installer; it never creates the module CR.
 odh-platform-tools module deploy \
   --config <definition.yaml> \
   --platform-version <semver> \
-  [--related-images-file images.env] [--wait] ...
+  [--related-images-file related-images.yaml] [--wait] ...
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config` | — | Module definition file (required) |
 | `--platform-version` | — | Platform version, shared by platform config and deploy (required) |
-| `--related-images-file` | — | Dotenv file of image sources; no file is discovered automatically |
+| `--related-images-file` | — | YAML file of related image sources (no automatic discovery) |
 | `--monitoring-namespace` | — | Injected as `MONITORING_NAMESPACE` |
 | `--platform-type` | `OpenDataHub` | Injected as `ODH_MODULE_OPERATOR_PLATFORM_TYPE` |
 | `--field-manager` | `platform.opendatahub.io` | SSA field manager (≤63 chars, label value) |
@@ -53,6 +53,27 @@ command (kubectl semantics: explicit flag, else context namespace, else
 Report: status (`applied` | `failed`), confirmed owner identity, attempted
 and completed stages, `applyCompleted`, wait state, and classified
 `failure`. A missing owner means unconfirmed, not that no write occurred.
+
+### Related-images file
+
+`--related-images-file` accepts YAML regardless of the file name extension.
+This is a breaking change for existing dotenv files. Convert assignments to
+entries under `relatedImages`.
+
+```yaml
+relatedImages:
+- name: RELATED_IMAGE_EXAMPLE_CONTROLLER
+  value: quay.io/example/example-controller:v1.0.0
+```
+
+Entry names are case-sensitive. A matching process environment variable
+takes precedence, and an explicitly empty variable masks its file value.
+Missing, null, and empty entry values supply no file value. Omit the flag
+to resolve sources from the environment alone.
+
+The loader uses Viper's default decoding and keeps text such as `${VARIABLE}`
+literal. File linting and image-reference validation are outside this format
+migration.
 
 ## Exit codes
 

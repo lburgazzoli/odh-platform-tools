@@ -170,9 +170,19 @@ spec:
         name: installer
 `
 
-// runImagesEnv is the dotenv related-images file selecting the
-// declared source key.
-const runImagesEnv = `RELATED_IMAGE_ALPHA=quay.io/example/alpha:v3
+const runImagesYAML = `relatedImages:
+- name: RELATED_IMAGE_ALPHA
+  value: quay.io/example/alpha:v3
+`
+
+const runUnrelatedImagesYAML = `relatedImages:
+- name: UNRELATED
+  value: nothing
+`
+
+const runMalformedImagesYAML = `relatedImages:
+- name: RELATED_IMAGE_ALPHA
+  value: [quay.io/example/private-image-fixture:v1
 `
 
 // runChartYAML declares the vendored dependency chart.

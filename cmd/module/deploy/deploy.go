@@ -166,7 +166,7 @@ func NewDeployCommand(action Deploy, getter genericclioptions.RESTClientGetter) 
 	flags.StringVar(&options.platformVersion, "platform-version", "",
 		"platform version, parsed once and shared by the platform config and deploy (required)")
 	flags.StringVar(&options.relatedImagesFile, "related-images-file", "",
-		"dotenv file of related image sources; no file is discovered automatically")
+		"YAML file of related image sources (no automatic discovery)")
 	flags.StringVar(&options.monitoringNamespace, "monitoring-namespace", "",
 		"monitoring namespace injected as MONITORING_NAMESPACE")
 	flags.StringVar(&options.platformType, "platform-type", "",

@@ -1,3 +1,19 @@
+/*
+Copyright 2026 Luca Burgazzoli
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package images
 
 import (
@@ -5,38 +21,79 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	. "github.com/onsi/gomega"
+	"sigs.k8s.io/yaml"
 
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api"
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
-// sourcesDotenv is a dotenv file mixing quoting styles and comments.
-const sourcesDotenv = `# related images for the synthetic module
-RELATED_IMAGE_CONTROLLER="quay.io/example/controller:v1"
-RELATED_IMAGE_OPERAND='quay.io/example/operand:v2'
-RELATED_IMAGE_UNQUOTED=quay.io/example/operand-bare:v3
+const sourcesYAML = `# Related images for the synthetic module.
+relatedImages:
+- name: RELATED_IMAGE_CONTROLLER
+  value: "quay.io/example/controller:v1"
+- name: RELATED_IMAGE_OPERAND
+  value: 'quay.io/example/operand:v2'
+- name: RELATED_IMAGE_UNQUOTED
+  value: quay.io/example/operand-bare:v3
+- name: RELATED_IMAGE_UNREQUESTED
+  value: quay.io/example/unrequested:v9
 `
 
-// collidingDotenv is a dotenv file whose key collides with the
-// case-colliding test keys.
-const collidingDotenv = `RELATED_IMAGE_UPPER=file-upper
+const caseDistinctSourcesYAML = `relatedImages:
+- name: RELATED_IMAGE_UPPER
+  value: file-upper
+- name: related_image_upper
+  value: file-lower
 `
 
-// ambientExpandingDotenv is a dotenv file whose double-quoted value
-// expands a variable only the process environment provides, while
-// the single-quoted value stays literal.
-const ambientExpandingDotenv = `RELATED_IMAGE_EXPANDED="${SYNTHETIC_AMBIENT_BASE}/expanded:v1"
-RELATED_IMAGE_LITERAL='${SYNTHETIC_AMBIENT_BASE}/literal:v1'
+const literalSourcesYAML = `relatedImages:
+- name: RELATED_IMAGE_DOUBLE_QUOTED
+  value: "${SYNTHETIC_AMBIENT_BASE}/double:v1"
+- name: RELATED_IMAGE_SINGLE_QUOTED
+  value: '${SYNTHETIC_AMBIENT_BASE}/single:v1'
 `
 
-// malformedDotenv is a dotenv file whose second line is not an
-// assignment.
-const malformedDotenv = `RELATED_IMAGE_CONTROLLER=quay.io/example/controller:v1
-THIS LINE IS NOT AN ASSIGNMENT
+const unsetValuesYAML = `relatedImages:
+- name: SOURCE_WITHOUT_VALUE
+- name: SOURCE_WITH_NULL_VALUE
+  value: null
+- name: SOURCE_WITH_EMPTY_VALUE
+  value: ""
 `
+
+const malformedSourcesYAML = `relatedImages:
+- name: RELATED_IMAGE_CONTROLLER
+  value: [private-image-fixture
+`
+
+const undecodableSourcesYAML = `relatedImages:
+- name: RELATED_IMAGE_CONTROLLER
+  value: {private-image-fixture: opaque}
+`
+
+const oldDotenv = `RELATED_IMAGE_CONTROLLER=quay.io/example/controller:v1
+`
+
+const initSourcesYAML = `relatedImages:
+- name: INIT_IMAGE
+  value: registry.example/init:file
+`
+
+func TestRelatedImagesConfigMarshalsToTheDocument(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+	file := api.RelatedImagesConfig{
+		RelatedImages: []api.RelatedImage{{Name: "INIT_IMAGE", Value: "registry.example/init:file"}},
+	}
+
+	g.Expect(yaml.Marshal(file)).To(MatchYAML(initSourcesYAML))
+}
 
 // writeSources writes content to a file with the given name inside a
 // fresh directory and returns the absolute path.
@@ -110,10 +167,8 @@ func TestLoadFileOnly(t *testing.T) {
 
 	g := NewWithT(t)
 
-	// An arbitrary file-name extension works because the dotenv
-	// format is selected explicitly; quoting styles and comments keep
-	// their native semantics.
-	values, err := Load(writeSources(t, "sources.conf", sourcesDotenv), []string{
+	// YAML is selected explicitly, regardless of the file-name extension.
+	values, err := Load(writeSources(t, "sources.conf", sourcesYAML), []string{
 		"RELATED_IMAGE_CONTROLLER",
 		"RELATED_IMAGE_OPERAND",
 		"RELATED_IMAGE_UNQUOTED",
@@ -128,13 +183,28 @@ func TestLoadFileOnly(t *testing.T) {
 	}))
 }
 
+func TestLoadAcceptsNonUTF8LinuxFilename(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires Linux filesystem semantics")
+	}
+
+	unsetEnv(t, "INIT_IMAGE")
+
+	g := NewWithT(t)
+	path := writeSources(t, "images-\xff.yaml", initSourcesYAML)
+
+	g.Expect(Load(path, []string{"INIT_IMAGE"})).To(Equal(map[string]string{
+		"INIT_IMAGE": "registry.example/init:file",
+	}))
+}
+
 func TestLoadEnvOverridesFile(t *testing.T) {
 	unsetEnv(t, "RELATED_IMAGE_OPERAND")
 	t.Setenv("RELATED_IMAGE_CONTROLLER", "quay.io/example/controller:env")
 
 	g := NewWithT(t)
 
-	values, err := Load(writeSources(t, "sources.env", sourcesDotenv), []string{
+	values, err := Load(writeSources(t, "sources.yaml", sourcesYAML), []string{
 		"RELATED_IMAGE_CONTROLLER",
 		"RELATED_IMAGE_OPERAND",
 	})
@@ -153,7 +223,7 @@ func TestLoadExplicitEmptyEnvMasksFileValue(t *testing.T) {
 
 	// An explicitly empty environment variable masks the file value
 	// and counts as missing, so the key is omitted entirely.
-	values, err := Load(writeSources(t, "sources.env", sourcesDotenv), []string{
+	values, err := Load(writeSources(t, "sources.yaml", sourcesYAML), []string{
 		"RELATED_IMAGE_CONTROLLER",
 	})
 
@@ -165,9 +235,7 @@ func TestLoadCaseCollidingKeysDoNotAlias(t *testing.T) {
 	t.Setenv("RELATED_IMAGE_UPPER", "env-upper")
 	t.Setenv("related_image_upper", "env-lower")
 
-	// The two spellings are distinct environment variables bound
-	// exactly and case-sensitively; the result must not depend on the
-	// enumeration order.
+	// Each spelling has its own value regardless of request order.
 	orders := [][]string{
 		{"RELATED_IMAGE_UPPER", "related_image_upper"},
 		{"related_image_upper", "RELATED_IMAGE_UPPER"},
@@ -177,7 +245,7 @@ func TestLoadCaseCollidingKeysDoNotAlias(t *testing.T) {
 		t.Run("", func(t *testing.T) {
 			g := NewWithT(t)
 
-			values, err := Load(writeSources(t, "sources.env", collidingDotenv), keys)
+			values, err := Load(writeSources(t, "sources.yaml", caseDistinctSourcesYAML), keys)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(values).To(Equal(map[string]string{
 				"RELATED_IMAGE_UPPER": "env-upper",
@@ -187,20 +255,21 @@ func TestLoadCaseCollidingKeysDoNotAlias(t *testing.T) {
 	}
 }
 
-func TestLoadFileKeysAreCaseInsensitive(t *testing.T) {
-	unsetEnv(t, "RELATED_IMAGE_UPPER", "related_image_upper")
+func TestLoadFileKeysUseExactNames(t *testing.T) {
+	unsetEnv(t, "RELATED_IMAGE_UPPER", "related_image_upper", "Related_Image_Upper")
 
 	g := NewWithT(t)
 
-	// File keys follow Viper's case-insensitive rules; the result
-	// still carries the authored spelling of the request.
-	values, err := Load(writeSources(t, "sources.env", collidingDotenv), []string{
+	values, err := Load(writeSources(t, "sources.yaml", caseDistinctSourcesYAML), []string{
+		"RELATED_IMAGE_UPPER",
 		"related_image_upper",
+		"Related_Image_Upper",
 	})
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(values).To(Equal(map[string]string{
-		"related_image_upper": "file-upper",
+		"RELATED_IMAGE_UPPER": "file-upper",
+		"related_image_upper": "file-lower",
 	}))
 }
 
@@ -210,10 +279,8 @@ func TestLoadScopesToRequestedKeys(t *testing.T) {
 
 	g := NewWithT(t)
 
-	// Only the declared keys are looked up, by direct binding rather
-	// than settings enumeration: unused file and ambient entries are
-	// neither returned nor injected.
-	values, err := Load(writeSources(t, "sources.env", sourcesDotenv), []string{
+	// The result includes only requested keys.
+	values, err := Load(writeSources(t, "sources.yaml", sourcesYAML), []string{
 		"RELATED_IMAGE_CONTROLLER",
 	})
 
@@ -223,24 +290,78 @@ func TestLoadScopesToRequestedKeys(t *testing.T) {
 	}))
 }
 
-func TestLoadNativeDotenvExpansionReadsAmbientVariables(t *testing.T) {
+func TestLoadKeepsYAMLValuesLiteral(t *testing.T) {
+	unsetEnv(t, "RELATED_IMAGE_DOUBLE_QUOTED", "RELATED_IMAGE_SINGLE_QUOTED")
 	t.Setenv("SYNTHETIC_AMBIENT_BASE", "quay.io/example")
 
 	g := NewWithT(t)
 
-	// Native dotenv expansion resolves double-quoted references from
-	// the process environment, while single-quoted values stay
-	// literal. This documents upstream behavior, not isolation.
-	values, err := Load(writeSources(t, "sources.env", ambientExpandingDotenv), []string{
-		"RELATED_IMAGE_EXPANDED",
-		"RELATED_IMAGE_LITERAL",
+	values, err := Load(writeSources(t, "sources.yaml", literalSourcesYAML), []string{
+		"RELATED_IMAGE_DOUBLE_QUOTED",
+		"RELATED_IMAGE_SINGLE_QUOTED",
 	})
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(values).To(Equal(map[string]string{
-		"RELATED_IMAGE_EXPANDED": "quay.io/example/expanded:v1",
-		"RELATED_IMAGE_LITERAL":  "${SYNTHETIC_AMBIENT_BASE}/literal:v1",
+		"RELATED_IMAGE_DOUBLE_QUOTED": "${SYNTHETIC_AMBIENT_BASE}/double:v1",
+		"RELATED_IMAGE_SINGLE_QUOTED": "${SYNTHETIC_AMBIENT_BASE}/single:v1",
 	}))
+}
+
+func TestLoadEmptyEntryValuesCanBeSuppliedByEnv(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "missing value", key: "SOURCE_WITHOUT_VALUE"},
+		{name: "null value", key: "SOURCE_WITH_NULL_VALUE"},
+		{name: "empty string", key: "SOURCE_WITH_EMPTY_VALUE"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			g := NewWithT(t)
+			unsetEnv(t, test.key)
+			path := writeSources(t, "sources.yaml", unsetValuesYAML)
+			keys := []string{test.key}
+
+			g.Expect(Load(path, keys)).To(BeEmpty())
+
+			t.Setenv(test.key, "quay.io/example/controller:env")
+			g.Expect(Load(path, keys)).To(Equal(map[string]string{
+				test.key: "quay.io/example/controller:env",
+			}))
+		})
+	}
+}
+
+func TestLoadFilesWithoutEntriesPreserveEnvResolution(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "empty file"},
+		{name: "comments only", content: "# No sources.\n"},
+		{name: "missing list", content: "{}\n"},
+		{name: "null list", content: "relatedImages: null\n"},
+		{name: "empty list", content: "relatedImages: []\n"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			g := NewWithT(t)
+			unsetEnv(t, "SOURCE_WITHOUT_VALUE")
+			path := writeSources(t, "sources.yaml", test.content)
+			keys := []string{"SOURCE_WITHOUT_VALUE"}
+
+			g.Expect(Load(path, keys)).To(BeEmpty())
+
+			t.Setenv("SOURCE_WITHOUT_VALUE", "quay.io/example/controller:env")
+			g.Expect(Load(path, keys)).To(Equal(map[string]string{
+				"SOURCE_WITHOUT_VALUE": "quay.io/example/controller:env",
+			}))
+		})
+	}
 }
 
 func TestLoadReturnsFreshStateForEachCall(t *testing.T) {
@@ -266,41 +387,42 @@ func TestLoadReturnsFreshStateForEachCall(t *testing.T) {
 func TestLoadMissingFileIsAnInputError(t *testing.T) {
 	g := NewWithT(t)
 
-	path := filepath.Join(t.TempDir(), "absent.env")
+	path := filepath.Join(t.TempDir(), "absent.yaml")
 
 	_, err := Load(path, []string{"RELATED_IMAGE_CONTROLLER"})
 
-	var inputErr *moduleerrors.ModuleError
-	g.Expect(errors.As(err, &inputErr)).To(BeTrue())
-	g.Expect(inputErr.Error()).To(Equal("invalid related images file " + path))
-	g.Expect(errors.Is(err, moduleerrors.ErrImageSource)).To(BeTrue())
-	g.Expect(errors.Is(err, fs.ErrNotExist)).To(BeTrue())
+	g.Expect(err).To(MatchError(moduleerrors.ErrImageSource))
+	g.Expect(err).To(MatchError(fs.ErrNotExist))
+	g.Expect(err).To(MatchError(Equal("invalid related images file " + path)))
 }
 
-func TestLoadMalformedFileHidesContent(t *testing.T) {
-	g := NewWithT(t)
+func TestLoadRejectsInvalidFilesWithSanitizedErrors(t *testing.T) {
+	t.Parallel()
 
-	path := writeSources(t, "sources.env", malformedDotenv)
+	tests := []struct {
+		name    string
+		content string
+		keys    []string
+	}{
+		{name: "dotenv assignments", content: oldDotenv, keys: []string{"RELATED_IMAGE_CONTROLLER"}},
+		{name: "invalid syntax", content: malformedSourcesYAML},
+		{name: "invalid value type", content: undecodableSourcesYAML},
+	}
 
-	_, err := Load(path, []string{
-		"RELATED_IMAGE_CONTROLLER",
-	})
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			g := NewWithT(t)
+			path := writeSources(t, "sources.yaml", test.content)
 
-	var inputErr *moduleerrors.ModuleError
-	g.Expect(errors.As(err, &inputErr)).To(BeTrue())
+			values, err := Load(path, test.keys)
 
-	// The public text names the file and never echoes the offending
-	// line, while the cause retains it for callers that need the
-	// details.
-	g.Expect(inputErr.Error()).To(Equal("invalid related images file " + path))
-	g.Expect(inputErr.Error()).To(SatisfyAll(
-		Not(ContainSubstring("THIS LINE IS NOT AN ASSIGNMENT")),
-		Not(ContainSubstring("doesn't match format")),
-	))
-
-	cause := errors.Unwrap(inputErr)
-	g.Expect(cause).NotTo(BeNil())
-	g.Expect(cause.Error()).To(ContainSubstring("THIS LINE IS NOT AN ASSIGNMENT"))
+			g.Expect(values).To(BeNil())
+			g.Expect(err).To(MatchError(moduleerrors.ErrImageSource))
+			g.Expect(err).To(MatchError(Equal("invalid related images file " + path)))
+			g.Expect(errors.Unwrap(err)).NotTo(BeNil())
+		})
+	}
 }
 
 func TestImageSourceKey(t *testing.T) {
@@ -395,7 +517,7 @@ func TestSnapshotInitImageSources(t *testing.T) {
 	g := NewWithT(t)
 	definition := snapshotDefinition(nil, "controller:literal")
 	definition.Spec.Controller.Deployment.InitContainer = &toolApi.ContainerTarget{Image: "{{INIT_IMAGE}}"}
-	path := writeSources(t, "images.env", "INIT_IMAGE=registry.example/init:file\n")
+	path := writeSources(t, "sources.yaml", initSourcesYAML)
 	g.Expect(Snapshot(path, definition)).To(Equal(map[string]string{"INIT_IMAGE": "registry.example/init:file"}))
 	t.Setenv("INIT_IMAGE", "registry.example/init:env")
 	g.Expect(Snapshot(path, definition)).To(Equal(map[string]string{"INIT_IMAGE": "registry.example/init:env"}))
@@ -418,8 +540,7 @@ func TestSnapshotSelectsDeclaredAndContainerKeys(t *testing.T) {
 
 	g := NewWithT(t)
 
-	path := writeSources(t, "sources.env", sourcesDotenv+"\n"+
-		"RELATED_IMAGE_UNREQUESTED=quay.io/example/unrequested:v9\n")
+	path := writeSources(t, "sources.yaml", sourcesYAML)
 
 	definition := snapshotDefinition(
 		[]string{"RELATED_IMAGE_OPERAND"},
@@ -463,7 +584,7 @@ func TestSnapshotContainerCases(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			g := NewWithT(t)
 
-			values, err := Snapshot(writeSources(t, "sources.env", sourcesDotenv), test.definition)
+			values, err := Snapshot(writeSources(t, "sources.yaml", sourcesYAML), test.definition)
 
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(values).To(Equal(map[string]string{

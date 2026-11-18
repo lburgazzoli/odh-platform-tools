@@ -48,8 +48,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
 	deploycli "github.com/lburgazzoli/odh-platform-tools/cmd/module/deploy"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api"
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
@@ -392,13 +394,19 @@ func (s *scenario) runCLIWithEnv(
 	return report, stderr.String(), exitCode
 }
 
-// imagesFile writes a dotenv related-images file into the scenario's
-// module root and returns its path.
-func (s *scenario) imagesFile(t *testing.T, content string) string {
+// imagesFile writes one related image source into the scenario's module root.
+func (s *scenario) imagesFile(t *testing.T, name string, value string) string {
 	t.Helper()
 
-	path := filepath.Join(s.root, "images.env")
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	content, err := yaml.Marshal(api.RelatedImagesConfig{
+		RelatedImages: []api.RelatedImage{{Name: name, Value: value}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(s.root, "related-images.yaml")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
 

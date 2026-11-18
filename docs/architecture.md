@@ -13,6 +13,7 @@ imports Cobra.
 | `cmd/module/lint` | `module lint` command, report output, exit classification |
 | `cmd/module/deploy` | `module deploy` command, report output, exit classification |
 | `pkg/module` | Facade wiring the default linter (`NewLinter`) |
+| `pkg/module/api` | Related-images YAML file contract |
 | `pkg/module/api/v1alpha1` | `PlatformModuleDefinition` API, Scheme, generated deepcopy |
 | `pkg/module/loader` | Decode one definition document (unknown fields dropped) + placement defaults |
 | `pkg/module/renderer` | Render engine: backend selection, ordering, cancellation, reserved-resource guard |
@@ -25,7 +26,7 @@ imports Cobra.
 | `pkg/module/deployer` | Deploy orchestration: staged Load/Render/Deploy/Wait |
 | `pkg/module/deployer/adapt` | Image/env injection and platform-config ConfigMap; framework ownership bridge |
 | `pkg/module/deployer/cluster` | Connection and namespace resolution from a REST config getter |
-| `pkg/module/deployer/images` | Related-image snapshot from dotenv file + environment |
+| `pkg/module/deployer/images` | Related-image snapshot from YAML and the environment |
 | `pkg/module/errors` | Module error taxonomy (category sentinels) |
 | `pkg/k8s` | Shared K8s helpers: GVK identity, resource decode, containers |
 | `pkg/k8s/{configmap,deployment,crd}` | Typed builders/customizers, CRD establishment wait |
@@ -51,7 +52,7 @@ No cluster access at any point.
 
 ```
 Load    validate options, parse platform version, load definition,
-        snapshot related images (env over dotenv file)
+        snapshot related images (environment takes precedence over YAML)
 Render  renderer.Render with adapt post-renderers:
         EnvInjector (resolved images, namespace/platform env) and
         PlatformConfigInjector (odh-<module>-config ConfigMap)

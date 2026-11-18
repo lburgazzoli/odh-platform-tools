@@ -43,7 +43,7 @@ type Options struct {
 	// DefinitionFile is the required, explicit module definition path.
 	DefinitionFile string
 
-	// RelatedImagesFile selects a dotenv file; empty uses only the environment.
+	// RelatedImagesFile selects a YAML file. An empty path uses only the environment.
 	RelatedImagesFile string
 
 	// Namespace is the required rendering and platform-config namespace.

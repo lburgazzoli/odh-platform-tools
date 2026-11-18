@@ -1,0 +1,29 @@
+/*
+Copyright 2026 Luca Burgazzoli
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// Package api defines file contracts for module tooling.
+package api
+
+// RelatedImagesConfig is the document supplied to --related-images-file.
+type RelatedImagesConfig struct {
+	RelatedImages []RelatedImage `json:"relatedImages" yaml:"relatedImages" mapstructure:"relatedImages"`
+}
+
+// RelatedImage provides a value for a named image source.
+type RelatedImage struct {
+	Name  string `json:"name" yaml:"name" mapstructure:"name"`
+	Value string `json:"value" yaml:"value" mapstructure:"value"`
+}

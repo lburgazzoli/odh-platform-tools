@@ -72,7 +72,7 @@ func TestDeployLiveHelmAppliesAndOwns(t *testing.T) {
 	s.createNamespace(t, s.targetNS)
 	s.writeHelmModule(t, workloadImage, nil)
 
-	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA=quay.io/example/alpha:v3\n")
+	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA", "quay.io/example/alpha:v3")
 
 	report, stderr, exitCode := s.runCLI(t, "--related-images-file", imagesFile)
 
@@ -313,7 +313,7 @@ func TestDeployLiveImageSourcePrecedence(t *testing.T) {
 	// The controller image is a whole-token related-image reference.
 	s.writeHelmModule(t, sourceImageRef, nil)
 
-	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA=quay.io/example/alpha:file\n")
+	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA", "quay.io/example/alpha:file")
 
 	report, _, exitCode := s.runCLIWithEnv(t,
 		[]string{"RELATED_IMAGE_ALPHA=quay.io/example/alpha:env"},
@@ -540,7 +540,7 @@ func TestDeployLiveWaitCompletesRollout(t *testing.T) {
 
 	s.writeHelmModule(t, sourceImageRef, nil)
 
-	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA="+workloadImage+"\n")
+	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA", workloadImage)
 
 	report, _, exitCode := s.runCLI(t,
 		"--related-images-file", imagesFile,
@@ -581,7 +581,7 @@ func TestDeployLiveWaitShortTimeoutRetainsOwner(t *testing.T) {
 
 	s.writeHelmModule(t, sourceImageRef, nil)
 
-	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA="+unpullableImage+"\n")
+	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA", unpullableImage)
 
 	started := time.Now()
 
@@ -622,7 +622,7 @@ func TestDeployLiveWaitOverallDeadlineWins(t *testing.T) {
 
 	s.writeHelmModule(t, sourceImageRef, nil)
 
-	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA="+unpullableImage+"\n")
+	imagesFile := s.imagesFile(t, "RELATED_IMAGE_ALPHA", unpullableImage)
 
 	started := time.Now()
 
