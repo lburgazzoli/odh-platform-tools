@@ -1,6 +1,6 @@
-# Non-sensitive placeholder image sources for the bundled examples.
+# Non-sensitive image sources for the bundled mock controllers.
 # Resolved by `module deploy --related-images-file`. The process
 # environment wins over this file.
 relatedImages:
-- name: RELATED_IMAGE_EXAMPLE_CONTROLLER
-  value: quay.io/example/example-controller:v1.0.0
+- name: RELATED_IMAGE_MOCK_CONTROLLER
+  value: quay.io/lburgazzoli/odh-platform-tools:dev

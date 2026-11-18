@@ -1,0 +1,15 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kustomize-module-mock-controller
+rules:
+- apiGroups: [components.platform.opendatahub.io]
+  resources: [kustomizemodules]
+  verbs: [get, list, watch]
+- apiGroups: [components.platform.opendatahub.io]
+  resources: [kustomizemodules/status]
+  verbs: [get, patch, update]
+# The framework records events for cluster-scoped modules in the default namespace.
+- apiGroups: [events.k8s.io]
+  resources: [events]
+  verbs: [create, patch]

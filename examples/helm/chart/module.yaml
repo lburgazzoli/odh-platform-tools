@@ -1,29 +1,27 @@
-# The co-located layout: this definition file sits inside the chart
-# directory, next to Chart.yaml, so the manifests entry needs no path
-# — it defaults to this file's own directory.
+# The manifests source defaults to this definition's directory.
 apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
-  name: example
+  name: helm-module
 spec:
   instance:
-    name: default-example               # optional; defaults to metadata.name when omitted
-    type:                               # the Module custom resource the controller owns
+    name: default-helm-module
+    type:
       group: components.platform.opendatahub.io
       version: v1alpha1
-      kind: Example
+      kind: HelmModule
   manifests:
     format: helm
     helm:
-      values:                           # literal values, merged over the chart defaults
-        replicas: 2
+      values:
+        replicas: 1
   relatedImages:
-  - RELATED_IMAGE_EXAMPLE_CONTROLLER
+  - RELATED_IMAGE_MOCK_CONTROLLER
   controller:
     deployment:
-      name: example-controller
+      name: mock-controller
       container:
-        image: quay.io/example/example-controller:v1.0.0
+        image: "{{RELATED_IMAGE_MOCK_CONTROLLER}}"
         env:
         - name: LOG_LEVEL
           value: debug

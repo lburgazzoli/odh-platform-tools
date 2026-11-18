@@ -1,9 +1,10 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: example-role
-  namespace: {{ .Release.Namespace }}
+  name: helm-module-mock-controller
+  namespace: {{ .Release.Namespace | quote }}
 rules:
 - apiGroups: [""]
-  resources: ["configmaps"]
-  verbs: ["get", "list", "watch"]
+  resources: [configmaps]
+  resourceNames: [odh-helm-module-config]
+  verbs: [get, list, watch]

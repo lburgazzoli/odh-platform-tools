@@ -1355,7 +1355,9 @@ func TestRenderCoLocatedExamples(t *testing.T) {
 			"CustomResourceDefinition",
 			"ServiceAccount",
 			"Role",
+			"ClusterRole",
 			"RoleBinding",
+			"ClusterRoleBinding",
 			"Deployment",
 		}))
 
@@ -1379,7 +1381,9 @@ func TestRenderCoLocatedExamples(t *testing.T) {
 			"CustomResourceDefinition",
 			"ServiceAccount",
 			"Role",
+			"ClusterRole",
 			"RoleBinding",
+			"ClusterRoleBinding",
 			"Deployment",
 		}))
 

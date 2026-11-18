@@ -1,8 +1,9 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: example-role
+  name: kustomize-module-mock-controller
 rules:
 - apiGroups: [""]
-  resources: ["configmaps"]
-  verbs: ["get", "list", "watch"]
+  resources: [configmaps]
+  resourceNames: [odh-kustomize-module-config]
+  verbs: [get, list, watch]

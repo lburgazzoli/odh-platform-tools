@@ -1,14 +1,14 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: examples.components.platform.opendatahub.io
+  name: helmmodules.components.platform.opendatahub.io
 spec:
   group: components.platform.opendatahub.io
   names:
-    plural: examples
-    singular: example
-    kind: Example
-    listKind: ExampleList
+    plural: helmmodules
+    singular: helmmodule
+    kind: HelmModule
+    listKind: HelmModuleList
   scope: Cluster
   versions:
   - name: v1alpha1
@@ -20,37 +20,56 @@ spec:
       openAPIV3Schema:
         type: object
         x-kubernetes-validations:
-        - rule: self.metadata.name == 'default-example'
+        - rule: self.metadata.name == 'default-helm-module'
         properties:
           status:
             type: object
             properties:
+              phase:
+                type: string
               observedGeneration:
                 type: integer
+                format: int64
+                minimum: 0
               conditions:
                 type: array
+                x-kubernetes-list-type: atomic
                 items:
                   type: object
+                  required: [type, status]
                   properties:
                     type:
                       type: string
                     status:
                       type: string
+                      enum: ["True", "False", "Unknown"]
                     reason:
                       type: string
                     message:
                       type: string
+                    severity:
+                      type: string
                     lastTransitionTime:
+                      type: string
+                      format: date-time
+                    lastHeartbeatTime:
                       type: string
                       format: date-time
                     observedGeneration:
                       type: integer
+                      format: int64
+                      minimum: 0
               releases:
                 type: array
+                x-kubernetes-list-type: map
+                x-kubernetes-list-map-keys: [name]
                 items:
                   type: object
+                  required: [name]
                   properties:
                     name:
                       type: string
                     version:
+                      type: string
+                    repoUrl:
                       type: string

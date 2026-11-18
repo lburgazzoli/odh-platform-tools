@@ -1,11 +1,11 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: example-binding
+  name: kustomize-module-mock-controller
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: example-role
+  name: kustomize-module-mock-controller
 subjects:
 - kind: ServiceAccount
-  name: example-sa
+  name: mock-controller

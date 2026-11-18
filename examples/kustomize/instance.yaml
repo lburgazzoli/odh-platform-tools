@@ -1,0 +1,9 @@
+# Apply this instance after the module controller package is installed.
+apiVersion: components.platform.opendatahub.io/v1alpha1
+kind: KustomizeModule
+metadata:
+  name: default-kustomize-module
+  annotations:
+    mock.platform.opendatahub.io/conditions: |
+      - type: MockReady
+        status: "True"
