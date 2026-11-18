@@ -65,6 +65,25 @@ var ErrImageSource = stderrors.New(
 	"invalid related images file",
 )
 
+// ErrInvalidGenerateOptions identifies invalid per-call generate
+// action options, distinct from definition, source, and render
+// failures.
+var ErrInvalidGenerateOptions = stderrors.New(
+	"invalid generate options",
+)
+
+// ErrGenerateValidation identifies a generated definition whose
+// rendered bundle produced error-severity lint findings.
+var ErrGenerateValidation = stderrors.New(
+	"generated definition failed validation",
+)
+
+// ErrGenerateOutput identifies a failure staging or publishing the
+// generated definition document.
+var ErrGenerateOutput = stderrors.New(
+	"generated definition output failed",
+)
+
 // ErrOwnerPreparation identifies a failure preparing the module's
 // persisted owner: the definition custom resource definition or the
 // definition itself.

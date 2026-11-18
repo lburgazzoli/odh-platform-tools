@@ -56,6 +56,9 @@ var allCategories = []error{
 	ErrWaitTargetMissing,
 	ErrReservedResource,
 	ErrImageSource,
+	ErrInvalidGenerateOptions,
+	ErrGenerateValidation,
+	ErrGenerateOutput,
 	ErrOwnerPreparation,
 	ErrDeployPrepare,
 	ErrDeployApply,
@@ -241,4 +244,30 @@ func TestModuleErrorDeadlineCause(t *testing.T) {
 
 	g.Expect(errors.Is(err, ErrRolloutWait)).To(BeTrue())
 	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
+}
+
+// TestGenerateCategoriesPreserveCancellation proves the generate
+// categories keep a cancellation cause reachable: classification is
+// checked before cancellation identity, but never discards it.
+func TestGenerateCategoriesPreserveCancellation(t *testing.T) {
+	t.Parallel()
+
+	for _, category := range []error{
+		ErrInvalidGenerateOptions,
+		ErrGenerateValidation,
+		ErrGenerateOutput,
+	} {
+		t.Run(category.Error(), func(t *testing.T) {
+			t.Parallel()
+
+			g := NewWithT(t)
+
+			err := New(category, "generate stage failed",
+				WithCause(context.Canceled))
+
+			g.Expect(errors.Is(err, category)).To(BeTrue())
+			g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
+			g.Expect(err.Error()).To(Equal("generate stage failed"))
+		})
+	}
 }
