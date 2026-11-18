@@ -28,6 +28,7 @@ limitations under the License.
 //	ODH_PLATFORM_TOOLS_E2E_NODE_IMAGE          overrides the recorded node image pin
 //	ODH_PLATFORM_TOOLS_E2E_EXTERNAL_KUBECONFIG required with the external engine
 //	ODH_PLATFORM_TOOLS_E2E_EXTERNAL_CONTEXT    required with the external engine
+//	ODH_PLATFORM_TOOLS_E2E_IMAGE               required with the external engine
 //
 // The suite compiles without setup or credentials through
 // `make test-e2e-compile`; nothing here executes at compile time.
@@ -43,6 +44,7 @@ import (
 	"testing"
 
 	"github.com/lburgazzoli/odh-platform-tools/tests/support/cluster"
+	"github.com/lburgazzoli/odh-platform-tools/tests/support/image"
 )
 
 // The engine teardown budget: bounded independently of any test
@@ -52,6 +54,7 @@ const stopBudget = cluster.DefaultDeleteBudget
 var (
 	engineOnce sync.Once
 	liveEngine cluster.Engine
+	suiteImage *image.Controller
 	engineErr  error
 )
 
@@ -60,12 +63,23 @@ var (
 // never hides — a retained cluster. A failed teardown fails the suite
 // even when the tests themselves passed.
 func TestMain(m *testing.M) {
+	os.Exit(runSuite(m))
+}
+
+func runSuite(m *testing.M) (code int) {
 	dir, err := os.MkdirTemp("", "odh-platform-tools-e2e-cli")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "e2e: creating the CLI build directory: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
-	defer os.RemoveAll(dir)
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			fmt.Fprintf(os.Stderr, "e2e: removing the CLI build directory: %v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}()
 
 	cliBinary = filepath.Join(dir, "odh-platform-tools")
 
@@ -74,10 +88,10 @@ func TestMain(m *testing.M) {
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "e2e: building the CLI binary: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
-	code := m.Run()
+	code = m.Run()
 
 	if liveEngine != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), stopBudget)
@@ -104,7 +118,16 @@ func TestMain(m *testing.M) {
 		}
 	}
 
-	os.Exit(code)
+	if suiteImage != nil {
+		if err := suiteImage.Close(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "e2e: cleaning up the controller image: %v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}
+
+	return code
 }
 
 // engine returns the suite's live engine, creating and connecting it
@@ -122,6 +145,17 @@ func engine(t *testing.T) cluster.Engine {
 			return
 		}
 
+		root, err := filepath.Abs("../..")
+		if err != nil {
+			engineErr = fmt.Errorf("locating the repository for the controller image build: %w", err)
+			return
+		}
+
+		suiteImage, engineErr = image.Prepare(t.Context(), engineType, os.Getenv(image.ExternalImageEnv), root)
+		if engineErr != nil {
+			return
+		}
+
 		created, err := cluster.New(t.Context(),
 			append([]cluster.Option{cluster.WithType(engineType)}, options...)...)
 		if err != nil {
@@ -129,22 +163,17 @@ func engine(t *testing.T) cluster.Engine {
 			return
 		}
 
+		// TestMain collects logs and disposes of an owned engine
+		// even when connecting or loading the image fails.
+		liveEngine = created
 		if err := created.Setup(t.Context()); err != nil {
 			engineErr = fmt.Errorf("connecting the %s engine: %w", engineType, err)
-
-			// The engine owns the cluster: dispose it exactly, even
-			// on the failure path.
-			stopCtx, cancel := context.WithTimeout(context.Background(), stopBudget)
-			defer cancel()
-
-			if stopErr := created.Stop(stopCtx); stopErr != nil {
-				fmt.Fprintf(os.Stderr, "e2e: %v\n", stopErr)
-			}
-
 			return
 		}
 
-		liveEngine = created
+		if managed, ok := created.(*cluster.Kind); ok {
+			engineErr = managed.LoadImageArchive(t.Context(), suiteImage.Archive(), suiteImage.Reference())
+		}
 	})
 
 	if engineErr != nil {
@@ -168,8 +197,8 @@ func resolveEngine() (string, []cluster.Option, error) {
 
 	switch engineType {
 	case cluster.TypeKind:
-		if err := requireContainerRuntime(); err != nil {
-			return "", nil, err
+		if _, err := exec.LookPath("podman"); err != nil {
+			return "", nil, fmt.Errorf("the managed controller image build requires Podman: %w", err)
 		}
 
 		// The recorded node image pin applies unless explicitly
@@ -183,6 +212,10 @@ func resolveEngine() (string, []cluster.Option, error) {
 		return engineType, options, nil
 
 	case cluster.TypeExternal:
+		if _, err := image.ExternalReference(os.Getenv(image.ExternalImageEnv)); err != nil {
+			return "", nil, err
+		}
+
 		kubeconfig := os.Getenv("ODH_PLATFORM_TOOLS_E2E_EXTERNAL_KUBECONFIG")
 		contextName := os.Getenv("ODH_PLATFORM_TOOLS_E2E_EXTERNAL_CONTEXT")
 
@@ -203,19 +236,6 @@ func resolveEngine() (string, []cluster.Option, error) {
 		return "", nil, fmt.Errorf(
 			"unsupported ODH_PLATFORM_TOOLS_E2E_ENGINE value %q (kind or external)", engineType)
 	}
-}
-
-// requireContainerRuntime proves a container runtime kind can drive
-// is present, failing with the exact requirement otherwise.
-func requireContainerRuntime() error {
-	for _, runtime := range []string{"docker", "podman", "nerdctl"} {
-		if _, err := exec.LookPath(runtime); err == nil {
-			return nil
-		}
-	}
-
-	return fmt.Errorf(
-		"no container runtime found: the kind engine requires docker, podman, or nerdctl in PATH")
 }
 
 // logf is the engine progress logger: stderr lines prefixed for the

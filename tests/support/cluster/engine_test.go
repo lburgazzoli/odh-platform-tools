@@ -32,12 +32,11 @@ import (
 
 	"k8s.io/client-go/tools/clientcmd"
 	kindcluster "sigs.k8s.io/kind/pkg/cluster"
+	"sigs.k8s.io/kind/pkg/cluster/nodes"
 )
 
 // fakeProvider is the injected Kind provider seam: it records every
 // operation with its arguments and answers from scripted results.
-// It has no List method at all — the engine structurally cannot
-// enumerate or purge clusters it does not own.
 type fakeProvider struct {
 	mu sync.Mutex
 
@@ -52,6 +51,8 @@ type fakeProvider struct {
 	kubeconfigErr  error
 	logsErr        error
 	deleteRequests []string
+	nodeList       []nodes.Node
+	nodeRequests   []string
 }
 
 func newFakeProvider() *fakeProvider {
@@ -106,6 +107,14 @@ func (f *fakeProvider) CollectLogs(name, dir string) error {
 	f.mu.Unlock()
 
 	return f.logsErr
+}
+
+func (f *fakeProvider) ListInternalNodes(name string) ([]nodes.Node, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.nodeRequests = append(f.nodeRequests, name)
+	return f.nodeList, nil
 }
 
 // apiServer is a minimal discovery double: the engine's Setup proves

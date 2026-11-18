@@ -34,19 +34,19 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	kindcluster "sigs.k8s.io/kind/pkg/cluster"
+	"sigs.k8s.io/kind/pkg/cluster/nodes"
 
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
-// provider is the supervised Kind provider seam: exactly the
-// operations the engine uses, with no listing, so no engine code can
-// enumerate or purge clusters it does not own. The production
-// implementation is the real kind provider.
+// provider is the supervised Kind provider seam. Node enumeration
+// requires the exact owned cluster name.
 type provider interface {
 	Create(name string, options ...kindcluster.CreateOption) error
 	Delete(name, explicitKubeconfigPath string) error
 	KubeConfig(name string, internal bool) (string, error)
 	CollectLogs(name, dir string) error
+	ListInternalNodes(name string) ([]nodes.Node, error)
 }
 
 // The real kind provider satisfies the seam.
