@@ -81,12 +81,8 @@ func TestReadConditionsDecodesYAMLAndPreservesExplicitFields(t *testing.T) {
 	g.Expect(entries[1].LastTransitionTime).To(BeZero())
 
 	desired := desiredConditions(entries, 7)
-	g.Expect(desired).To(ContainElement(SatisfyAll(
-		HaveField("Type", "MockReady"),
-		HaveField("Message", "Maintenance"),
-	)))
-	g.Expect(desired).To(ContainElement(SatisfyAll(
-		HaveField("Type", "example.org/Custom"),
+	g.Expect(desired).To(HaveKeyWithValue("MockReady", HaveField("Message", "Maintenance")))
+	g.Expect(desired).To(HaveKeyWithValue("example.org/Custom", SatisfyAll(
 		HaveField("Status", metav1.ConditionUnknown),
 		HaveField("Reason", "example.org/CustomUnknown"),
 		HaveField("Message", "waiting for observation"),

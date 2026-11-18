@@ -1,4 +1,4 @@
-// Command module provides offline platform module tooling.
+// Command odh-platform-tools provides platform module tooling.
 package main
 
 import (
@@ -16,6 +16,7 @@ import (
 	climodule "github.com/lburgazzoli/odh-platform-tools/cmd/module"
 	deploycli "github.com/lburgazzoli/odh-platform-tools/cmd/module/deploy"
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
+	mockcli "github.com/lburgazzoli/odh-platform-tools/cmd/module/mock"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module"
 )
 
@@ -29,12 +30,11 @@ type exitCoder interface {
 
 // run executes the command and returns its process exit status.
 func run() int {
-	// Process signals become context cancellation so an interrupted
-	// lint or deploy is classified as cancellation, not a crash.
+	// Process signals become context cancellation for all module actions.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	command := NewRootCommand(module.NewLinter().Run, deploycli.Action)
+	command := NewRootCommand(module.NewLinter().Run, deploycli.Action, mockcli.Action)
 
 	if err := command.ExecuteContext(ctx); err != nil {
 		// Classified outcomes already wrote their report; every
@@ -53,12 +53,12 @@ func run() int {
 }
 
 // NewRootCommand registers module commands and shared Kubernetes flags.
-func NewRootCommand(lintRun lint.Run, deployAction deploycli.Deploy) *cobra.Command {
+func NewRootCommand(lintRun lint.Run, deployAction deploycli.Deploy, mockRun mockcli.Run) *cobra.Command {
 	flags := genericclioptions.NewConfigFlags(true)
 
 	root := &cobra.Command{
 		Use:   "odh-platform-tools",
-		Short: "Offline platform module tooling",
+		Short: "OpenDataHub platform module tooling",
 		// Reports and failure lines are printed by the commands
 		// themselves; usage and flag errors are printed by main.
 		SilenceUsage:  true,
@@ -67,7 +67,7 @@ func NewRootCommand(lintRun lint.Run, deployAction deploycli.Deploy) *cobra.Comm
 
 	flags.AddFlags(root.PersistentFlags())
 
-	root.AddCommand(climodule.NewModuleCommand(lintRun, deployAction, flags))
+	root.AddCommand(climodule.NewModuleCommand(lintRun, deployAction, mockRun, flags))
 
 	return root
 }

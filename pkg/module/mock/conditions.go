@@ -28,37 +28,31 @@ import (
 const conditionsAnnotation = "mock.platform.opendatahub.io/conditions"
 const conditionTypeMockReady frameworkapi.ConditionType = "MockReady"
 
-func desiredConditions(injected []frameworkapi.Condition, generation int64) []frameworkapi.Condition {
-	desired := []frameworkapi.Condition{
-		{Type: string(conditionTypeMockReady), Status: metav1.ConditionTrue, ObservedGeneration: generation},
-		{Type: string(frameworkapi.ConditionTypeDegraded), Status: metav1.ConditionFalse, ObservedGeneration: generation},
+func desiredConditions(injected []frameworkapi.Condition, generation int64) map[string]frameworkapi.Condition {
+	mockReady, degraded := string(conditionTypeMockReady), string(frameworkapi.ConditionTypeDegraded)
+	desired := map[string]frameworkapi.Condition{
+		mockReady: {Type: mockReady, Status: metav1.ConditionTrue, ObservedGeneration: generation},
+		degraded:  {Type: degraded, Status: metav1.ConditionFalse, ObservedGeneration: generation},
 	}
 
 	for _, entry := range injected {
-		switch frameworkapi.ConditionType(entry.Type) {
-		case conditionTypeMockReady:
-			desired[0] = entry
-		case frameworkapi.ConditionTypeDegraded:
-			desired[1] = entry
-		default:
-			desired = append(desired, entry)
-		}
+		desired[entry.Type] = entry
 	}
 
-	for i := range desired {
-		condition := &desired[i]
+	for typ, condition := range desired {
 		condition.Reason = cmp.Or(condition.Reason, condition.Type+string(condition.Status))
 		condition.Message = cmp.Or(condition.Message, condition.Reason)
+		desired[typ] = condition
 	}
 
 	return desired
 }
 
-func conditionDependents(desired []frameworkapi.Condition) []fwconditions.DependentDefinition {
+func conditionDependents(desired map[string]frameworkapi.Condition) []fwconditions.DependentDefinition {
 	dependents := make([]fwconditions.DependentDefinition, 0, len(desired)+1)
 	dependents = append(dependents, fwconditions.Dependent(frameworkapi.ConditionTypeProvisioningSucceeded, fwconditions.HealthyWhenTrue))
-	for _, entry := range desired {
-		conditionType := frameworkapi.ConditionType(entry.Type)
+	for name := range desired {
+		conditionType := frameworkapi.ConditionType(name)
 		polarity := fwconditions.HealthyWhenTrue
 		if conditionType == frameworkapi.ConditionTypeDegraded {
 			polarity = fwconditions.HealthyWhenFalse
@@ -75,7 +69,7 @@ func conditionDependents(desired []frameworkapi.Condition) []fwconditions.Depend
 func normalizeConditionMetadata(
 	status *frameworkapi.Status,
 	previous []frameworkapi.Condition,
-	desired []frameworkapi.Condition,
+	desired map[string]frameworkapi.Condition,
 	generation int64,
 	now time.Time,
 ) {
@@ -84,15 +78,10 @@ func normalizeConditionMetadata(
 		priorByType[condition.Type] = condition
 	}
 
-	desiredByType := make(map[string]frameworkapi.Condition, len(desired))
-	for _, entry := range desired {
-		desiredByType[entry.Type] = entry
-	}
-
 	status.ObservedGeneration = generation
 	for i := range status.Conditions {
 		condition := &status.Conditions[i]
-		configured, hasConfigured := desiredByType[condition.Type]
+		configured, hasConfigured := desired[condition.Type]
 		prior := priorByType[condition.Type]
 
 		condition.ObservedGeneration = generation

@@ -1,7 +1,4 @@
-// Package module wires the `module` command group of the binary. It
-// owns the group command only: the `lint` and `deploy` subcommands live
-// in their own packages, and every business execution goes through
-// the injected action boundaries.
+// Package module wires the lint, deploy, and mock subcommands to their actions.
 package module
 
 import (
@@ -11,24 +8,22 @@ import (
 
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/deploy"
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
+	"github.com/lburgazzoli/odh-platform-tools/cmd/module/mock"
 )
 
-// NewModuleCommand returns the `module` command group with its two
-// registered subcommands, `lint` and `deploy`. The standard getter the
-// root registered is forwarded to the deploy composition; lint is
-// offline and never resolves it.
+// NewModuleCommand wires the standard Kubernetes getter to deploy and mock.
 func NewModuleCommand(
 	lintRun lint.Run,
 	deployAction deploy.Deploy,
+	mockRun mock.Run,
 	getter genericclioptions.RESTClientGetter,
 ) *cobra.Command {
 	group := &cobra.Command{
 		Use:   "module",
-		Short: "Offline platform module tooling",
-		Long: "Offline tooling for platform module definitions: lint " +
-			"checks a module definition and its rendered manifests " +
-			"without a cluster, and deploy installs one module definition " +
-			"and its controller package onto a cluster.",
+		Short: "Manage platform modules",
+		Long: "Lint checks a module definition and its rendered manifests offline. " +
+			"Deploy installs one module definition and its controller package. " +
+			"Mock runs a status-only controller for a compatible module resource.",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			return command.Help()
@@ -39,6 +34,7 @@ func NewModuleCommand(
 
 	group.AddCommand(lint.NewLintCommand(lintRun))
 	group.AddCommand(deploy.NewDeployCommand(deployAction, getter))
+	group.AddCommand(mock.NewMockCommand(mockRun, getter))
 
 	return group
 }

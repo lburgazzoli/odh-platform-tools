@@ -62,7 +62,7 @@ func execute(
 ) (string, error) {
 	t.Helper()
 
-	group := NewModuleCommand(lintRun, deployAction, getter)
+	group := NewModuleCommand(lintRun, deployAction, nil, getter)
 
 	var stdout, stderr bytes.Buffer
 	group.SetOut(&stdout)
@@ -88,6 +88,7 @@ func TestModuleCommandShowsHelp(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(stdout).To(ContainSubstring("lint"))
 	g.Expect(stdout).To(ContainSubstring("deploy"))
+	g.Expect(stdout).To(ContainSubstring("mock"))
 	g.Expect(lintRecorder.calls).To(Equal(0))
 	g.Expect(runRecorder.calls).To(Equal(0))
 }

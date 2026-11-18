@@ -20,3 +20,12 @@ import stderrors "errors"
 
 // ErrInvalidMockAnnotation identifies malformed mock condition controls.
 var ErrInvalidMockAnnotation = stderrors.New("invalid mock condition annotation")
+
+// ErrInvalidMockOptions identifies invalid settings for module mock.
+var ErrInvalidMockOptions = stderrors.New("invalid mock options")
+
+// ErrMockRuntime identifies a failure starting or running the mock controller.
+var ErrMockRuntime = stderrors.New("mock controller failed")
+
+// ErrInvalidMockPlatformConfiguration identifies a missing or invalid platform version input.
+var ErrInvalidMockPlatformConfiguration = stderrors.New("invalid mock platform configuration")

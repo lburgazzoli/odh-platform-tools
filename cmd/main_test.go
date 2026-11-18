@@ -17,6 +17,7 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
 	deployer "github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
+	modmock "github.com/lburgazzoli/odh-platform-tools/pkg/module/mock"
 )
 
 // rootKubeconfigYAML is a standalone kubeconfig whose context carries
@@ -88,7 +89,7 @@ func execute(
 ) (string, error) {
 	t.Helper()
 
-	root := NewRootCommand(lintRun, deployAction)
+	root := NewRootCommand(lintRun, deployAction, nil)
 
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
@@ -127,7 +128,7 @@ func TestRootCommandHelp(t *testing.T) {
 		stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, "--help")
 
 		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(stdout).To(ContainSubstring("Offline platform module tooling"))
+		g.Expect(stdout).To(ContainSubstring("OpenDataHub platform module tooling"))
 		g.Expect(stdout).To(ContainSubstring("\n  module "))
 		g.Expect(lintRecorder.calls).To(Equal(0))
 		g.Expect(runRecorder.calls).To(Equal(0))
@@ -172,6 +173,78 @@ func TestRootCommandHelp(t *testing.T) {
 		g.Expect(lintRecorder.calls).To(Equal(0))
 		g.Expect(runRecorder.calls).To(Equal(0))
 	})
+
+	t.Run("mock help stays offline", func(t *testing.T) {
+		g := NewWithT(t)
+
+		stdout, err := execute(t.Context(), t, nil, nil,
+			"module", "mock", "--kubeconfig", filepath.Join(t.TempDir(), "missing"), "--help")
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(stdout).To(ContainSubstring("--api-version"))
+		g.Expect(stdout).To(ContainSubstring("--kind"))
+		g.Expect(stdout).To(ContainSubstring("--platform-configmap"))
+	})
+}
+
+func TestRootMockForwardsConnectionAndClassifiesActionFailures(t *testing.T) {
+	for _, scenario := range []struct {
+		name string
+		err  error
+		code int
+	}{
+		{name: "foreground completes", code: 0},
+		{name: "cancellation", err: context.Canceled, code: 1},
+		{name: "runtime error", err: errors.New("manager startup failed"), code: 1},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			g := NewWithT(t)
+			ctx := t.Context()
+			closeContext := func(actionCtx context.Context, getter genericclioptions.RESTClientGetter, options modmock.Options) error {
+				g.Expect(actionCtx).To(BeIdenticalTo(ctx))
+				g.Expect(options).To(Equal(modmock.Options{
+					APIVersion:        "mock.example.org/v1alpha1",
+					Kind:              "SampleModule",
+					PlatformConfigMap: "platform-config",
+					Namespace:         "selected-namespace",
+				}))
+				g.Expect(getter.ToRawKubeConfigLoader().RawConfig()).Error().NotTo(HaveOccurred())
+				return scenario.err
+			}
+			root := NewRootCommand(nil, nil, closeContext)
+			var stderr bytes.Buffer
+			root.SetErr(&stderr)
+			root.SetArgs([]string{
+				"--kubeconfig", kubeconfigFile(t), "--context", "test-context",
+				"module", "mock", "--api-version", "mock.example.org/v1alpha1",
+				"--kind", "SampleModule", "--platform-configmap", "platform-config",
+				"--namespace", "selected-namespace",
+			})
+
+			err := root.ExecuteContext(ctx)
+
+			g.Expect(ExitCode(err)).To(Equal(scenario.code))
+			if scenario.err != nil {
+				g.Expect(err).To(MatchError(scenario.err))
+				g.Expect(stderr.String()).To(ContainSubstring(scenario.err.Error()))
+			}
+		})
+	}
+}
+
+func TestRootMockRejectsInvalidFlagsBeforeResolvingKubeconfig(t *testing.T) {
+	g := NewWithT(t)
+	missingKubeconfig := filepath.Join(t.TempDir(), "does-not-exist")
+	for _, args := range [][]string{
+		{"--kind", "SampleModule", "--platform-configmap", "platform-config"},
+		{"--api-version", "v1", "--kind", "SampleModule", "--platform-configmap", "platform-config"},
+	} {
+		root := NewRootCommand(nil, nil, nil)
+		root.SetErr(new(bytes.Buffer))
+		root.SetArgs(append([]string{"--kubeconfig", missingKubeconfig, "module", "mock"}, args...))
+
+		g.Expect(ExitCode(root.ExecuteContext(t.Context()))).To(Equal(2))
+	}
 }
 
 func TestRootCommandRejectsUnknownCommands(t *testing.T) {
@@ -225,7 +298,7 @@ func TestRootCommandRegistersStandardFlagsOnce(t *testing.T) {
 	lintRecorder := &recordingRun{}
 	runRecorder := &recordingModuleDeploy{}
 
-	root := NewRootCommand(lintRecorder.run, runRecorder.deploy)
+	root := NewRootCommand(lintRecorder.run, runRecorder.deploy, nil)
 
 	// The standard flags exist exactly once, on the root's persistent
 	// flag set.

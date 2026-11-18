@@ -37,62 +37,61 @@ import (
 var conditionTimestamp = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]+)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$`)
 
 func decodeConditions(raw string, generation int64) ([]frameworkapi.Condition, error) {
-	document, err := observationJSON(raw)
-	if err != nil {
-		return nil, err
-	}
-	if document.Kind() != '[' {
-		return nil, moduleerrors.New(moduleerrors.ErrInvalidMockAnnotation,
-			conditionsAnnotation+" must contain a sequence of condition mappings")
-	}
-
-	var fields []map[string]jsontext.Value
-	if err := json.Unmarshal(document, &fields); err != nil {
-		return nil, moduleerrors.New(moduleerrors.ErrInvalidMockAnnotation,
-			conditionsAnnotation+" must contain condition mappings with unique keys", moduleerrors.WithCause(err))
+	document := jsontext.Value(raw)
+	isJSON := document.IsValid(jsontext.AllowDuplicateNames(true))
+	if !isJSON {
+		converted, err := yaml.YAMLToJSONStrict([]byte(raw))
+		if err != nil {
+			return nil, invalidConditionsDocument(err)
+		}
+		document = converted
 	}
 
-	var conditions []frameworkapi.Condition
-	if err := json.Unmarshal(document, &conditions, json.RejectUnknownMembers(true)); err != nil {
-		return nil, moduleerrors.New(moduleerrors.ErrInvalidMockAnnotation,
-			conditionsAnnotation+" contains an unknown field or a value of the wrong type", moduleerrors.WithCause(err))
+	var entries []jsontext.Value
+	if err := json.Unmarshal(document, &entries); err != nil {
+		return nil, invalidConditionsDocument(err)
 	}
-
-	seen := make(map[string]struct{}, len(conditions))
-	for index, condition := range conditions {
-		entry := fields[index]
+	if entries == nil {
+		return nil, invalidConditionsDocument(errors.New("expected a sequence"))
+	}
+	if !isJSON {
+		if err := validateConditionYAML(raw); err != nil {
+			return nil, err
+		}
+	}
+	conditions := make([]frameworkapi.Condition, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for index, entry := range entries {
+		condition := frameworkapi.Condition{ObservedGeneration: generation}
+		if entry.Kind() != '{' {
+			return nil, invalidObservation(index, "must be a condition mapping")
+		}
+		if err := json.Unmarshal(entry, &condition, json.RejectUnknownMembers(true)); err != nil {
+			return nil, invalidConditionsDocument(err)
+		}
 		if err := validateObservation(index, condition, entry, seen); err != nil {
 			return nil, err
 		}
 
-		// A plain framework Condition carries the resolved generation.
-		if _, supplied := entry["observedGeneration"]; !supplied {
-			conditions[index].ObservedGeneration = generation
-		}
-
 		seen[condition.Type] = struct{}{}
+		conditions = append(conditions, condition)
 	}
 
 	return conditions, nil
 }
 
-func observationJSON(raw string) (jsontext.Value, error) {
-	document := jsontext.Value(raw)
-	if document.IsValid(jsontext.AllowDuplicateNames(true)) {
-		return document, nil
-	}
-
+func validateConditionYAML(raw string) error {
 	decoder := yamlstream.NewDecoder(strings.NewReader(raw))
 	var parsed []map[string]any
 	if err := decoder.Decode(&parsed); err != nil {
-		return nil, invalidConditionsDocument(err)
+		return invalidConditionsDocument(err)
 	}
 	var extra yamlstream.Node
 	switch err := decoder.Decode(&extra); {
 	case err == nil:
-		return nil, invalidConditionsDocument(errors.New("multiple YAML documents"))
+		return invalidConditionsDocument(errors.New("multiple YAML documents"))
 	case !errors.Is(err, io.EOF):
-		return nil, invalidConditionsDocument(err)
+		return invalidConditionsDocument(err)
 	}
 
 	// The stream decoder detects repeated merge keys. Check the decoded
@@ -101,24 +100,25 @@ func observationJSON(raw string) (jsontext.Value, error) {
 		switch entry["observedGeneration"].(type) {
 		case nil, int, int64, uint64:
 		default:
-			return nil, invalidObservation(index, "observedGeneration must be an integer")
+			return invalidObservation(index, "observedGeneration must be an integer")
 		}
 	}
 
-	document, err := yaml.YAMLToJSONStrict([]byte(raw))
-	if err != nil {
-		return nil, invalidConditionsDocument(err)
-	}
-
-	return document, nil
+	return nil
 }
 
 func validateObservation(
 	index int,
 	entry frameworkapi.Condition,
-	fields map[string]jsontext.Value,
+	raw jsontext.Value,
 	seen map[string]struct{},
 ) error {
+	// These syntax details are lost when decoding into a framework Condition.
+	var fields map[string]jsontext.Value
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return invalidConditionsDocument(err)
+	}
+
 	_, duplicate := seen[entry.Type]
 	_, legacyField := fields["lastHeartbeatTime"]
 	timestamp, transitionTimeSupplied := fields["lastTransitionTime"]
