@@ -1,14 +1,17 @@
 # AGENTS.md
 
-CLI tooling for OpenDataHub platform module definitions: offline lint and
-one-shot deploy of a module's controller package.
+CLI tooling for OpenDataHub platform modules. Lint controller packages
+offline, install a package in one pass, and run a status-only mock module
+controller.
 
 ## Layout
 
 - `cmd/` — binary and Cobra commands only; no business logic.
-  Root in `cmd/main.go`, subcommands in `cmd/module/{lint,deploy}`.
+  Root in `cmd/main.go`, subcommands in `cmd/module/{lint,deploy,mock}`.
 - `pkg/` — reusable services. Packages under `pkg/` never import Cobra.
-- `pkg/module/api/v1alpha1` — APIs, Scheme, generated code only.
+- `pkg/module/api` — reusable module types and generated deepcopy methods.
+- `pkg/module/api/v1alpha1` — versioned APIs, Scheme, generated code only.
+- `pkg/module/mock` — status-only controller with runtime GVK registration.
 - `config/crd` — embedded generated CRD manifests (`make manifests`); the
   generated CRD under `config/crd/bases/` is tracked in git.
 - `hack/scripts/` — POSIX sh helpers for image builds, called by Make.

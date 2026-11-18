@@ -3,8 +3,10 @@
 ## Prerequisites
 
 - Go 1.27.3
-- Podman for container image builds (no Docker path) and for running the Go
-  suites on native Linux; Podman or Docker + Kind for the live e2e suite
+- Podman for building tools images and running Go suites on native Linux.
+- Kind for the managed live e2e suite. The managed runner builds its
+  tools image with Podman and loads it through Kind's configured
+  provider. [Live test setup](testing.md#e2e)
 
 ## Commands
 
@@ -88,14 +90,20 @@ podman run --rm -v "$PWD/examples:/work/examples:ro,Z" \
 Deploying from the container mounts the module and a kubeconfig read-only
 and points the CLI at the kubeconfig through the standard `KUBECONFIG`
 environment variable. `--config` and `--platform-version` are required; the
-example below mounts the Helm sample module. External exec-auth binaries a
-kubeconfig may reference are not bundled in the image:
+examples below mount the Helm sample module and set its controller image
+source. The cluster nodes must have access to that image. The API server
+address in the kubeconfig must be reachable inside the container. For a
+local cluster that advertises the host loopback address, run the host CLI
+as in the mock walkthrough. Exec-auth kubeconfigs require their configured
+credential helper. Set `controller_image` to the image available to the
+cluster before using either command below. [Mock walkthrough](mock.md)
 
 ```
 podman run --rm \
   -v "$PWD/examples/helm/chart:/work/module:ro,Z" \
   -v "$HOME/.kube/config:/work/kubeconfig:ro,Z" \
   -e KUBECONFIG=/work/kubeconfig \
+  -e RELATED_IMAGE_MOCK_CONTROLLER="$controller_image" \
   quay.io/lburgazzoli/odh-platform-tools:<tag> \
   module deploy \
     --config /work/module/module.yaml \
@@ -112,6 +120,7 @@ podman run --rm \
   -v "$PWD/examples/helm/chart:/work/module:ro,Z" \
   -v "$HOME/.kube/config:/work/kubeconfig:ro,Z" \
   -e KUBECONFIG=/work/kubeconfig \
+  -e RELATED_IMAGE_MOCK_CONTROLLER="$controller_image" \
   quay.io/lburgazzoli/odh-platform-tools:<tag> \
   module deploy \
     --config /work/module/module.yaml \
@@ -125,12 +134,15 @@ cmd/                    binary + Cobra commands (no business logic)
   main.go               root command, exit-code contract
   module/lint           module lint command + reports
   module/deploy         module deploy command + reports
+  module/mock           module mock command + flag validation
 pkg/
-  module/api/v1alpha1   APIs, Scheme, generated code only
+  module/api            related images and shared platform status types
+  module/api/v1alpha1   versioned APIs, Scheme, generated code only
   module/loader         decode (unknown fields dropped) + default definitions
   module/renderer       shared render engine (helm/, kustomize/, source/)
   module/linter         lint action + checks/{types,deployments,crd}
   module/deployer       deploy orchestration (adapt/, cluster/, images/)
+  module/mock           framework mock controller and status handling
   module/errors         module error taxonomy
   k8s/                  shared Kubernetes helpers (configmap, deployment, crd)
   util/                 jq, option, retry

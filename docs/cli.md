@@ -75,6 +75,35 @@ The loader uses Viper's default decoding and keeps text such as `${VARIABLE}`
 literal. File linting and image-reference validation are outside this format
 migration.
 
+## odh-platform-tools module mock
+
+Runs the mock controller in the foreground until the command is cancelled.
+It uses the inherited Kubernetes connection flags and watches a
+discoverable, cluster-scoped custom resource. Its CRD supplies the
+singleton constraint and a compatible platform status schema.
+
+```
+odh-platform-tools module mock \
+  --api-version <group/version> --kind <Kind> --platform-configmap <name>
+```
+
+| Flag | Description |
+|------|-------------|
+| `--api-version` | Custom resource group and version (required) |
+| `--kind` | Custom resource kind (required) |
+| `--platform-configmap` | Name of the ConfigMap providing `data.platformVersion` (required) |
+| `--namespace` | Optional inherited override for the ConfigMap namespace |
+
+The ConfigMap namespace defaults to the Pod namespace in-cluster.
+The example Deployments pass it as `POD_NAMESPACE` using the Downward
+API. The in-cluster ServiceAccount namespace file is the fallback.
+Outside the cluster, the inherited kubeconfig/context settings supply
+the namespace, with `default` as the fallback.
+
+Run one replica. Process health and readiness probes listen on port
+8081. Status controls and the example startup procedure are documented
+in the [mock walkthrough](mock.md).
+
 ## Exit codes
 
 | Code | Meaning |

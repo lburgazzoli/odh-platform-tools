@@ -2,41 +2,42 @@
 
 A module is described by one `PlatformModuleDefinition`
 (`config.opendatahub.io/v1alpha1`, cluster-scoped) YAML file plus a local
-manifest source (Helm chart or Kustomize tree). Working examples:
-`examples/helm` and `examples/kustomize`.
+manifest source (Helm chart or Kustomize tree). The bundled packages
+install controllers for `HelmModule` and `KustomizeModule`. Each instance
+manifest sits beside the package and is applied separately after deploy.
+[Run the bundled examples](mock.md)
 
 ## Skeleton
+
+This definition matches the bundled Helm controller package.
 
 ```yaml
 apiVersion: config.opendatahub.io/v1alpha1
 kind: PlatformModuleDefinition
 metadata:
-  name: example
+  name: helm-module
 spec:
-  instance:                       # identity of the module CR (never created by this tool)
-    name: default-example         # optional; defaults to metadata.name
-    type:                         # the Module CR the controller owns
+  instance:                       # identity of the separately applied module CR
+    name: default-helm-module     # optional; defaults to metadata.name
+    type:                         # the module CR type the controller watches
       group: components.platform.opendatahub.io
       version: v1alpha1
-      kind: Example
+      kind: HelmModule
   manifests:                      # exactly one backend
     format: helm                  # helm | kustomize
     helm:
       values:                     # literal values merged over chart defaults
-        replicas: 2
+        replicas: 1
   relatedImages:                  # image source keys resolved at deploy time
-  - RELATED_IMAGE_EXAMPLE_CONTROLLER
+  - RELATED_IMAGE_MOCK_CONTROLLER
   controller:
     deployment:
-      name: example-controller    # optional; defaults to metadata.name
+      name: mock-controller      # optional; defaults to metadata.name
       container:
-        image: quay.io/example/example-controller:v1.0.0   # literal or whole {{VARIABLE}}
+        image: '{{RELATED_IMAGE_MOCK_CONTROLLER}}'
         env:
         - name: LOG_LEVEL
           value: debug
-      initContainer:              # optional; name + optional image
-        name: init
-        image: '{{RELATED_IMAGE_INIT}}'   # optional; empty uses the main image
 ```
 
 For Kustomize: `manifests.format: kustomize` and optionally

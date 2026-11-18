@@ -1,8 +1,8 @@
 # Architecture
 
-One binary, two commands, shared services. `cmd/` wires Cobra commands to
-injected action functions; `pkg/` holds the reusable services and never
-imports Cobra.
+The tools binary provides three module commands. `cmd/` wires Cobra
+commands to action functions. `pkg/` holds the reusable services and
+never imports Cobra.
 
 ## Package map
 
@@ -12,8 +12,9 @@ imports Cobra.
 | `cmd/module` | `module` command group |
 | `cmd/module/lint` | `module lint` command, report output, exit classification |
 | `cmd/module/deploy` | `module deploy` command, report output, exit classification |
+| `cmd/module/mock` | `module mock` command, option validation and cluster connection |
 | `pkg/module` | Facade wiring the default linter (`NewLinter`) |
-| `pkg/module/api` | Related-images YAML file contract |
+| `pkg/module/api` | Related-image types and the platform status object and list |
 | `pkg/module/api/v1alpha1` | `PlatformModuleDefinition` API, Scheme, generated deepcopy |
 | `pkg/module/loader` | Decode one definition document (unknown fields dropped) + placement defaults |
 | `pkg/module/renderer` | Render engine: backend selection, ordering, cancellation, reserved-resource guard |
@@ -27,6 +28,7 @@ imports Cobra.
 | `pkg/module/deployer/adapt` | Image/env injection and platform-config ConfigMap; framework ownership bridge |
 | `pkg/module/deployer/cluster` | Connection and namespace resolution from a REST config getter |
 | `pkg/module/deployer/images` | Related-image snapshot from YAML and the environment |
+| `pkg/module/mock` | Foreground framework controller, scoped watches, condition and release reporting |
 | `pkg/module/errors` | Module error taxonomy (category sentinels) |
 | `pkg/k8s` | Shared K8s helpers: GVK identity, resource decode, containers |
 | `pkg/k8s/{configmap,deployment,crd}` | Typed builders/customizers, CRD establishment wait |
@@ -67,6 +69,22 @@ Wait    optional (--wait): kubectl rollout semantics on the controller
 The framework dependency (`odh-platform-utilities/framework`) supplies the
 deploy action, resource apply/decode helpers, and the release/ownership
 model; `adapt.ControllerBridge` supplies its ownership policy.
+
+## Mock controller
+
+Each controller registers the shared platform status object and its list
+in a fresh scheme under the discovered GVK. It watches that module type
+and the named ConfigMap in the resolved controller namespace. A
+ConfigMap change queues the module instance through the same framework
+reconciler as a module annotation change.
+
+The action evaluates the condition annotation and platform version,
+then supplies the current dependent conditions and release. The
+framework reports the actual pipeline result as
+`ProvisioningSucceeded`, drops stale conditions, and derives `Ready`
+and phase. The post-status hook normalizes observation metadata before
+the framework applies status. The controller leaves the instance spec
+and lifecycle to the caller. [Mock status contract](mock.md#conditions-and-platform-version)
 
 ## Design rules
 

@@ -56,11 +56,28 @@ The suite fails hard — never skips — when live prerequisites are missing.
 ```
 ODH_PLATFORM_TOOLS_E2E_ENGINE              kind (default) | external
 ODH_PLATFORM_TOOLS_E2E_NODE_IMAGE          overrides the recorded node image pin
+ODH_PLATFORM_TOOLS_E2E_IMAGE               required with the external engine
 ODH_PLATFORM_TOOLS_E2E_EXTERNAL_KUBECONFIG required with the external engine
 ODH_PLATFORM_TOOLS_E2E_EXTERNAL_CONTEXT    required with the external engine
 ```
 
-- `make test-e2e-kind`: the engine creates and tears down an isolated Kind
-  cluster (node image pinned to the Kubernetes line this repo builds against).
-- `make test-e2e-external`: runs against the cluster named by the env vars.
-- `make test-e2e-compile` checks the suite compiles without any setup.
+- `make test-e2e-kind` provisions an isolated Kind cluster on the pinned
+  node image. It builds one uniquely tagged native tools image with
+  Podman, exports it, and loads it into the owned nodes. A smoke Pod
+  executes `module mock --help` from the loaded image with pulling
+  disabled. Teardown removes the run-owned cluster, tag, and archive.
+  Use `KIND_EXPERIMENTAL_PROVIDER=podman make test-e2e-kind` for Podman
+  nodes, or configure the Docker provider for the Kind nodes while
+  keeping Podman available for the build.
+- `make test-e2e-external` requires an explicit kubeconfig path, context,
+  and image reference accessible to the cluster nodes. The suite uses
+  that image without building, loading, or publishing it. The test
+  identity needs permission to install the packages, list and watch the
+  scoped test identities for cleanup, and exercise status and event
+  RBAC. The shared definition CRD stays installed.
+- `make test-e2e-compile` checks the suite compiles without cluster setup.
+
+The live suite deploys both example packages, applies their module
+instances separately, and checks persisted status, ConfigMap updates,
+and recovery under the packaged ServiceAccounts. It also exercises a
+real status-write denial and checks the controller's Kubernetes event.
