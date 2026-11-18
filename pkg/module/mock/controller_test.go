@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -51,7 +52,7 @@ func TestStatusActionReportsVersionAndConditionControls(t *testing.T) {
 		Namespace: key.Namespace,
 		Data:      map[string]string{platformVersionKey: "v3.12"},
 	}
-	obj := &moduleObject{
+	obj := &ModuleObject{
 		Generation:  4,
 		Annotations: map[string]string{conditionsAnnotation: yamlConditionControls},
 	}
@@ -105,7 +106,7 @@ func TestStatusActionPreservesPersistedReleaseOnInputFailure(t *testing.T) {
 					Data:      scenario.config,
 				})
 			}
-			obj := &moduleObject{Generation: 5}
+			obj := &ModuleObject{Generation: 5}
 			obj.GetReleaseStatus().SetPlatformRelease("3.0.0")
 			if scenario.annotation != "" {
 				obj.Annotations = map[string]string{conditionsAnnotation: scenario.annotation}
@@ -139,7 +140,7 @@ func TestStatusActionReturnsRealAPIErrors(t *testing.T) {
 			return apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, key.Name, errors.New("access denied"))
 		},
 	}).Build()
-	obj := &moduleObject{Generation: 2}
+	obj := &ModuleObject{Generation: 2}
 	request := &fwtypes.ReconciliationRequest{Client: reader, Instance: obj}
 
 	err := runMockStatusAction(t.Context(), key, request)
@@ -173,7 +174,7 @@ func TestConfigMapEventsEnqueueTheDiscoveredInstanceForDataChanges(t *testing.T)
 
 	gvk := schema.GroupVersionKind{Group: "testing.example.org", Version: "v1", Kind: "SelectedModule"}
 	scheme := newModuleScheme(gvk)
-	obj := &moduleObject{Name: "discovered-singleton"}
+	obj := &ModuleObject{Name: "discovered-singleton"}
 	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(obj).Build()
 
 	g.Expect(moduleRequests(reader)(t.Context(), changed)).To(ConsistOf(
@@ -207,8 +208,19 @@ func TestModuleMapperUsesDiscoveredResourceNameAndScope(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("is not discoverable"))
 }
 
+func TestControllerRejectsCoreGVKBeforeDiscovery(t *testing.T) {
+	g := NewWithT(t)
+	controller := New(&rest.Config{}, Options{
+		GVK:               corev1.SchemeGroupVersion.WithKind("Namespace"),
+		PlatformConfigMap: "platform-config",
+	})
+
+	g.Expect(controller.Run(t.Context())).To(MatchError(moduleerrors.ErrInvalidMockOptions))
+}
+
 func runMockStatusAction(ctx context.Context, key client.ObjectKey, rr *fwtypes.ReconciliationRequest) error {
-	err := mockStatusAction(key)(ctx, rr)
+	controller := &Controller{configMap: key}
+	err := controller.reconcileStatus(ctx, rr)
 	if err != nil {
 		rr.Conditions.MarkFalse(frameworkapi.ConditionTypeProvisioningSucceeded)
 	} else {

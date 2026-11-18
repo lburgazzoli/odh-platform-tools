@@ -11,6 +11,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
 	deploycli "github.com/lburgazzoli/odh-platform-tools/cmd/module/deploy"
@@ -203,8 +204,7 @@ func TestRootMockForwardsConnectionAndClassifiesActionFailures(t *testing.T) {
 			closeContext := func(actionCtx context.Context, getter genericclioptions.RESTClientGetter, options modmock.Options) error {
 				g.Expect(actionCtx).To(BeIdenticalTo(ctx))
 				g.Expect(options).To(Equal(modmock.Options{
-					APIVersion:        "mock.example.org/v1alpha1",
-					Kind:              "SampleModule",
+					GVK:               schema.GroupVersionKind{Group: "mock.example.org", Version: "v1alpha1", Kind: "SampleModule"},
 					PlatformConfigMap: "platform-config",
 					Namespace:         "selected-namespace",
 				}))

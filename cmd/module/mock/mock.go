@@ -25,7 +25,6 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/cluster"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	modmock "github.com/lburgazzoli/odh-platform-tools/pkg/module/mock"
 )
@@ -38,21 +37,17 @@ func Action(ctx context.Context, getter genericclioptions.RESTClientGetter, opti
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := options.Validate(); err != nil {
-		return err
-	}
-
 	config, err := getter.ToRESTConfig()
 	if err != nil {
 		return moduleerrors.New(moduleerrors.ErrMockRuntime, "could not resolve Kubernetes REST configuration", moduleerrors.WithCause(err))
 	}
 
-	return modmock.Run(ctx, config, options)
+	return modmock.New(config, options).Run(ctx)
 }
 
 // NewMockCommand binds the required flags to a foreground controller action.
 func NewMockCommand(action Run, getter genericclioptions.RESTClientGetter) *cobra.Command {
-	var options modmock.Options
+	var input flags
 	command := &cobra.Command{
 		Use:   "mock",
 		Short: "Run a status-only mock module controller",
@@ -61,25 +56,18 @@ func NewMockCommand(action Run, getter genericclioptions.RESTClientGetter) *cobr
 			"--namespace flag selects the ConfigMap namespace.",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			err := options.Validate()
+			options, err := input.options(getter)
 			if err == nil {
-				callOptions := options
-				callOptions.Namespace, err = cluster.ResolveNamespace(getter)
-				if err == nil {
-					err = callOptions.Validate()
-				}
-				if err == nil {
-					err = action(command.Context(), getter, callOptions)
-				}
+				err = action(command.Context(), getter, options)
 			}
 
 			return reportError(command, err)
 		},
 	}
 	flags := command.Flags()
-	flags.StringVar(&options.APIVersion, "api-version", "", "custom resource group/version (required)")
-	flags.StringVar(&options.Kind, "kind", "", "custom resource kind (required)")
-	flags.StringVar(&options.PlatformConfigMap, "platform-configmap", "", "platform ConfigMap name (required)")
+	flags.StringVar(&input.apiVersion, "api-version", "", "custom resource group/version (required)")
+	flags.StringVar(&input.kind, "kind", "", "custom resource kind (required)")
+	flags.StringVar(&input.platformConfigMap, "platform-configmap", "", "platform ConfigMap name (required)")
 
 	for _, flag := range []string{"api-version", "kind", "platform-configmap"} {
 		if err := command.MarkFlagRequired(flag); err != nil {

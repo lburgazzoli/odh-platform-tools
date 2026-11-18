@@ -174,7 +174,7 @@ func TestConditionsUseFrameworkReadinessPolarityAndSeverity(t *testing.T) {
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			g := NewWithT(t)
-			obj := new(moduleObject)
+			obj := new(ModuleObject)
 			desired := desiredConditions(scenario.injected, 0)
 			aggregator, err := fwconditions.NewAggregator(frameworkapi.ConditionTypeReady, conditionDependents(desired)...)
 			g.Expect(err).NotTo(HaveOccurred())
@@ -197,7 +197,7 @@ func TestNormalizeConditionMetadataUsesPersistedFinalStatuses(t *testing.T) {
 	observedAt := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
 	next := observedAt.Add(time.Hour)
 	supplied := next.Add(50*time.Second + 123*time.Millisecond)
-	obj := new(moduleObject)
+	obj := new(ModuleObject)
 	previous := []frameworkapi.Condition{
 		{Type: "Ready", Status: metav1.ConditionTrue, LastTransitionTime: metav1.NewTime(observedAt)},
 		{Type: "MockReady", Status: metav1.ConditionTrue, LastTransitionTime: metav1.NewTime(observedAt)},
@@ -250,7 +250,7 @@ func TestModuleSchemeIsolatesRuntimeKindsAndExposesStatusToFramework(t *testing.
 
 	rawObject, err := secondScheme.New(second)
 	g.Expect(err).NotTo(HaveOccurred())
-	obj, ok := rawObject.(*moduleObject)
+	obj, ok := rawObject.(*ModuleObject)
 	g.Expect(ok).To(BeTrue())
 	obj.Name = "default-second-module"
 	release := frameworkapi.ComponentReleaseStatus{
@@ -268,5 +268,5 @@ func TestModuleSchemeIsolatesRuntimeKindsAndExposesStatusToFramework(t *testing.
 
 	list, err := secondScheme.New(second.GroupVersion().WithKind(second.Kind + "List"))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(list).To(BeAssignableToTypeOf(new(moduleObjectList)))
+	g.Expect(list).To(BeAssignableToTypeOf(new(ModuleObjectList)))
 }

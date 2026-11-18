@@ -24,86 +24,61 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-type moduleStatus struct {
+// ModuleStatus is the framework status reported by a mock module.
+// +kubebuilder:object:generate=true
+type ModuleStatus struct {
 	frameworkapi.Status                 `json:",inline"`
 	frameworkapi.ComponentReleaseStatus `json:",inline"`
 }
 
-type moduleObject struct {
+// ModuleObject adapts the selected custom resource to the platform framework.
+// +kubebuilder:object:root=true
+type ModuleObject struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitzero"`
-	Status            moduleStatus `json:"status,omitzero"`
+	Status            ModuleStatus `json:"status,omitzero"`
 }
 
-type moduleObjectList struct {
+// ModuleObjectList is the list for the runtime-selected resource.
+// +kubebuilder:object:root=true
+type ModuleObjectList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
-	Items           []moduleObject `json:"items"`
+	Items           []ModuleObject `json:"items"`
 }
 
-var _ frameworkapi.PlatformObject = (*moduleObject)(nil)
-var _ frameworkapi.WithReleases = (*moduleObject)(nil)
+var _ frameworkapi.PlatformObject = (*ModuleObject)(nil)
+var _ frameworkapi.WithReleases = (*ModuleObject)(nil)
 
 func newModuleScheme(gvk schema.GroupVersionKind) *runtime.Scheme {
 	scheme := runtime.NewScheme()
-	scheme.AddKnownTypeWithName(gvk, &moduleObject{})
-	scheme.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &moduleObjectList{})
+	scheme.AddKnownTypeWithName(gvk, &ModuleObject{})
+	scheme.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &ModuleObjectList{})
 
 	return scheme
 }
 
-func (obj *moduleObject) GetStatus() *frameworkapi.Status {
+// GetStatus implements frameworkapi.WithStatus.
+func (obj *ModuleObject) GetStatus() *frameworkapi.Status {
 	return &obj.Status.Status
 }
 
-func (obj *moduleObject) GetConditions() []frameworkapi.Condition {
+// GetConditions returns the module's condition observations.
+func (obj *ModuleObject) GetConditions() []frameworkapi.Condition {
 	return obj.Status.GetConditions()
 }
 
-func (obj *moduleObject) SetConditions(conditions []frameworkapi.Condition) {
+// SetConditions replaces the module's condition observations.
+func (obj *ModuleObject) SetConditions(conditions []frameworkapi.Condition) {
 	obj.Status.SetConditions(conditions)
 }
 
-func (obj *moduleObject) GetReleaseStatus() *frameworkapi.ComponentReleaseStatus {
+// GetReleaseStatus returns the module's release report.
+func (obj *ModuleObject) GetReleaseStatus() *frameworkapi.ComponentReleaseStatus {
 	return &obj.Status.ComponentReleaseStatus
 }
 
-func (obj *moduleObject) SetReleaseStatus(status frameworkapi.ComponentReleaseStatus) {
+// SetReleaseStatus copies the release report into the module's status.
+func (obj *ModuleObject) SetReleaseStatus(status frameworkapi.ComponentReleaseStatus) {
 	status.DeepCopyInto(&obj.Status.ComponentReleaseStatus)
-}
-
-func (obj *moduleObject) DeepCopyObject() runtime.Object {
-	if obj == nil {
-		return nil
-	}
-
-	out := new(moduleObject)
-	obj.deepCopyInto(out)
-
-	return out
-}
-
-func (obj *moduleObject) deepCopyInto(out *moduleObject) {
-	*out = *obj
-	obj.DeepCopyInto(&out.ObjectMeta)
-	obj.Status.Status.DeepCopyInto(&out.Status.Status)
-	obj.Status.ComponentReleaseStatus.DeepCopyInto(&out.Status.ComponentReleaseStatus)
-}
-
-func (list *moduleObjectList) DeepCopyObject() runtime.Object {
-	if list == nil {
-		return nil
-	}
-
-	out := new(moduleObjectList)
-	*out = *list
-	list.DeepCopyInto(&out.ListMeta)
-	if list.Items != nil {
-		out.Items = make([]moduleObject, len(list.Items))
-		for i := range list.Items {
-			list.Items[i].deepCopyInto(&out.Items[i])
-		}
-	}
-
-	return out
 }

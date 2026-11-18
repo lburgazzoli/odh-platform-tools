@@ -20,7 +20,7 @@ help: ## Display this help
 
 .PHONY: generate
 generate: ## Generate deepcopy code with controller-gen
-	$(CONTROLLER_GEN) object:headerFile=./hack/boilerplate.go.txt paths=./pkg/module/api/...
+	$(CONTROLLER_GEN) object:headerFile=./hack/boilerplate.go.txt paths="./pkg/module/api/...;./pkg/module/mock"
 
 .PHONY: manifests
 manifests: ## Generate the module definition CRD with controller-gen

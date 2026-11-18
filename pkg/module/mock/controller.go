@@ -34,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -48,32 +49,46 @@ import (
 
 const probeAddress = ":8081"
 
+// Controller runs the framework's status-only reconciler for one module kind.
+type Controller struct {
+	config    *rest.Config
+	gvk       schema.GroupVersionKind
+	configMap client.ObjectKey
+}
+
+// New creates a controller for the selected resource and ConfigMap.
+func New(config *rest.Config, options Options) *Controller {
+	return &Controller{
+		config: config,
+		gvk:    options.GVK,
+		configMap: client.ObjectKey{
+			Namespace: cmp.Or(options.Namespace, metav1.NamespaceDefault),
+			Name:      options.PlatformConfigMap,
+		},
+	}
+}
+
 // Run serves the status-only controller until the caller cancels ctx.
-func Run(ctx context.Context, config *rest.Config, options Options) error {
-	gvk, err := options.groupVersionKind()
+func (c *Controller) Run(ctx context.Context) error {
 	switch {
-	case err != nil:
-		return err
 	case ctx.Err() != nil:
 		return ctx.Err()
-	case config == nil:
+	case c.config == nil:
 		return moduleerrors.New(moduleerrors.ErrMockRuntime, "Kubernetes REST configuration is required")
+	case c.gvk.Group == "":
+		return moduleerrors.New(moduleerrors.ErrInvalidMockOptions, "mock controller requires a custom resource group")
 	}
 
-	scheme := newModuleScheme(gvk)
-	if err := corev1.AddToScheme(scheme); err != nil {
-		return fmt.Errorf("register mock ConfigMap watch: %w", err)
-	}
-	configMap := client.ObjectKey{
-		Namespace: cmp.Or(options.Namespace, metav1.NamespaceDefault),
-		Name:      options.PlatformConfigMap,
-	}
-	mapper, err := discoverModuleMapper(ctx, config, gvk)
+	mapper, err := discoverModuleMapper(ctx, c.config, c.gvk)
 	if err != nil {
 		return err
 	}
 
-	ctrlManager, err := ctrl.NewManager(config, ctrl.Options{
+	scheme := newModuleScheme(c.gvk)
+	if err := corev1.AddToScheme(scheme); err != nil {
+		return fmt.Errorf("register mock ConfigMap watch: %w", err)
+	}
+	ctrlManager, err := ctrl.NewManager(c.config, ctrl.Options{
 		Scheme: scheme,
 		MapperProvider: func(_ *rest.Config, _ *http.Client) (meta.RESTMapper, error) {
 			return mapper, nil
@@ -85,8 +100,8 @@ func Run(ctx context.Context, config *rest.Config, options Options) error {
 			ReaderFailOnMissingInformer: true,
 			ByObject: map[client.Object]cache.ByObject{
 				&corev1.ConfigMap{}: {
-					Namespaces: map[string]cache.Config{configMap.Namespace: {}},
-					Field:      fields.OneTermEqualSelector("metadata.name", configMap.Name),
+					Namespaces: map[string]cache.Config{c.configMap.Namespace: {}},
+					Field:      fields.OneTermEqualSelector("metadata.name", c.configMap.Name),
 				},
 			},
 		},
@@ -97,7 +112,7 @@ func Run(ctx context.Context, config *rest.Config, options Options) error {
 	}
 
 	mgr := fwmanager.New(ctrlManager)
-	if err := configureController(ctx, mgr, configMap); err != nil {
+	if err := c.configure(ctx, mgr); err != nil {
 		return err
 	}
 	if err := mgr.Start(ctx); err != nil {
@@ -107,7 +122,7 @@ func Run(ctx context.Context, config *rest.Config, options Options) error {
 	return ctx.Err()
 }
 
-func configureController(ctx context.Context, mgr ctrl.Manager, key client.ObjectKey) error {
+func (c *Controller) configure(ctx context.Context, mgr ctrl.Manager) error {
 	// The bootstrap manager only initializes ProvisioningSucceeded.
 	// Seeding other dependencies could change persisted Ready before the
 	// action has captured its previous status.
@@ -116,12 +131,12 @@ func configureController(ctx context.Context, mgr ctrl.Manager, key client.Objec
 		return fmt.Errorf("configure initial mock condition manager: %w", err)
 	}
 
-	if _, err := reconciler.ReconcilerFor(mgr, &moduleObject{}).
+	if _, err := reconciler.ReconcilerFor(mgr, &ModuleObject{}).
 		WithReconcilerOpts(reconciler.WithConditionAggregator(bootstrap), reconciler.WithFinalizerName("")).
-		WithAction(mockStatusAction(key)).
+		WithAction(c.reconcileStatus).
 		WithPostStatusFn(finishMockStatus).
 		Watches(&corev1.ConfigMap{},
-			reconciler.WithPredicates(configMapEvents(key)),
+			reconciler.WithPredicates(configMapEvents(c.configMap)),
 			reconciler.WithEventMapper(moduleRequests(mgr.GetClient())),
 		).
 		Build(ctx); err != nil {

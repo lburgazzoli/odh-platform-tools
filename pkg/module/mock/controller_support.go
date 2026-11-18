@@ -25,7 +25,6 @@ import (
 
 	"github.com/blang/semver/v4"
 	frameworkapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
-	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions"
 	fwconditions "github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 	fwtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 	corev1 "k8s.io/api/core/v1"
@@ -90,44 +89,42 @@ func moduleMapper(gvk schema.GroupVersionKind, resources []metav1.APIResource) (
 	return nil, moduleerrors.New(moduleerrors.ErrInvalidMockOptions, fmt.Sprintf("custom resource %s is not discoverable", gvk))
 }
 
-func mockStatusAction(key client.ObjectKey) actions.Fn {
-	return func(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
-		obj := rr.Instance.(*moduleObject)
-		previous := obj.GetStatus().DeepCopy().Conditions
-		injected, version, err := readMockInputs(ctx, rr.Client, key, obj)
-		desired := desiredConditions(injected, obj.Generation)
-		aggregator, aggregatorErr := fwconditions.NewAggregator(frameworkapi.ConditionTypeReady, conditionDependents(desired)...)
-		if aggregatorErr != nil {
-			return fmt.Errorf("configure mock readiness: %w", aggregatorErr)
-		}
-
-		rr.Conditions = fwconditions.NewManager(obj, aggregator)
-		rr.Conditions.Reset()
-		for _, condition := range desired {
-			rr.Conditions.SetCondition(condition)
-		}
-		if rr.Extensions == nil {
-			rr.Extensions = make(map[string]any)
-		}
-		rr.Extensions[mockStatusStateKey] = mockStatusState{previous: previous, desired: desired}
-
-		if version != "" {
-			obj.SetReleaseStatus(frameworkapi.ComponentReleaseStatus{
-				Releases: []frameworkapi.ComponentRelease{{Name: frameworkapi.ReleasePlatform, Version: version}},
-			})
-		}
-
-		return err
+func (c *Controller) reconcileStatus(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
+	obj := rr.Instance.(*ModuleObject)
+	previous := obj.GetStatus().DeepCopy().Conditions
+	injected, version, err := c.readInputs(ctx, rr.Client, obj)
+	desired := desiredConditions(injected, obj.Generation)
+	aggregator, aggregatorErr := fwconditions.NewAggregator(frameworkapi.ConditionTypeReady, conditionDependents(desired)...)
+	if aggregatorErr != nil {
+		return fmt.Errorf("configure mock readiness: %w", aggregatorErr)
 	}
+
+	rr.Conditions = fwconditions.NewManager(obj, aggregator)
+	rr.Conditions.Reset()
+	for _, condition := range desired {
+		rr.Conditions.SetCondition(condition)
+	}
+	if rr.Extensions == nil {
+		rr.Extensions = make(map[string]any)
+	}
+	rr.Extensions[mockStatusStateKey] = mockStatusState{previous: previous, desired: desired}
+
+	if version != "" {
+		obj.SetReleaseStatus(frameworkapi.ComponentReleaseStatus{
+			Releases: []frameworkapi.ComponentRelease{{Name: frameworkapi.ReleasePlatform, Version: version}},
+		})
+	}
+
+	return err
 }
 
-func readMockInputs(ctx context.Context, reader client.Reader, key client.ObjectKey, obj *moduleObject) ([]frameworkapi.Condition, string, error) {
+func (c *Controller) readInputs(ctx context.Context, reader client.Reader, obj *ModuleObject) ([]frameworkapi.Condition, string, error) {
 	conditions, err := readConditions(obj.Annotations, obj.Generation)
 	if err != nil {
 		return invalidInputConditions(obj.Generation, "InvalidMockAnnotation", err), "", nil
 	}
 
-	version, err := readPlatformVersion(ctx, reader, key)
+	version, err := readPlatformVersion(ctx, reader, c.configMap)
 	if errors.Is(err, moduleerrors.ErrInvalidMockPlatformConfiguration) {
 		return invalidInputConditions(obj.Generation, "InvalidPlatformConfiguration", err), "", nil
 	}
@@ -175,7 +172,7 @@ func readPlatformVersion(ctx context.Context, reader client.Reader, key client.O
 
 func moduleRequests(reader client.Reader) handler.MapFunc {
 	return func(ctx context.Context, _ client.Object) []ctrl.Request {
-		var instances moduleObjectList
+		var instances ModuleObjectList
 		if err := reader.List(ctx, &instances); err != nil {
 			log.FromContext(ctx).Error(err, "list module instances after platform ConfigMap change")
 			return nil
