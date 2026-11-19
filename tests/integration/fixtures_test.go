@@ -3,7 +3,7 @@
 // Package integration exercises the complete offline lint chain:
 // actual definition files, the strict reusable loader, the actual
 // framework Helm and Kustomize render actions, and the pure
-// validator, composed through the public module.NewLinter action.
+// validator, composed through the lint command's Action.
 // Everything runs without Kubernetes, credentials, network access,
 // containers, or external renderer binaries.
 package integration
@@ -19,7 +19,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module"
+	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 )
 
@@ -450,7 +450,7 @@ func runLintContext(
 ) (linter.Result, error) {
 	t.Helper()
 
-	return module.NewLinter().Run(ctx, linter.Options{
+	return lint.Action(ctx, linter.Options{
 		DefinitionFile: filepath.Join(root, "definition.yaml"),
 	})
 }

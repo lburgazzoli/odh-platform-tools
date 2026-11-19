@@ -26,6 +26,9 @@ import (
 
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/generator"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/exit"
 )
 
 // Process exit statuses.
@@ -41,27 +44,21 @@ const stdoutOutput = "stdout"
 // Run is the command's generation action.
 type Run func(ctx context.Context, options generator.Options) (generator.Result, error)
 
-// ExitError carries the exit code and execution error.
-type ExitError struct {
-	Code int
-	Err  error
-}
+// Action composes local rendering and the default manifest checks,
+// and runs one generation pass.
+func Action(ctx context.Context, options generator.Options) (generator.Result, error) {
+	action := generator.NewAction(
+		renderer.Render,
+		checks.Default(),
+	)
 
-// Error renders the classified outcome; the authoritative YAML has
-// already been written or published.
-func (e *ExitError) Error() string {
-	if e.Err != nil {
-		return e.Err.Error()
+	result, err := action.Run(ctx, options)
+	if err != nil {
+		return result, moduleerrors.WrapStage("run the generation pass", err)
 	}
 
-	return fmt.Sprintf("module generate: exit status %d", e.Code)
+	return result, nil
 }
-
-// Unwrap preserves the underlying execution error identity.
-func (e *ExitError) Unwrap() error { return e.Err }
-
-// ExitCode implements the root command's exit contract.
-func (e *ExitError) ExitCode() int { return e.Code }
 
 // Classified execution failure categories of one generate invocation.
 const (
@@ -178,13 +175,13 @@ func (o generateOptions) execute(command *cobra.Command, run Run, source string)
 
 		if _, writeErr := fmt.Fprintf(command.ErrOrStderr(), "module generate %s: %s: %s\n",
 			source, category, err); writeErr != nil {
-			return &ExitError{
+			return &exit.Error{
 				Code: ExitFailure,
 				Err:  errors.Join(err, fmt.Errorf("write failure summary: %w", writeErr)),
 			}
 		}
 
-		return &ExitError{Code: code, Err: err}
+		return &exit.Error{Code: code, Err: err}
 	}
 
 	// File results are already published; only stdout results write
@@ -193,19 +190,19 @@ func (o generateOptions) execute(command *cobra.Command, run Run, source string)
 		// Cancellation between the service return and the first
 		// stdout write still prevents output.
 		if err := command.Context().Err(); err != nil {
-			return &ExitError{Code: ExitFailure, Err: err}
+			return &exit.Error{Code: ExitFailure, Err: err}
 		}
 
 		written, err := command.OutOrStdout().Write(result.YAML)
 		if err != nil {
-			return &ExitError{
+			return &exit.Error{
 				Code: ExitFailure,
 				Err:  fmt.Errorf("write generated definition: %w", err),
 			}
 		}
 
 		if written != len(result.YAML) {
-			return &ExitError{
+			return &exit.Error{
 				Code: ExitFailure,
 				Err: fmt.Errorf("write generated definition: short write of %d of %d bytes",
 					written, len(result.YAML)),

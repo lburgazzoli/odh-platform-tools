@@ -6,9 +6,11 @@ controller.
 
 ## Layout
 
-- `cmd/` — binary and Cobra commands only; no business logic.
-  Root in `cmd/main.go`, subcommands in `cmd/module/{lint,deploy,mock}`.
-- `pkg/` — reusable services. Packages under `pkg/` never import Cobra.
+- `cmd/` — binary, Cobra commands, and each subcommand's default
+  service composition (`Action`); no other business logic. Root in
+  `cmd/main.go`, subcommands in `cmd/module/{lint,deploy,generate,mock}`.
+- `pkg/` — reusable services. Packages under `pkg/` never import Cobra
+  and never compose command defaults.
 - `pkg/module/api` — reusable module types and generated deepcopy methods.
 - `pkg/module/api/v1alpha1` — versioned APIs, Scheme, generated code only.
 - `pkg/module/mock` — status-only controller with runtime GVK registration.
@@ -27,6 +29,13 @@ controller.
   `WithXxx` functions; presets on value receivers; constructors take
   `opts ...Option[T]`.
 - One type per parameter — never group same-type parameter declarations.
+- Every `cmd/module/$name` defines `type Run` (the injectable boundary)
+  and `func Action` (the default composition of pkg services);
+  `cmd/main.go` passes the four Actions to the command group. Actions
+  step compose → run → `moduleerrors.WrapStage`: classified errors
+  pass through untouched, raw ones gain a stage prefix.
+- Command exit failures return `pkg/util/exit.Error`; the
+  consumer-side `exitCoder` interface stays in `cmd/main.go`.
 - Errors: `pkg/module/errors` — `moduleerrors.New(category, msg,
   moduleerrors.WithCause(err))`; classify with `errors.Is` on category
   sentinels, never message strings.

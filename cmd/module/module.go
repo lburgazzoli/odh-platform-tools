@@ -15,7 +15,7 @@ import (
 // NewModuleCommand wires the standard Kubernetes getter to deploy and mock.
 func NewModuleCommand(
 	lintRun lint.Run,
-	deployAction deploy.Deploy,
+	deployRun deploy.Run,
 	mockRun mock.Run,
 	generateRun generate.Run,
 	getter genericclioptions.RESTClientGetter,
@@ -37,7 +37,7 @@ func NewModuleCommand(
 	}
 
 	group.AddCommand(lint.NewLintCommand(lintRun))
-	group.AddCommand(deploy.NewDeployCommand(deployAction, getter))
+	group.AddCommand(deploy.NewDeployCommand(deployRun, getter))
 	group.AddCommand(generate.NewGenerateCommand(generateRun))
 	group.AddCommand(mock.NewMockCommand(mockRun, getter))
 

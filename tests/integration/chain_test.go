@@ -13,7 +13,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module"
+	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/crd"
@@ -120,7 +120,7 @@ func TestLintChainInvalidOptions(t *testing.T) {
 
 	g := NewWithT(t)
 
-	result, err := module.NewLinter().Run(t.Context(), linter.Options{})
+	result, err := lint.Action(t.Context(), linter.Options{})
 
 	g.Expect(errors.Is(err, moduleerrors.ErrInvalidLintOptions)).To(BeTrue())
 	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDeployOptions)).To(BeFalse())

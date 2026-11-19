@@ -63,14 +63,14 @@ func execute(
 	ctx context.Context,
 	t *testing.T,
 	lintRun lint.Run,
-	deployAction deploy.Deploy,
+	deployRun deploy.Run,
 	generateRun generate.Run,
 	getter genericclioptions.RESTClientGetter,
 	args ...string,
 ) (string, error) {
 	t.Helper()
 
-	group := NewModuleCommand(lintRun, deployAction, nil, generateRun, getter)
+	group := NewModuleCommand(lintRun, deployRun, nil, generateRun, getter)
 
 	var stdout, stderr bytes.Buffer
 	group.SetOut(&stdout)

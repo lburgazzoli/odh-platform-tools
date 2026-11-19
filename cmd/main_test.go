@@ -21,6 +21,7 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/generator"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 	modmock "github.com/lburgazzoli/odh-platform-tools/pkg/module/mock"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/exit"
 )
 
 // rootKubeconfigYAML is a standalone kubeconfig whose context carries
@@ -105,13 +106,13 @@ func execute(
 	ctx context.Context,
 	t *testing.T,
 	lintRun lint.Run,
-	deployAction deploycli.Deploy,
+	deployRun deploycli.Run,
 	generateRun generatecli.Run,
 	args ...string,
 ) (string, error) {
 	t.Helper()
 
-	root := NewRootCommand(lintRun, deployAction, nil, generateRun)
+	root := NewRootCommand(lintRun, deployRun, nil, generateRun)
 
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
@@ -490,9 +491,9 @@ func TestExitCode(t *testing.T) {
 	g.Expect(ExitCode(nil)).To(Equal(lint.ExitSuccess))
 	g.Expect(ExitCode(errors.New("flag needs an argument"))).To(Equal(lint.ExitUsage))
 	g.Expect(ExitCode(fmt.Errorf("wrapped: %w",
-		&lint.ExitError{Code: lint.ExitFailure, Err: errors.New("render")}))).To(Equal(lint.ExitFailure))
+		&exit.Error{Code: lint.ExitFailure, Err: errors.New("render")}))).To(Equal(lint.ExitFailure))
 	g.Expect(ExitCode(fmt.Errorf("wrapped: %w",
-		&deploycli.ExitError{Code: deploycli.ExitUsage, Err: errors.New("invalid options")}))).To(Equal(deploycli.ExitUsage))
+		&exit.Error{Code: deploycli.ExitUsage, Err: errors.New("invalid options")}))).To(Equal(deploycli.ExitUsage))
 	g.Expect(ExitCode(fmt.Errorf("wrapped: %w",
-		&deploycli.ExitError{Code: deploycli.ExitFailure, Err: context.Canceled}))).To(Equal(deploycli.ExitFailure))
+		&exit.Error{Code: deploycli.ExitFailure, Err: context.Canceled}))).To(Equal(deploycli.ExitFailure))
 }

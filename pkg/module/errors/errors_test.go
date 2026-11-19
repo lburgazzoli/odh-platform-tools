@@ -271,3 +271,29 @@ func TestGenerateCategoriesPreserveCancellation(t *testing.T) {
 		})
 	}
 }
+
+// TestWrapStagePassesClassifiedErrorsThrough proves WrapStage keeps
+// classified module errors and nil untouched while raw errors gain a
+// stage prefix with the cause still reachable for classification.
+func TestWrapStagePassesClassifiedErrorsThrough(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	classified := New(ErrInvalidDefinition, "public message")
+
+	g.Expect(WrapStage("run the pass", classified)).To(BeIdenticalTo(classified),
+		"a classified error is already public and passes through")
+	g.Expect(WrapStage("run the pass", nil)).To(BeNil())
+
+	cause := errors.New("raw failure")
+	wrapped := WrapStage("run the pass", fmt.Errorf("render manifests: %w", cause))
+
+	g.Expect(wrapped.Error()).To(ContainSubstring("run the pass"))
+	g.Expect(wrapped.Error()).To(ContainSubstring("render manifests"))
+	g.Expect(wrapped.Error()).To(ContainSubstring("raw failure"))
+	g.Expect(errors.Is(wrapped, cause)).To(BeTrue(),
+		"the wrapped cause keeps its identity")
+	g.Expect(errors.Is(wrapped, ErrInvalidDefinition)).To(BeFalse(),
+		"a raw error must not gain a category")
+}

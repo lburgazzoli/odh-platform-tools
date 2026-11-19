@@ -1,20 +1,21 @@
 # Architecture
 
 The tools binary provides four module commands. `cmd/` wires Cobra
-commands to action functions. `pkg/` holds the reusable services and
-never imports Cobra.
+commands to action functions; each subcommand package owns its
+default service composition (`Action`), and `cmd/main.go` wires the
+four Actions. `pkg/` holds the reusable services and never imports
+Cobra.
 
 ## Package map
 
 | Package | Responsibility |
 |---------|----------------|
 | `cmd/main.go` | Root command, signal→context, exit-code contract |
-| `cmd/module` | `module` command group |
+| `cmd/module` | `module` command group; each subcommand exposes `Run` and a default `Action` |
 | `cmd/module/lint` | `module lint` command, report output, exit classification |
 | `cmd/module/deploy` | `module deploy` command, report output, exit classification |
 | `cmd/module/generate` | `module generate` command, result output, exit classification |
 | `cmd/module/mock` | `module mock` command, option validation and cluster connection |
-| `pkg/module` | Facade wiring the default linter (`NewLinter`) |
 | `pkg/module/api` | Related-image types and the platform status object and list |
 | `pkg/module/api/v1alpha1` | `PlatformModuleDefinition` API, Scheme, generated deepcopy |
 | `pkg/module/loader` | Decode one definition document (unknown fields dropped) + placement defaults |
@@ -25,7 +26,7 @@ never imports Cobra.
 | `pkg/module/linter` | Lint action: load → render → checks |
 | `pkg/module/generator` | Generate action: strict discovery → minimal document → create-once publish |
 | `pkg/module/generator/values` | Helm values boundary: file plus ordered set expressions → JSON literals |
-| `pkg/module/linter/checks` | Check composition (`And`) |
+| `pkg/module/linter/checks` | Check composition (`And`, `Default`) |
 | `pkg/module/linter/checks/{types,deployments,crd}` | Manifest checks |
 | `pkg/module/deployer` | Deploy orchestration: staged Load/Render/Deploy/Wait |
 | `pkg/module/deployer/adapt` | Image/env injection and platform-config ConfigMap; framework ownership bridge |
@@ -35,7 +36,7 @@ never imports Cobra.
 | `pkg/module/errors` | Module error taxonomy (category sentinels) |
 | `pkg/k8s` | Shared K8s helpers: GVK identity, resource decode, containers |
 | `pkg/k8s/{configmap,deployment,crd}` | Typed builders/customizers, CRD establishment wait |
-| `pkg/util/{jq,option,retry}` | JSON path checks, functional options, bounded retry |
+| `pkg/util/{exit,jq,option,retry}` | Shared command exit contract, JSON path checks, functional options, bounded retry |
 | `config/crd` | Embedded generated CRD manifest |
 | `tests/{integration,e2e,support}` | Offline integration and live e2e suites |
 

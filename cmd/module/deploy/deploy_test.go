@@ -22,6 +22,7 @@ import (
 	deployer "github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/images"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/exit"
 
 	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
@@ -83,7 +84,7 @@ func exitCode(err error) int {
 		return ExitSuccess
 	}
 
-	var exitErr *ExitError
+	var exitErr *exit.Error
 	if errors.As(err, &exitErr) {
 		return exitErr.Code
 	}
@@ -95,7 +96,7 @@ func exitCode(err error) int {
 func executeDeploy(
 	ctx context.Context,
 	t *testing.T,
-	action Deploy,
+	action Run,
 	flags ...string,
 ) (string, string, error) {
 	t.Helper()
@@ -273,7 +274,7 @@ func TestDeployCommandRejectsEmptyFieldManager(t *testing.T) {
 	g.Expect(recorder.calls).To(Equal(0))
 
 	g.Expect(exitCode(err)).To(Equal(ExitUsage))
-	var exitErr *ExitError
+	var exitErr *exit.Error
 	g.Expect(errors.As(err, &exitErr)).To(BeTrue())
 	g.Expect(errors.Is(exitErr.Err, moduleerrors.ErrInvalidDeployOptions)).To(BeTrue())
 	g.Expect(exitErr.Err.Error()).To(Equal("invalid deploy options: FieldManager must not be empty"))
@@ -299,7 +300,7 @@ func TestDeployCommandRejectsInvalidFieldManager(t *testing.T) {
 		append(slicesClone(deployFlags), "--field-manager", "team/manager")...)
 
 	g.Expect(exitCode(err)).To(Equal(ExitUsage))
-	var exitErr *ExitError
+	var exitErr *exit.Error
 	g.Expect(errors.As(err, &exitErr)).To(BeTrue())
 	g.Expect(errors.Is(exitErr.Err, moduleerrors.ErrInvalidDeployOptions)).To(BeTrue())
 	g.Expect(exitErr.Err.Error()).To(Equal(

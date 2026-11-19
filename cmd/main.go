@@ -18,7 +18,6 @@ import (
 	generatecli "github.com/lburgazzoli/odh-platform-tools/cmd/module/generate"
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
 	mockcli "github.com/lburgazzoli/odh-platform-tools/cmd/module/mock"
-	"github.com/lburgazzoli/odh-platform-tools/pkg/module"
 )
 
 func main() {
@@ -36,10 +35,10 @@ func run() int {
 	defer stop()
 
 	command := NewRootCommand(
-		module.NewLinter().Run,
+		lint.Action,
 		deploycli.Action,
 		mockcli.Action,
-		module.NewGenerator().Run)
+		generatecli.Action)
 
 	if err := command.ExecuteContext(ctx); err != nil {
 		// Classified outcomes already wrote their report; every
@@ -60,7 +59,7 @@ func run() int {
 // NewRootCommand registers module commands and shared Kubernetes flags.
 func NewRootCommand(
 	lintRun lint.Run,
-	deployAction deploycli.Deploy,
+	deployRun deploycli.Run,
 	mockRun mockcli.Run,
 	generateRun generatecli.Run,
 ) *cobra.Command {
@@ -77,7 +76,7 @@ func NewRootCommand(
 
 	flags.AddFlags(root.PersistentFlags())
 
-	root.AddCommand(climodule.NewModuleCommand(lintRun, deployAction, mockRun, generateRun, flags))
+	root.AddCommand(climodule.NewModuleCommand(lintRun, deployRun, mockRun, generateRun, flags))
 
 	return root
 }

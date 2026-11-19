@@ -27,6 +27,7 @@ import (
 
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	modmock "github.com/lburgazzoli/odh-platform-tools/pkg/module/mock"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/exit"
 )
 
 // Run is the command's foreground controller action.
@@ -42,7 +43,13 @@ func Action(ctx context.Context, getter genericclioptions.RESTClientGetter, opti
 		return moduleerrors.New(moduleerrors.ErrMockRuntime, "could not resolve Kubernetes REST configuration", moduleerrors.WithCause(err))
 	}
 
-	return modmock.New(config, options).Run(ctx)
+	controller := modmock.New(config, options)
+
+	if err := controller.Run(ctx); err != nil {
+		return moduleerrors.WrapStage("run the mock controller", err)
+	}
+
+	return nil
 }
 
 // NewMockCommand binds the required flags to a foreground controller action.
@@ -78,15 +85,6 @@ func NewMockCommand(action Run, getter genericclioptions.RESTClientGetter) *cobr
 	return command
 }
 
-type exitError struct {
-	code  int
-	cause error
-}
-
-func (e *exitError) Error() string { return e.cause.Error() }
-func (e *exitError) Unwrap() error { return e.cause }
-func (e *exitError) ExitCode() int { return e.code }
-
 func reportError(command *cobra.Command, err error) error {
 	if err == nil {
 		return nil
@@ -98,8 +96,11 @@ func reportError(command *cobra.Command, err error) error {
 	}
 
 	if _, writeErr := fmt.Fprintln(command.ErrOrStderr(), "module mock:", err); writeErr != nil {
-		return &exitError{code: 1, cause: errors.Join(err, fmt.Errorf("write mock failure summary: %w", writeErr))}
+		return &exit.Error{
+			Code: 1,
+			Err:  errors.Join(err, fmt.Errorf("write mock failure summary: %w", writeErr)),
+		}
 	}
 
-	return &exitError{code: code, cause: err}
+	return &exit.Error{Code: code, Err: err}
 }

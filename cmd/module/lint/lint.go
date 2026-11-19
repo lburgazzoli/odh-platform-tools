@@ -10,6 +10,10 @@ import (
 
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/renderer"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/exit"
 )
 
 // Process exit statuses.
@@ -22,28 +26,22 @@ const (
 // Run is the command's lint action.
 type Run func(ctx context.Context, options linter.Options) (linter.Result, error)
 
-// ExitError carries the exit code and optional execution error.
-// Findings can fail lint without an execution error.
-type ExitError struct {
-	Code int
-	Err  error
-}
+// Action composes local loading, rendering, and the default manifest
+// checks, and runs one lint pass.
+func Action(ctx context.Context, options linter.Options) (linter.Result, error) {
+	action := linter.NewAction(
+		linter.DefinitionLoad(loader.LoadFromPath),
+		linter.ManifestRender(renderer.Render),
+		checks.Default(),
+	)
 
-// Error renders the classified outcome; the authoritative report has
-// already been written to stdout.
-func (e *ExitError) Error() string {
-	if e.Err != nil {
-		return e.Err.Error()
+	result, err := action.Run(ctx, options)
+	if err != nil {
+		return result, moduleerrors.WrapStage("run the lint pass", err)
 	}
 
-	return fmt.Sprintf("module lint: %d error-severity finding(s)", e.Code)
+	return result, nil
 }
-
-// Unwrap preserves the underlying execution error identity.
-func (e *ExitError) Unwrap() error { return e.Err }
-
-// ExitCode implements the root command's exit contract.
-func (e *ExitError) ExitCode() int { return e.Code }
 
 // Classified execution failure categories of one lint invocation.
 const (
@@ -122,7 +120,7 @@ func (o lintOptions) execute(command *cobra.Command, run Run) error {
 
 	// Preserve the action error if writing its report also fails.
 	if writeErr := writeReport(command.OutOrStdout(), o.format.String(), report); writeErr != nil {
-		return &ExitError{
+		return &exit.Error{
 			Code: ExitFailure,
 			Err:  errors.Join(err, fmt.Errorf("write report: %w", writeErr)),
 		}
@@ -133,7 +131,7 @@ func (o lintOptions) execute(command *cobra.Command, run Run) error {
 	if failure != nil {
 		if _, writeErr := fmt.Fprintf(command.ErrOrStderr(), "module lint %s: %s: %s\n",
 			o.config, category, err); writeErr != nil {
-			return &ExitError{
+			return &exit.Error{
 				Code: ExitFailure,
 				Err:  errors.Join(err, fmt.Errorf("write failure summary: %w", writeErr)),
 			}
@@ -148,5 +146,5 @@ func (o lintOptions) execute(command *cobra.Command, run Run) error {
 		return nil
 	}
 
-	return &ExitError{Code: code, Err: err}
+	return &exit.Error{Code: code, Err: err}
 }

@@ -14,6 +14,7 @@ import (
 	deployer "github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/cluster"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/exit"
 )
 
 // Process exit statuses.
@@ -30,8 +31,8 @@ const (
 	DefaultWaitTimeout = 30 * time.Second
 )
 
-// Deploy is the command's deployment action.
-type Deploy func(
+// Run is the command's deployment action.
+type Run func(
 	ctx context.Context,
 	getter genericclioptions.RESTClientGetter,
 	options deployer.Options,
@@ -57,36 +58,23 @@ func Action(
 
 	connection, err := cluster.Connect(ctx, getter)
 	if err != nil {
-		return deployer.Result{}, err
+		return deployer.Result{}, moduleerrors.WrapStage("connect to the cluster", err)
 	}
 
-	return deployer.New(
+	service := deployer.New(
 		options,
 		deployer.WithClient(connection.Client()),
-	).Apply(ctx)
-}
+	)
 
-// ExitError carries a process exit code and preserves the execution error.
-type ExitError struct {
-	Code int
-	Err  error
-}
-
-// Error renders the classified outcome; the authoritative report has
-// already been written to stdout.
-func (e *ExitError) Error() string {
-	if e.Err != nil {
-		return e.Err.Error()
+	result, err := service.Apply(ctx)
+	if err != nil {
+		// The partial result stays: attempted and completed stages
+		// drive the failure report even when the pass fails.
+		return result, moduleerrors.WrapStage("run the deploy pass", err)
 	}
 
-	return fmt.Sprintf("module deploy: exit status %d", e.Code)
+	return result, nil
 }
-
-// Unwrap preserves the underlying execution error identity.
-func (e *ExitError) Unwrap() error { return e.Err }
-
-// ExitCode reports the classified process exit status.
-func (e *ExitError) ExitCode() int { return e.Code }
 
 // Classified execution failure categories of one deploy invocation.
 const (
@@ -131,7 +119,7 @@ type deployOptions struct {
 }
 
 // NewDeployCommand binds flags to the supplied action and formats its result.
-func NewDeployCommand(action Deploy, getter genericclioptions.RESTClientGetter) *cobra.Command {
+func NewDeployCommand(action Run, getter genericclioptions.RESTClientGetter) *cobra.Command {
 	options := deployOptions{
 		format:      FormatText,
 		timeout:     DefaultTimeout,
@@ -194,7 +182,7 @@ func NewDeployCommand(action Deploy, getter genericclioptions.RESTClientGetter) 
 
 func (o deployOptions) execute(
 	command *cobra.Command,
-	action Deploy,
+	action Run,
 	getter genericclioptions.RESTClientGetter,
 ) error {
 	var result deployer.Result
@@ -238,7 +226,7 @@ func (o deployOptions) execute(
 
 	// Preserve the action error if writing its report also fails.
 	if writeErr := writeReport(command.OutOrStdout(), o.format.String(), report); writeErr != nil {
-		return &ExitError{
+		return &exit.Error{
 			Code: ExitFailure,
 			Err:  errors.Join(err, fmt.Errorf("write report: %w", writeErr)),
 		}
@@ -248,7 +236,7 @@ func (o deployOptions) execute(
 	if failure != nil {
 		if _, writeErr := fmt.Fprintf(command.ErrOrStderr(), "module deploy %s: %s: %s\n",
 			o.config, category, err); writeErr != nil {
-			return &ExitError{
+			return &exit.Error{
 				Code: ExitFailure,
 				Err:  errors.Join(err, fmt.Errorf("write failure summary: %w", writeErr)),
 			}
@@ -259,5 +247,5 @@ func (o deployOptions) execute(
 		return nil
 	}
 
-	return &ExitError{Code: code, Err: err}
+	return &exit.Error{Code: code, Err: err}
 }

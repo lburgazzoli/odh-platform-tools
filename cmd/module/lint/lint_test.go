@@ -16,6 +16,7 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/crd"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/deployments"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter/checks/types"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/exit"
 )
 
 // recordingRun is a fake action boundary recording every invocation.
@@ -44,7 +45,7 @@ func exitCode(err error) int {
 		return ExitSuccess
 	}
 
-	var exitErr *ExitError
+	var exitErr *exit.Error
 	if errors.As(err, &exitErr) {
 		return exitErr.Code
 	}

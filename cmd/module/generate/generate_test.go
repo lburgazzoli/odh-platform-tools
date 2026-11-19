@@ -21,12 +21,19 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
 	. "github.com/onsi/gomega"
 
+	"sigs.k8s.io/yaml"
+
+	toolApi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/generator"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/loader"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/util/exit"
 )
 
 // generatedDocument is a stable result payload.
@@ -58,7 +65,7 @@ func exitCode(err error) int {
 		return ExitSuccess
 	}
 
-	var exitErr *ExitError
+	var exitErr *exit.Error
 	if errors.As(err, &exitErr) {
 		return exitErr.Code
 	}
@@ -453,4 +460,118 @@ func TestGenerateCommandHelpListsFlags(t *testing.T) {
 	g.Expect(stdout).To(ContainSubstring("exactly one"))
 	g.Expect(stdout).To(ContainSubstring("created once"))
 	g.Expect(recorder.calls).To(Equal(0))
+}
+
+// exampleSource resolves one of the checked-in example module
+// sources.
+func exampleSource(t *testing.T, name string) string {
+	t.Helper()
+
+	source, err := filepath.Abs(filepath.Join("..", "..", "..", "examples", name))
+	if err != nil {
+		t.Fatalf("resolve example %s: %v", name, err)
+	}
+
+	return source
+}
+
+// TestGenerateActionInfersHelmExample proves the composed action
+// infers a complete definition from the checked-in Helm chart: the
+// lowercase CRD kind names the module, the storage version supplies
+// the GVK, and the controller fields come from the rendered
+// Deployment.
+func TestGenerateActionInfersHelmExample(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	result, err := Action(context.Background(), generator.Options{
+		SourceDir: exampleSource(t, filepath.Join("helm", "chart")),
+	})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.Output).To(Equal("stdout"))
+
+	definition := loadGenerated(t, g, result.YAML)
+
+	g.Expect(definition.Name).To(Equal("helmmodule"))
+	g.Expect(definition.Spec.Instance.Type).To(Equal(toolApi.ModuleType{
+		Group:   "components.platform.opendatahub.io",
+		Version: "v1alpha1",
+		Kind:    "HelmModule",
+	}))
+	g.Expect(definition.Spec.Instance.Name).To(Equal("helmmodule"))
+	g.Expect(definition.Spec.Manifests.Format).To(Equal(toolApi.FormatHelm))
+	g.Expect(definition.Spec.Manifests.Helm.Path).To(Equal(filepath.Join("..", "..", "..", "examples", "helm", "chart")))
+	g.Expect(definition.Spec.Controller.Deployment.Name).To(Equal("mock-controller"))
+	g.Expect(definition.Spec.Controller.Deployment.Container.Name).
+		To(Equal(toolApi.DefaultMainContainerName))
+	g.Expect(definition.Spec.Controller.Deployment.Container.Image).
+		To(Equal("quay.io/lburgazzoli/odh-platform-tools:dev"))
+}
+
+// TestGenerateActionInfersKustomizeExample proves the composed action
+// infers a complete definition from the checked-in Kustomize tree.
+func TestGenerateActionInfersKustomizeExample(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	result, err := Action(context.Background(), generator.Options{
+		SourceDir: exampleSource(t, "kustomize"),
+	})
+
+	g.Expect(err).NotTo(HaveOccurred())
+
+	definition := loadGenerated(t, g, result.YAML)
+
+	g.Expect(definition.Name).To(Equal("kustomizemodule"))
+	g.Expect(definition.Spec.Instance.Type).To(Equal(toolApi.ModuleType{
+		Group:   "components.platform.opendatahub.io",
+		Version: "v1alpha1",
+		Kind:    "KustomizeModule",
+	}))
+	g.Expect(definition.Spec.Manifests.Format).To(Equal(toolApi.FormatKustomize))
+	g.Expect(definition.Spec.Controller.Deployment.Name).To(Equal("mock-controller"))
+	g.Expect(definition.Spec.Controller.Deployment.Container.Image).
+		To(Equal("quay.io/lburgazzoli/odh-platform-tools:dev"))
+}
+
+// TestGenerateActionIsDeterministic proves repeated runs over the
+// same source produce identical bytes.
+func TestGenerateActionIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	options := generator.Options{SourceDir: exampleSource(t, "kustomize")}
+
+	first, err := Action(context.Background(), options)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	second, err := Action(context.Background(), options)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(second.YAML).To(Equal(first.YAML))
+}
+
+// loadGenerated decodes a generated document with the existing
+// loader, proving the emitted YAML is loadable as authored.
+func loadGenerated(
+	t *testing.T,
+	g *WithT,
+	document []byte,
+) toolApi.PlatformModuleDefinition {
+	t.Helper()
+
+	var generic map[string]any
+	g.Expect(yaml.Unmarshal(document, &generic)).To(Succeed())
+
+	path := filepath.Join(t.TempDir(), "module.yaml")
+	g.Expect(os.WriteFile(path, document, 0o600)).To(Succeed())
+
+	definition, err := loader.LoadFromPath(context.Background(), path)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	return definition
 }

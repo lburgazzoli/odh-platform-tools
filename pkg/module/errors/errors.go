@@ -19,6 +19,7 @@ package errors
 
 import (
 	stderrors "errors"
+	"fmt"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/util/option"
 )
@@ -155,6 +156,19 @@ func New(category error, message string, opts ...ModuleErrorOption) *ModuleError
 // Error returns the message supplied to New, exactly.
 func (e *ModuleError) Error() string {
 	return e.message
+}
+
+// WrapStage passes classified module errors through unchanged — their
+// category and public message stay authoritative — and wraps any other
+// error behind a stage message, keeping the cause reachable for
+// identity-based classification.
+func WrapStage(stage string, err error) error {
+	var moduleErr *ModuleError
+	if err == nil || stderrors.As(err, &moduleErr) {
+		return err
+	}
+
+	return fmt.Errorf(stage+": %w", err)
 }
 
 // Unwrap returns the raw cause, or nil when none was set.
