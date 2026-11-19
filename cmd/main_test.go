@@ -15,8 +15,10 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
 	deploycli "github.com/lburgazzoli/odh-platform-tools/cmd/module/deploy"
+	generatecli "github.com/lburgazzoli/odh-platform-tools/cmd/module/generate"
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
 	deployer "github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/generator"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 	modmock "github.com/lburgazzoli/odh-platform-tools/pkg/module/mock"
 )
@@ -80,17 +82,36 @@ func (r *recordingModuleDeploy) deploy(
 	return deployer.Result{}, nil
 }
 
+// recordingModuleGenerate is a fake generate action boundary recording
+// every invocation.
+type recordingModuleGenerate struct {
+	calls   int
+	options []generator.Options
+}
+
+// generate records one invocation and returns a stdout result.
+func (r *recordingModuleGenerate) generate(
+	_ context.Context,
+	options generator.Options,
+) (generator.Result, error) {
+	r.calls++
+	r.options = append(r.options, options)
+
+	return generator.Result{YAML: []byte("kind: x\n"), Output: "stdout"}, nil
+}
+
 // execute runs one root command execution with captured streams.
 func execute(
 	ctx context.Context,
 	t *testing.T,
 	lintRun lint.Run,
 	deployAction deploycli.Deploy,
+	generateRun generatecli.Run,
 	args ...string,
 ) (string, error) {
 	t.Helper()
 
-	root := NewRootCommand(lintRun, deployAction, nil)
+	root := NewRootCommand(lintRun, deployAction, nil, generateRun)
 
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
@@ -126,7 +147,7 @@ func TestRootCommandHelp(t *testing.T) {
 		lintRecorder := &recordingRun{}
 		runRecorder := &recordingModuleDeploy{}
 
-		stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, "--help")
+		stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil, "--help")
 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(stdout).To(ContainSubstring("OpenDataHub platform module tooling"))
@@ -143,7 +164,7 @@ func TestRootCommandHelp(t *testing.T) {
 		lintRecorder := &recordingRun{}
 		runRecorder := &recordingModuleDeploy{}
 
-		stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
+		stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil,
 			"module", "lint", "--help")
 
 		g.Expect(err).NotTo(HaveOccurred())
@@ -160,7 +181,7 @@ func TestRootCommandHelp(t *testing.T) {
 		lintRecorder := &recordingRun{}
 		runRecorder := &recordingModuleDeploy{}
 
-		stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
+		stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil,
 			"module", "deploy", "--help")
 
 		g.Expect(err).NotTo(HaveOccurred())
@@ -175,10 +196,33 @@ func TestRootCommandHelp(t *testing.T) {
 		g.Expect(runRecorder.calls).To(Equal(0))
 	})
 
+	t.Run("generate help", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		lintRecorder := &recordingRun{}
+		runRecorder := &recordingModuleDeploy{}
+		generateRecorder := &recordingModuleGenerate{}
+
+		stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
+			generateRecorder.generate,
+			"module", "generate", "--help")
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(stdout).To(ContainSubstring("--name"))
+		g.Expect(stdout).To(ContainSubstring("--init-container"))
+		g.Expect(stdout).To(ContainSubstring("--values-file"))
+		g.Expect(stdout).To(ContainSubstring("--output"))
+		g.Expect(lintRecorder.calls).To(Equal(0))
+		g.Expect(runRecorder.calls).To(Equal(0))
+		g.Expect(generateRecorder.calls).To(Equal(0))
+	})
+
 	t.Run("mock help stays offline", func(t *testing.T) {
 		g := NewWithT(t)
 
-		stdout, err := execute(t.Context(), t, nil, nil,
+		stdout, err := execute(t.Context(), t, nil, nil, nil,
 			"module", "mock", "--kubeconfig", filepath.Join(t.TempDir(), "missing"), "--help")
 
 		g.Expect(err).NotTo(HaveOccurred())
@@ -211,7 +255,7 @@ func TestRootMockForwardsConnectionAndClassifiesActionFailures(t *testing.T) {
 				g.Expect(getter.ToRawKubeConfigLoader().RawConfig()).Error().NotTo(HaveOccurred())
 				return scenario.err
 			}
-			root := NewRootCommand(nil, nil, closeContext)
+			root := NewRootCommand(nil, nil, closeContext, nil)
 			var stderr bytes.Buffer
 			root.SetErr(&stderr)
 			root.SetArgs([]string{
@@ -239,7 +283,7 @@ func TestRootMockRejectsInvalidFlagsBeforeResolvingKubeconfig(t *testing.T) {
 		{"--kind", "SampleModule", "--platform-configmap", "platform-config"},
 		{"--api-version", "v1", "--kind", "SampleModule", "--platform-configmap", "platform-config"},
 	} {
-		root := NewRootCommand(nil, nil, nil)
+		root := NewRootCommand(nil, nil, nil, nil)
 		root.SetErr(new(bytes.Buffer))
 		root.SetArgs(append([]string{"--kubeconfig", missingKubeconfig, "module", "mock"}, args...))
 
@@ -255,7 +299,7 @@ func TestRootCommandRejectsUnknownCommands(t *testing.T) {
 	lintRecorder := &recordingRun{}
 	runRecorder := &recordingModuleDeploy{}
 
-	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
+	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil,
 		"frobnicate", "--config", "definition.yaml")
 
 	g.Expect(err).To(HaveOccurred())
@@ -277,7 +321,7 @@ func TestRootCommandRejectsOldRunCommand(t *testing.T) {
 
 	// The old command name is unknown, not an alias: it fails as a
 	// usage error before any action, report, or cluster access.
-	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
+	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil,
 		"module", "run",
 		"--config", "definition.yaml",
 		"--platform-version", "2.19.0")
@@ -298,7 +342,7 @@ func TestRootCommandRegistersStandardFlagsOnce(t *testing.T) {
 	lintRecorder := &recordingRun{}
 	runRecorder := &recordingModuleDeploy{}
 
-	root := NewRootCommand(lintRecorder.run, runRecorder.deploy, nil)
+	root := NewRootCommand(lintRecorder.run, runRecorder.deploy, nil, nil)
 
 	// The standard flags exist exactly once, on the root's persistent
 	// flag set.
@@ -337,7 +381,7 @@ func TestRootCommandDeployForwardsStandardGetterAndContext(t *testing.T) {
 
 	ctx := t.Context()
 
-	_, err := execute(ctx, t, lintRecorder.run, runRecorder.deploy,
+	_, err := execute(ctx, t, lintRecorder.run, runRecorder.deploy, nil,
 		"module", "deploy",
 		"--config", "definition.yaml",
 		"--platform-version", "2.19.0",
@@ -364,7 +408,7 @@ func TestRootCommandNamespaceOverrideWins(t *testing.T) {
 	lintRecorder := &recordingRun{}
 	runRecorder := &recordingModuleDeploy{}
 
-	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
+	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil,
 		"module", "deploy",
 		"--config", "definition.yaml",
 		"--platform-version", "2.19.0",
@@ -388,7 +432,7 @@ func TestRootCommandLintNeverResolvesKubeconfig(t *testing.T) {
 
 	// The inherited --kubeconfig flag is parsed but never loaded:
 	// the lint action runs against a nonexistent file.
-	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
+	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil,
 		"module", "lint",
 		"--config", "definition.yaml",
 		"--kubeconfig", "/nonexistent/kubeconfig")
@@ -405,9 +449,36 @@ func TestRootCommandDeployHelpNeverResolvesKubeconfig(t *testing.T) {
 
 	t.Setenv("KUBECONFIG", "/nonexistent/kubeconfig")
 
-	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
+	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil,
 		"module", "deploy", "--help")
 	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(runRecorder.calls).To(Equal(0))
+}
+
+// TestRootCommandGenerateNeverResolvesKubeconfig proves generation is
+// cluster-independent: the inherited --kubeconfig flag is parsed but
+// never loaded, and neither lint nor deploy runs.
+func TestRootCommandGenerateNeverResolvesKubeconfig(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	lintRecorder := &recordingRun{}
+	runRecorder := &recordingModuleDeploy{}
+	generateRecorder := &recordingModuleGenerate{}
+
+	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
+		generateRecorder.generate,
+		"module", "generate",
+		"--kubeconfig", "/nonexistent/kubeconfig",
+		"source-dir")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(stdout).To(Equal("kind: x\n"))
+	g.Expect(generateRecorder.calls).To(Equal(1))
+	g.Expect(generateRecorder.options).To(Equal([]generator.Options{{
+		SourceDir: "source-dir",
+	}}))
+	g.Expect(lintRecorder.calls).To(Equal(0))
 	g.Expect(runRecorder.calls).To(Equal(0))
 }
 

@@ -3,11 +3,18 @@ package module
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
+
+	"github.com/lburgazzoli/odh-platform-tools/cmd/module/generate"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/generator"
 
 	. "github.com/onsi/gomega"
 
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	rest "k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/deploy"
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
@@ -57,12 +64,13 @@ func execute(
 	t *testing.T,
 	lintRun lint.Run,
 	deployAction deploy.Deploy,
+	generateRun generate.Run,
 	getter genericclioptions.RESTClientGetter,
 	args ...string,
 ) (string, error) {
 	t.Helper()
 
-	group := NewModuleCommand(lintRun, deployAction, nil, getter)
+	group := NewModuleCommand(lintRun, deployAction, nil, generateRun, getter)
 
 	var stdout, stderr bytes.Buffer
 	group.SetOut(&stdout)
@@ -82,12 +90,13 @@ func TestModuleCommandShowsHelp(t *testing.T) {
 	lintRecorder := &recordingRun{}
 	runRecorder := &recordingModuleDeploy{}
 
-	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
+	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil,
 		genericclioptions.NewConfigFlags(true))
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(stdout).To(ContainSubstring("lint"))
 	g.Expect(stdout).To(ContainSubstring("deploy"))
+	g.Expect(stdout).To(ContainSubstring("generate"))
 	g.Expect(stdout).To(ContainSubstring("mock"))
 	g.Expect(lintRecorder.calls).To(Equal(0))
 	g.Expect(runRecorder.calls).To(Equal(0))
@@ -101,7 +110,7 @@ func TestModuleCommandRejectsUnknownCommands(t *testing.T) {
 	lintRecorder := &recordingRun{}
 	runRecorder := &recordingModuleDeploy{}
 
-	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
+	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil,
 		genericclioptions.NewConfigFlags(true),
 		"frobnicate", "--config", "definition.yaml")
 
@@ -121,7 +130,7 @@ func TestModuleCommandRunsLint(t *testing.T) {
 	lintRecorder := &recordingRun{}
 	runRecorder := &recordingModuleDeploy{}
 
-	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy,
+	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil,
 		genericclioptions.NewConfigFlags(true),
 		"lint", "--config", "definition.yaml")
 
@@ -146,7 +155,7 @@ func TestModuleCommandRunsDeploy(t *testing.T) {
 	runNamespace := "run-namespace"
 	getter.Namespace = &runNamespace
 
-	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, getter,
+	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil, getter,
 		"deploy",
 		"--config", "definition.yaml",
 		"--platform-version", "2.19.0")
@@ -161,4 +170,117 @@ func TestModuleCommandRunsDeploy(t *testing.T) {
 	// The group forwards the root's one standard getter.
 	g.Expect(runRecorder.getters).To(HaveLen(1))
 	g.Expect(runRecorder.getters[0]).To(BeIdenticalTo(getter))
+}
+
+// recordingModuleGenerate is a fake generate action boundary recording
+// every invocation.
+type recordingModuleGenerate struct {
+	calls   int
+	options []generator.Options
+}
+
+// generate records one invocation and returns a stdout result.
+func (r *recordingModuleGenerate) generate(
+	_ context.Context,
+	options generator.Options,
+) (generator.Result, error) {
+	r.calls++
+	r.options = append(r.options, options)
+
+	return generator.Result{YAML: []byte("kind: x\n"), Output: "stdout"}, nil
+}
+
+// inaccessibleGetter fails the access paths a cluster-bound command
+// would take, proving generate never touches them.
+type inaccessibleGetter struct {
+	*genericclioptions.ConfigFlags
+}
+
+// ToRESTConfig reports access instead of a configuration.
+func (inaccessibleGetter) ToRESTConfig() (*rest.Config, error) {
+	return nil, errors.New("the getter must not be accessed")
+}
+
+// ToRawKubeConfigLoader reports access instead of a loader.
+func (inaccessibleGetter) ToRawKubeConfigLoader() clientcmd.ClientConfig {
+	return failingClientConfig{}
+}
+
+// failingClientConfig fails every raw-config access.
+type failingClientConfig struct{}
+
+// RawConfig reports access instead of a configuration.
+func (failingClientConfig) RawConfig() (clientcmdapi.Config, error) {
+	return clientcmdapi.Config{}, errors.New("the getter must not be accessed")
+}
+
+// ClientConfig reports access instead of a configuration.
+func (failingClientConfig) ClientConfig() (*rest.Config, error) {
+	return nil, errors.New("the getter must not be accessed")
+}
+
+// Namespace reports access instead of a namespace.
+func (failingClientConfig) Namespace() (string, bool, error) {
+	return "", false, errors.New("the getter must not be accessed")
+}
+
+// ConfigAccess reports access instead of an accessor.
+func (failingClientConfig) ConfigAccess() clientcmd.ConfigAccess {
+	return nil
+}
+
+// TestModuleCommandRunsGenerate proves the group forwards the source
+// argument to the generate action, which runs cluster-independently
+// over a getter that fails on access.
+func TestModuleCommandRunsGenerate(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	lintRecorder := &recordingRun{}
+	deployRecorder := &recordingModuleDeploy{}
+	generateRecorder := &recordingModuleGenerate{}
+
+	getter := inaccessibleGetter{ConfigFlags: genericclioptions.NewConfigFlags(true)}
+
+	stdout, err := execute(t.Context(), t, lintRecorder.run, deployRecorder.deploy,
+		generateRecorder.generate, getter,
+		"generate", "source-dir")
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(stdout).To(Equal("kind: x\n"))
+	g.Expect(generateRecorder.calls).To(Equal(1))
+	g.Expect(generateRecorder.options).To(Equal([]generator.Options{{SourceDir: "source-dir"}}))
+	g.Expect(lintRecorder.calls).To(Equal(0))
+	g.Expect(deployRecorder.calls).To(Equal(0))
+}
+
+// TestModuleCommandGenerateHelpListsCommand proves the group help
+// documents generate and its help lists the command without running
+// any action or touching the getter.
+func TestModuleCommandGenerateHelpListsCommand(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	lintRecorder := &recordingRun{}
+	deployRecorder := &recordingModuleDeploy{}
+	generateRecorder := &recordingModuleGenerate{}
+
+	getter := inaccessibleGetter{ConfigFlags: genericclioptions.NewConfigFlags(true)}
+
+	groupStdout, err := execute(t.Context(), t, lintRecorder.run, deployRecorder.deploy,
+		generateRecorder.generate, getter)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(groupStdout).To(ContainSubstring("generate"))
+
+	helpStdout, err := execute(t.Context(), t, lintRecorder.run, deployRecorder.deploy,
+		generateRecorder.generate, getter,
+		"generate", "--help")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(helpStdout).To(ContainSubstring("--values-file"))
+
+	g.Expect(lintRecorder.calls).To(Equal(0))
+	g.Expect(deployRecorder.calls).To(Equal(0))
+	g.Expect(generateRecorder.calls).To(Equal(0))
 }

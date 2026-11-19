@@ -15,6 +15,7 @@ import (
 
 	climodule "github.com/lburgazzoli/odh-platform-tools/cmd/module"
 	deploycli "github.com/lburgazzoli/odh-platform-tools/cmd/module/deploy"
+	generatecli "github.com/lburgazzoli/odh-platform-tools/cmd/module/generate"
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
 	mockcli "github.com/lburgazzoli/odh-platform-tools/cmd/module/mock"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module"
@@ -34,7 +35,11 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	command := NewRootCommand(module.NewLinter().Run, deploycli.Action, mockcli.Action)
+	command := NewRootCommand(
+		module.NewLinter().Run,
+		deploycli.Action,
+		mockcli.Action,
+		module.NewGenerator().Run)
 
 	if err := command.ExecuteContext(ctx); err != nil {
 		// Classified outcomes already wrote their report; every
@@ -53,7 +58,12 @@ func run() int {
 }
 
 // NewRootCommand registers module commands and shared Kubernetes flags.
-func NewRootCommand(lintRun lint.Run, deployAction deploycli.Deploy, mockRun mockcli.Run) *cobra.Command {
+func NewRootCommand(
+	lintRun lint.Run,
+	deployAction deploycli.Deploy,
+	mockRun mockcli.Run,
+	generateRun generatecli.Run,
+) *cobra.Command {
 	flags := genericclioptions.NewConfigFlags(true)
 
 	root := &cobra.Command{
@@ -67,7 +77,7 @@ func NewRootCommand(lintRun lint.Run, deployAction deploycli.Deploy, mockRun moc
 
 	flags.AddFlags(root.PersistentFlags())
 
-	root.AddCommand(climodule.NewModuleCommand(lintRun, deployAction, mockRun, flags))
+	root.AddCommand(climodule.NewModuleCommand(lintRun, deployAction, mockRun, generateRun, flags))
 
 	return root
 }

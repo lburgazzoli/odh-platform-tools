@@ -1,4 +1,4 @@
-// Package module wires the lint, deploy, and mock subcommands to their actions.
+// Package module wires the lint, deploy, generate, and mock subcommands to their actions.
 package module
 
 import (
@@ -7,6 +7,7 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/deploy"
+	"github.com/lburgazzoli/odh-platform-tools/cmd/module/generate"
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/mock"
 )
@@ -16,6 +17,7 @@ func NewModuleCommand(
 	lintRun lint.Run,
 	deployAction deploy.Deploy,
 	mockRun mock.Run,
+	generateRun generate.Run,
 	getter genericclioptions.RESTClientGetter,
 ) *cobra.Command {
 	group := &cobra.Command{
@@ -23,7 +25,9 @@ func NewModuleCommand(
 		Short: "Manage platform modules",
 		Long: "Lint checks a module definition and its rendered manifests offline. " +
 			"Deploy installs one module definition and its controller package. " +
-			"Mock runs a status-only controller for a compatible module resource.",
+			"Generate infers a module definition from local Helm or Kustomize " +
+			"manifests. Mock runs a status-only controller for a compatible " +
+			"module resource.",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			return command.Help()
@@ -34,6 +38,7 @@ func NewModuleCommand(
 
 	group.AddCommand(lint.NewLintCommand(lintRun))
 	group.AddCommand(deploy.NewDeployCommand(deployAction, getter))
+	group.AddCommand(generate.NewGenerateCommand(generateRun))
 	group.AddCommand(mock.NewMockCommand(mockRun, getter))
 
 	return group
