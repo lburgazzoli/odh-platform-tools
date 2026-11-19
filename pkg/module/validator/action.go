@@ -123,6 +123,7 @@ func (s *Service) observe(
 	// Discovery runs every cycle so a previously missing API is
 	// rediscovered.
 	resources, err := s.discovery(ctx, selectors.Module.GroupVersion().String())
+	err = downgradeRequestDeadline(ctx, err)
 	failures.record(err, fmt.Sprintf("discover API %s", selectors.Module.GroupVersion()))
 
 	switch {
@@ -141,6 +142,7 @@ func (s *Service) observe(
 		gvr := selectors.Module.GroupVersion().WithResource(resource.Name)
 
 		object, readErr := s.reader(ctx, gvr, "", selectors.ModuleName)
+		readErr = downgradeRequestDeadline(ctx, readErr)
 		snapshot.Module = failures.observation(object, readErr, fmt.Sprintf(
 			"read module %s %q", selectors.Module.Kind, selectors.ModuleName))
 	}
@@ -149,10 +151,12 @@ func (s *Service) observe(
 	// against a dead context fail fast anyway.
 	if ctx.Err() == nil {
 		object, readErr := s.reader(ctx, deploymentGVR, namespace, selectors.DeploymentName)
+		readErr = downgradeRequestDeadline(ctx, readErr)
 		snapshot.Deployment = failures.observation(object, readErr, fmt.Sprintf(
 			"read Deployment %q in namespace %q", selectors.DeploymentName, namespace))
 
 		object, readErr = s.reader(ctx, configMapGVR, namespace, selectors.ConfigMapName)
+		readErr = downgradeRequestDeadline(ctx, readErr)
 		snapshot.ConfigMap = failures.observation(object, readErr, fmt.Sprintf(
 			"read ConfigMap %q in namespace %q", selectors.ConfigMapName, namespace))
 	}

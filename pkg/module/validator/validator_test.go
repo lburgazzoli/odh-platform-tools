@@ -235,6 +235,36 @@ func TestValidateSelectors(t *testing.T) {
 			problem: "must set a nonempty group, version, and kind",
 		},
 		{
+			name: "invalid module type group",
+			selectors: func() Selectors {
+				invalid := valid
+				invalid.Module.Group = "Bad Group"
+
+				return invalid
+			}(),
+			problem: `module instance type group "Bad Group" is not valid`,
+		},
+		{
+			name: "invalid module type version",
+			selectors: func() Selectors {
+				invalid := valid
+				invalid.Module.Version = "1v-Alpha"
+
+				return invalid
+			}(),
+			problem: `module instance type version "1v-Alpha" is not valid`,
+		},
+		{
+			name: "invalid module type kind",
+			selectors: func() Selectors {
+				invalid := valid
+				invalid.Module.Kind = "Mock_Module"
+
+				return invalid
+			}(),
+			problem: `module instance type kind "Mock_Module" is not valid`,
+		},
+		{
 			name:      "invalid resolved namespace",
 			selectors: valid,
 			namespace: "Invalid_NS",

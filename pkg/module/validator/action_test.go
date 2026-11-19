@@ -297,19 +297,28 @@ func TestValidateNamespacedMappingNeverReadsCR(t *testing.T) {
 		{list: &metav1.APIResourceList{APIResources: testDiscovery(true, true).Resources}},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// The second cycle's final read cancels the caller's context, so
+	// the invocation ends on a complete observed cycle instead of
+	// racing a wall-clock budget: the retained report still shows
+	// every independent check from a fully observed cycle.
+	cluster.configMapSteps = []readStep{
+		{object: healthyConfigMap()},
+		{object: healthyConfigMap(), hook: cancel},
+	}
 
 	result, err := testService(cluster, time.Millisecond).Validate(ctx, testDefinition(), testNamespace)
 
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
+	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
 	g.Expect(cluster.moduleCalls).To(Equal(0))
 	g.Expect(cluster.deploymentCalls).To(BeNumerically(">", 0))
 	g.Expect(cluster.configMapCalls).To(BeNumerically(">", 0))
 	g.Expect(check(result, CheckModuleAPI).Status).To(Equal(StatusFail))
 	g.Expect(check(result, CheckModuleExists).Status).To(Equal(StatusSkipped))
 	g.Expect(check(result, CheckDeployment).Status).To(Equal(StatusPass))
+	g.Expect(check(result, CheckPlatformConfig).Status).To(Equal(StatusPass))
 }
 
 // TestValidateDeadline checks the caller-deadline outcome: the latest
@@ -435,6 +444,35 @@ func TestValidateDiscoveryError(t *testing.T) {
 	g.Expect(check(result, CheckModuleExists).Status).To(Equal(StatusSkipped))
 	g.Expect(check(result, CheckDeployment).Status).To(Equal(StatusPass))
 	g.Expect(cluster.moduleCalls).To(Equal(0))
+}
+
+// TestValidateRequestDeadlineIsRuntime checks that a per-request timeout
+// firing while the invocation budget is still live is a runtime failure,
+// not the invocation timeout: the context deadline identity is dropped so
+// classification cannot mistake one request's --request-timeout for the
+// overall budget. TestValidateDeadline covers the invocation deadline
+// itself, whose identity is kept.
+func TestValidateRequestDeadlineIsRuntime(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	cluster := healthyCluster()
+	cluster.discoverySteps = []discoveryStep{{err: context.DeadlineExceeded}}
+
+	result, err := testService(cluster, time.Minute).Validate(
+		context.Background(), testDefinition(), testNamespace)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeFalse(),
+		"a request-local deadline must not carry the invocation timeout identity")
+	g.Expect(errors.Is(err, moduleerrors.ErrValidateRuntime)).To(BeTrue())
+	g.Expect(err.Error()).To(ContainSubstring("context deadline exceeded"),
+		"the request deadline's diagnostic text is kept")
+
+	g.Expect(check(result, CheckModuleAPI).Status).To(Equal(StatusError))
+	g.Expect(check(result, CheckDeployment).Status).To(Equal(StatusPass))
+	g.Expect(cluster.discoveryCalls).To(Equal(1))
 }
 
 // TestValidateFreshObservations checks that a formerly passing config

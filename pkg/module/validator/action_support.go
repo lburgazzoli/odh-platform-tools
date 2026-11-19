@@ -106,6 +106,21 @@ func isContextCause(err error) bool {
 		(stderrors.Is(err, context.Canceled) || stderrors.Is(err, context.DeadlineExceeded))
 }
 
+// downgradeRequestDeadline keeps a context deadline that belongs to the
+// invocation — the caller's context is already expired — and strips the
+// identity of one that does not: a per-request timeout (the inherited
+// --request-timeout) that fired while the invocation budget is still
+// live is a runtime failure, not the invocation timeout. The diagnostic
+// text is kept; only the context identity is dropped.
+func downgradeRequestDeadline(ctx context.Context, err error) error {
+	switch {
+	case err == nil, ctx.Err() != nil, !stderrors.Is(err, context.DeadlineExceeded):
+		return err
+	}
+
+	return stderrors.New(err.Error())
+}
+
 // cycleError collects the first execution failure of one observation
 // cycle. Context causes take precedence and are returned unwrapped so
 // their identity stays discoverable; every other failure is classified

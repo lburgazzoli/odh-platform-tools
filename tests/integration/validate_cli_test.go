@@ -307,6 +307,36 @@ func TestCLIValidateStaleAndMalformedModule(t *testing.T) {
 	}
 }
 
+// TestCLIValidateRequestTimeoutIsRuntime proves a per-request timeout
+// firing while the invocation budget is still live is a runtime
+// execution failure, not the invocation timeout: the CLI fails at the
+// request deadline instead of waiting out its far longer budget.
+func TestCLIValidateRequestTimeoutIsRuntime(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	api := healthyValidateAPI()
+	api.discovery = []validateResponse{validateHeld()}
+
+	started := time.Now()
+
+	outcome := runValidateCLI(t, api, writeValidateDefinition(t),
+		"--timeout", "30s", "--request-timeout", "1s", "--output", "json")
+
+	g.Expect(outcome.exitCode).To(Equal(1))
+	g.Expect(outcome.stderr).To(ContainSubstring("runtime"))
+
+	report := validateJSONReport(t, outcome.stdout)
+
+	g.Expect(report.Failure).NotTo(BeNil())
+	g.Expect(report.Failure.Category).To(Equal("runtime"))
+
+	// The runtime failure returns at the request deadline, far inside
+	// the invocation budget.
+	g.Expect(time.Since(started)).To(BeNumerically("<", 20*time.Second))
+}
+
 // TestCLIValidateDeniedReadIsRuntime proves a forbidden read is an
 // execution failure classified as runtime, not an absence: the CLI
 // fails promptly instead of holding the finding to the budget.

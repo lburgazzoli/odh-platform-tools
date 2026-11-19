@@ -292,7 +292,8 @@ independently and never extends the invocation budget.
 
 A missing group (discovery 404) or a missing object (GET NotFound) is a
 finding and keeps waiting. Any other read error — forbidden, connection
-failure — is a runtime execution failure: the invocation returns
+failure, or a per-request timeout firing while the invocation budget is
+still live — is a runtime execution failure: the invocation returns
 promptly with the partial result instead of waiting out the budget.
 
 ### Report and exit codes

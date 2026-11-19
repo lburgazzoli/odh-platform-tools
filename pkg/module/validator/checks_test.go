@@ -991,16 +991,52 @@ func TestEvaluateDeployment(t *testing.T) {
 							"status": "False",
 							"reason": "ProgressDeadlineExceeded",
 						},
-						map[string]any{
-							"type":   "ProgressDeadlineExceeded",
-							"status": "True",
-						},
 					},
 				})
 			}),
 			status:   StatusFail,
 			field:    "status.conditions",
 			contains: "progress deadline",
+		},
+		{
+			name: "progressing false with another reason is not the deadline",
+			object: deployment(func(body map[string]any) {
+				setStatus(body, map[string]any{
+					"observedGeneration": int64(2),
+					"replicas":           int64(1),
+					"updatedReplicas":    int64(1),
+					"readyReplicas":      int64(1),
+					"availableReplicas":  int64(1),
+					"conditions": []any{
+						map[string]any{
+							"type":   "Progressing",
+							"status": "False",
+							"reason": "ReplicaSetCreateError",
+						},
+					},
+				})
+			}),
+			status: StatusPass,
+		},
+		{
+			name: "deadline reason on a progressing condition is not the deadline",
+			object: deployment(func(body map[string]any) {
+				setStatus(body, map[string]any{
+					"observedGeneration": int64(2),
+					"replicas":           int64(1),
+					"updatedReplicas":    int64(1),
+					"readyReplicas":      int64(1),
+					"availableReplicas":  int64(1),
+					"conditions": []any{
+						map[string]any{
+							"type":   "Progressing",
+							"status": "True",
+							"reason": "ProgressDeadlineExceeded",
+						},
+					},
+				})
+			}),
+			status: StatusPass,
 		},
 		{
 			name: "progress deadline not exceeded",

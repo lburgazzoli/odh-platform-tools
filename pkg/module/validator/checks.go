@@ -32,9 +32,15 @@ import (
 // phaseReady is the framework reconciler's ready phase name.
 const phaseReady = "Ready"
 
-// deploymentProgressDeadlineExceeded names the rollout failure condition
-// the apps/v1 Deployment controller reports.
+// deploymentProgressDeadlineExceeded names the rollout failure reason
+// the apps/v1 Deployment controller reports on the Progressing
+// condition: a failed rollout is Progressing=False with this reason; no
+// condition of type ProgressDeadlineExceeded exists.
 const deploymentProgressDeadlineExceeded = "ProgressDeadlineExceeded"
+
+// deploymentProgressingCondition names the rollout condition the apps/v1
+// Deployment controller maintains.
+const deploymentProgressingCondition = "Progressing"
 
 // platformVersionKey is the single platform ConfigMap data key that
 // participates in validation.
@@ -421,7 +427,7 @@ func evaluateDeployment(namespace string, selectors Selectors, observation Objec
 		findings = append(findings, violation{
 			field: "status.conditions",
 			message: "rollout has exceeded its progress deadline " +
-				"(condition ProgressDeadlineExceeded is True)",
+				"(condition Progressing is False with reason ProgressDeadlineExceeded)",
 		})
 	}
 
@@ -491,9 +497,19 @@ func observeDeploymentConditions(entries []any) (bool, []violation) {
 			})
 		}
 
+		conditionReason, reasonState := observedString(object, "reason")
+		if reasonState == fieldMalformed {
+			findings = append(findings, violation{
+				field:   field + ".reason",
+				message: field + ".reason must be a string when set",
+			})
+		}
+
 		if typeState == fieldPresent && statusState == fieldPresent &&
-			conditionType == deploymentProgressDeadlineExceeded &&
-			conditionStatus == string(metav1.ConditionTrue) {
+			conditionType == deploymentProgressingCondition &&
+			conditionStatus == string(metav1.ConditionFalse) &&
+			reasonState == fieldPresent &&
+			conditionReason == deploymentProgressDeadlineExceeded {
 			deadlineExceeded = true
 		}
 	}

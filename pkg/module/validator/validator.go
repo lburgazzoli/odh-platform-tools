@@ -26,6 +26,7 @@ import (
 
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/adapt"
@@ -130,10 +131,12 @@ func SelectorsFromDefinition(definition v1alpha1.PlatformModuleDefinition) Selec
 
 // ValidateSelectors checks the local inputs validation needs before any
 // cluster access: nonblank valid definition, instance, and Deployment
-// names; a complete custom-resource GVK; and a derived platform ConfigMap
-// name that is itself a valid object name, so an overlength definition
-// name fails locally instead of as a repeated live finding. An empty
-// namespace is allowed here; ValidateNamespace covers the resolved value.
+// names; a complete and syntactically valid custom-resource GVK (group a
+// DNS subdomain, version a DNS label, kind a DNS label ignoring case,
+// mirroring CRD validation); and a derived platform ConfigMap name that
+// is itself a valid object name, so an overlength definition name fails
+// locally instead of as a repeated live finding. An empty namespace is
+// allowed here; ValidateNamespace covers the resolved value.
 func ValidateSelectors(selectors Selectors, namespace string) error {
 	var problems []string
 
@@ -165,12 +168,34 @@ func ValidateSelectors(selectors Selectors, namespace string) error {
 		appendNameProblem("controller deployment name", selectors.DeploymentName)
 	}
 
-	if selectors.Module.Empty() ||
+	switch {
+	case selectors.Module.Empty() ||
 		strings.TrimSpace(selectors.Module.Kind) == "" ||
 		strings.TrimSpace(selectors.Module.Version) == "" ||
-		strings.TrimSpace(selectors.Module.Group) == "" {
+		strings.TrimSpace(selectors.Module.Group) == "":
 		problems = append(problems, fmt.Sprintf(
 			"module instance type %s must set a nonempty group, version, and kind", selectors.Module))
+	default:
+		// The syntax rules mirror CRD validation: the group is a DNS
+		// subdomain, the version a DNS label, and the kind a DNS label
+		// ignoring case, so a malformed GVK fails locally instead of
+		// waiting on discovery.
+		appendTypeProblem := func(field, value string, errs []string) {
+			problems = append(problems, fmt.Sprintf(
+				"module instance type %s %q is not valid: %s", field, value, strings.Join(errs, ", ")))
+		}
+
+		if errs := utilvalidation.IsDNS1123Subdomain(selectors.Module.Group); len(errs) > 0 {
+			appendTypeProblem("group", selectors.Module.Group, errs)
+		}
+
+		if errs := utilvalidation.IsDNS1035Label(selectors.Module.Version); len(errs) > 0 {
+			appendTypeProblem("version", selectors.Module.Version, errs)
+		}
+
+		if errs := utilvalidation.IsDNS1035Label(strings.ToLower(selectors.Module.Kind)); len(errs) > 0 {
+			appendTypeProblem("kind", selectors.Module.Kind, errs)
+		}
 	}
 
 	appendNameProblem("derived platform ConfigMap name", selectors.ConfigMapName)
