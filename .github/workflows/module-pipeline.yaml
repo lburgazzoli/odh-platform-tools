@@ -1,0 +1,123 @@
+# Example pipeline driving the tools binary through `go run`: generate a
+# definition from an example source, lint it, deploy both bundled
+# controller packages into a throwaway Kind cluster, and validate the
+# running modules read-only.
+#
+# The tools image is built locally with Podman and loaded into Kind —
+# nothing is ever pushed to a registry. The run is manual-only
+# (workflow_dispatch); enable the commented triggers to run it on
+# changes.
+
+name: module pipeline
+
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+  # pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # One image reference for the whole run, built by `make image`
+  # (Podman) and loaded into Kind. The run-unique tag keeps concurrent
+  # runs from sharing a reference.
+  IMAGE: quay.io/lburgazzoli/odh-platform-tools:ci-${{ github.run_id }}
+  CLUSTER: module-pipeline
+  # An explicit kubeconfig keeps the tools and kubectl on the same
+  # cluster regardless of any default kubeconfig on the runner.
+  KUBECONFIG: ${{ github.workspace }}/.kind/kubeconfig
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install Kind and kubectl
+        run: |
+          curl -sfSLO https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
+          curl -sfSLO https://dl.k8s.io/release/v1.37.0/bin/linux/amd64/kubectl
+          install -m 0755 kind-linux-amd64 /usr/local/bin/kind
+          install -m 0755 kubectl /usr/local/bin/kubectl
+
+      - name: Build the tools image
+        run: make image IMAGE_TAG="ci-${{ github.run_id }}"
+
+      - name: Create the Kind cluster and load the image
+        run: |
+          mkdir -p "$(dirname "$KUBECONFIG")"
+          podman save --format docker-archive --output tools.tar "$IMAGE"
+          KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster \
+            --name "$CLUSTER" \
+            --kubeconfig "$KUBECONFIG" \
+            --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+          KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive tools.tar --name "$CLUSTER"
+          rm tools.tar
+
+      - name: Create the target namespaces
+        run: |
+          kubectl --context "kind-$CLUSTER" create namespace odh-helm-ci
+          kubectl --context "kind-$CLUSTER" create namespace odh-kustomize-ci
+
+      - name: Generate a definition from the Helm example
+        run: |
+          mkdir -p .generated
+          go run ./cmd module generate examples/helm/chart \
+            --output .generated/helm-module.yaml
+
+      - name: Lint the generated and checked-in definitions
+        run: |
+          # The generated file records the source's absolute path, so it
+          # is an artifact for verification here; the deploy step below
+          # uses the checked-in definitions, whose manifest paths are
+          # relative.
+          go run ./cmd module lint --config .generated/helm-module.yaml
+          go run ./cmd module lint --config examples/kustomize/module.yaml
+
+      - name: Deploy both controller packages
+        run: |
+          RELATED_IMAGE_MOCK_CONTROLLER="$IMAGE" go run ./cmd module deploy \
+            --config examples/helm/chart/module.yaml \
+            --platform-version 2.19.0 \
+            --kubeconfig "$KUBECONFIG" --context "kind-$CLUSTER" \
+            --namespace odh-helm-ci --wait
+
+          RELATED_IMAGE_MOCK_CONTROLLER="$IMAGE" go run ./cmd module deploy \
+            --config examples/kustomize/module.yaml \
+            --platform-version 2.19.0 \
+            --kubeconfig "$KUBECONFIG" --context "kind-$CLUSTER" \
+            --namespace odh-kustomize-ci --wait
+
+      - name: Apply the module instances
+        run: |
+          kubectl --kubeconfig "$KUBECONFIG" --context "kind-$CLUSTER" \
+            apply -f examples/helm/instance.yaml
+          kubectl --kubeconfig "$KUBECONFIG" --context "kind-$CLUSTER" \
+            apply -f examples/kustomize/instance.yaml
+
+      - name: Validate both running modules
+        run: |
+          # --timeout raises the overall validation budget for a cold
+          # CI cluster; the default is 30s.
+          go run ./cmd module validate \
+            --config examples/helm/chart/module.yaml \
+            --kubeconfig "$KUBECONFIG" --context "kind-$CLUSTER" \
+            --namespace odh-helm-ci --timeout 120s
+
+          go run ./cmd module validate \
+            --config examples/kustomize/module.yaml \
+            --kubeconfig "$KUBECONFIG" --context "kind-$CLUSTER" \
+            --namespace odh-kustomize-ci --timeout 120s
+
+      - name: Delete the Kind cluster
+        if: always()
+        run: KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name "$CLUSTER"
