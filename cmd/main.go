@@ -43,6 +43,14 @@ func run() int {
 		validatecli.Action)
 
 	if err := command.ExecuteContext(ctx); err != nil {
+		// The opt-in diagnostic view surfaces the raw chain, including
+		// the causes classified summaries withhold. It is best effort:
+		// the failure being reported is the command's, not the
+		// diagnostic write's.
+		if debugEnabled(command) {
+			_ = writeErrorChain(os.Stderr, err)
+		}
+
 		// Classified outcomes already wrote their report; every
 		// other command or flag failure is a usage failure on stderr.
 		var coder exitCoder
@@ -78,6 +86,9 @@ func NewRootCommand(
 	}
 
 	flags.AddFlags(root.PersistentFlags())
+
+	root.PersistentFlags().Bool("debug", false,
+		"on failure, print the wrapped error chain with every cause to stderr (diagnostic output; exit codes are unaffected)")
 
 	root.AddCommand(climodule.NewModuleCommand(lintRun, deployRun, mockRun, generateRun, validateRun, flags))
 

@@ -2,6 +2,24 @@
 
 Binary: `odh-platform-tools`. Command group: `module`.
 
+## Global flags
+
+`--debug` is a root flag inherited by every module command. On failure
+it prints the wrapped error chain — every cause, including the raw
+causes classified failure summaries withhold — to stderr, one indented
+line per cause, descending into each branch of joined errors. The
+default output and the exit codes are unchanged.
+
+```
+module deploy x.yaml: runtime: applying the module resources failed
+module debug: applying the module resources failed
+module debug:   cause: failed to lookup object /opendatahub-feast-allow-egress: ...
+module debug:     cause: an empty namespace may not be set when a resource name is provided
+```
+
+The standard kubeconfig/context/namespace/auth flags are also inherited
+from the root command with kubectl semantics.
+
 ## odh-platform-tools module lint
 
 Loads one definition, renders its manifest backend offline, validates the

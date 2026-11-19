@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
 	validatecli "github.com/lburgazzoli/odh-platform-tools/cmd/module/validate"
 	deployer "github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer"
+	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/generator"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
 	modmock "github.com/lburgazzoli/odh-platform-tools/pkg/module/mock"
@@ -183,6 +185,7 @@ func TestRootCommandHelp(t *testing.T) {
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(stdout).To(ContainSubstring("OpenDataHub platform module tooling"))
 		g.Expect(stdout).To(ContainSubstring("\n  module "))
+		g.Expect(stdout).To(ContainSubstring("--debug"))
 		g.Expect(lintRecorder.calls).To(Equal(0))
 		g.Expect(runRecorder.calls).To(Equal(0))
 	})
@@ -526,6 +529,116 @@ func TestExitCode(t *testing.T) {
 		&exit.Error{Code: deploycli.ExitUsage, Err: errors.New("invalid options")}))).To(Equal(deploycli.ExitUsage))
 	g.Expect(ExitCode(fmt.Errorf("wrapped: %w",
 		&exit.Error{Code: deploycli.ExitFailure, Err: context.Canceled}))).To(Equal(deploycli.ExitFailure))
+}
+
+// TestDebugFlagPropagatesToSubcommands proves the root --debug flag is
+// parsed through subcommand execution and visible on the root's
+// persistent flag set afterwards, which is where run reads it.
+func TestDebugFlagPropagatesToSubcommands(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	lintRecorder := &recordingRun{}
+	runRecorder := &recordingModuleDeploy{}
+
+	for _, scenario := range []struct {
+		name  string
+		args  []string
+		debug bool
+	}{
+		{name: "absent", args: []string{"module", "lint", "--config", "definition.yaml"}, debug: false},
+		{name: "present", args: []string{"--debug", "module", "lint", "--config", "definition.yaml"}, debug: true},
+	} {
+		// Sequential by design: the scenarios share the recorders that
+		// the outer assertions count once both have run.
+		t.Run(scenario.name, func(t *testing.T) {
+			g := NewWithT(t)
+
+			root := NewRootCommand(lintRecorder.run, runRecorder.deploy, nil, nil, nil)
+			root.SetOut(new(bytes.Buffer))
+			root.SetErr(new(bytes.Buffer))
+			root.SetArgs(scenario.args)
+
+			g.Expect(root.ExecuteContext(t.Context())).NotTo(HaveOccurred())
+			g.Expect(debugEnabled(root)).To(Equal(scenario.debug))
+		})
+	}
+
+	g.Expect(lintRecorder.calls).To(Equal(2))
+	g.Expect(runRecorder.calls).To(Equal(0))
+}
+
+// TestWriteErrorChain proves the --debug diagnostic view: the error and
+// every wrapped cause, one indented line per cause, descending into
+// each branch of joined errors.
+func TestWriteErrorChain(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil writes nothing", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		var out bytes.Buffer
+		g.Expect(writeErrorChain(&out, nil)).To(Succeed())
+		g.Expect(out.String()).To(BeEmpty())
+	})
+
+	t.Run("plain error writes one line", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		var out bytes.Buffer
+		g.Expect(writeErrorChain(&out, errors.New("flag needs an argument"))).To(Succeed())
+
+		g.Expect(out.String()).To(Equal("module debug: flag needs an argument\n"))
+	})
+
+	t.Run("classified chain writes every cause", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		inner := errors.New("an empty namespace may not be set when a resource name is provided")
+		middle := fmt.Errorf("failed to lookup object /policy: %w", inner)
+		err := moduleerrors.New(
+			moduleerrors.ErrDeployApply,
+			"applying the module resources failed",
+			moduleerrors.WithCause(middle))
+
+		var out bytes.Buffer
+		g.Expect(writeErrorChain(&out, err)).To(Succeed())
+
+		g.Expect(out.String()).To(Equal(strings.Join([]string{
+			"module debug: applying the module resources failed",
+			"module debug:   cause: failed to lookup object /policy: " + inner.Error(),
+			"module debug:     cause: " + inner.Error(),
+			"",
+		}, "\n")))
+	})
+
+	t.Run("joined errors write each branch", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		err := errors.Join(
+			errors.New("write report failed"),
+			fmt.Errorf("deploy failed: %w", errors.New("boom")))
+
+		var out bytes.Buffer
+		g.Expect(writeErrorChain(&out, err)).To(Succeed())
+
+		lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+		g.Expect(lines).To(HaveLen(5))
+		g.Expect(lines[0]).To(Equal("module debug: write report failed"))
+		g.Expect(lines[1]).To(Equal("deploy failed: boom"))
+		g.Expect(lines[2]).To(Equal("module debug:   cause: write report failed"))
+		g.Expect(lines[3]).To(Equal("module debug:   cause: deploy failed: boom"))
+		g.Expect(lines[4]).To(Equal("module debug:     cause: boom"))
+	})
 }
 
 // TestRootCommandValidateForwardsGetterAndContext proves the fifth
