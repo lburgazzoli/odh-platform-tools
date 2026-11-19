@@ -42,7 +42,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
@@ -52,12 +54,19 @@ import (
 
 const probeAddress = ":8081"
 
-func newModuleScheme(gvk schema.GroupVersionKind) *runtime.Scheme {
+// newModuleScheme builds a fresh Scheme per invocation: the selected GVK
+// maps onto the shared ModuleObject types so the framework can read and
+// write status through its platform interfaces, the List kind backs
+// cache listing, and the corev1 types back the ConfigMap watch.
+func newModuleScheme(gvk schema.GroupVersionKind) (*runtime.Scheme, error) {
 	scheme := runtime.NewScheme()
 	scheme.AddKnownTypeWithName(gvk, &moduleapi.ModuleObject{})
 	scheme.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &moduleapi.ModuleObjectList{})
+	if err := corev1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("register ConfigMap types in the mock scheme: %w", err)
+	}
 
-	return scheme
+	return scheme, nil
 }
 
 // Controller runs the framework's status-only reconciler for one module kind.
@@ -79,7 +88,10 @@ func New(config *rest.Config, options Options) *Controller {
 	}
 }
 
-// Run serves the status-only controller until the caller cancels ctx.
+// Run serves the status-only controller in the foreground until the
+// caller cancels ctx. Cancellation is the expected shutdown path: the
+// canceled context is still returned so the command reports it and
+// exits 1, the contract for a supervised foreground controller.
 func (c *Controller) Run(ctx context.Context) error {
 	switch {
 	case ctx.Err() != nil:
@@ -90,16 +102,44 @@ func (c *Controller) Run(ctx context.Context) error {
 		return moduleerrors.New(moduleerrors.ErrInvalidMockOptions, "mock controller requires a custom resource group")
 	}
 
+	// Discovery runs before the manager is built so option and
+	// existence problems surface before the probes bind.
 	mapper, err := discoverModuleMapper(ctx, c.config, c.gvk)
 	if err != nil {
 		return err
 	}
-
-	scheme := newModuleScheme(c.gvk)
-	if err := corev1.AddToScheme(scheme); err != nil {
-		return fmt.Errorf("register mock ConfigMap watch: %w", err)
+	scheme, err := newModuleScheme(c.gvk)
+	if err != nil {
+		return err
 	}
-	ctrlManager, err := ctrl.NewManager(c.config, ctrl.Options{
+
+	ctrlManager, err := ctrl.NewManager(c.config, c.managerOptions(mapper, scheme))
+	if err != nil {
+		return moduleerrors.New(moduleerrors.ErrMockRuntime, "could not create the mock controller manager", moduleerrors.WithCause(err))
+	}
+
+	mgr := fwmanager.New(ctrlManager)
+	if err := c.registerStatusReconciler(ctx, mgr); err != nil {
+		return err
+	}
+	if err := addProbes(mgr); err != nil {
+		return err
+	}
+	if err := mgr.Start(ctx); err != nil {
+		return fmt.Errorf("run mock controller: %w", err)
+	}
+
+	return ctx.Err()
+}
+
+// managerOptions scopes the manager to this controller: the
+// pre-discovered REST mapper, health probes without metrics, and a
+// ConfigMap cache restricted to the exact platform ConfigMap. Missing
+// informers fail reads instead of silently serving an empty cache, and
+// the cache serves unstructured objects because the framework registers
+// its secondary watches that way.
+func (c *Controller) managerOptions(mapper meta.RESTMapper, scheme *runtime.Scheme) ctrl.Options {
+	return ctrl.Options{
 		Scheme: scheme,
 		MapperProvider: func(_ *rest.Config, _ *http.Client) (meta.RESTMapper, error) {
 			return mapper, nil
@@ -117,24 +157,16 @@ func (c *Controller) Run(ctx context.Context) error {
 			},
 		},
 		Client: client.Options{Cache: &client.CacheOptions{Unstructured: true}},
-	})
-	if err != nil {
-		return moduleerrors.New(moduleerrors.ErrMockRuntime, "could not create the mock controller manager", moduleerrors.WithCause(err))
 	}
-
-	mgr := fwmanager.New(ctrlManager)
-	if err := c.configure(ctx, mgr); err != nil {
-		return err
-	}
-	if err := mgr.Start(ctx); err != nil {
-		return fmt.Errorf("run mock controller: %w", err)
-	}
-
-	return ctx.Err()
 }
 
-func (c *Controller) configure(ctx context.Context, mgr ctrl.Manager) error {
-	// The bootstrap manager only initializes ProvisioningSucceeded.
+// registerStatusReconciler wires the framework reconciler for the
+// selected kind: the status action and post-status hook, the finalizer
+// disabled because the mock reports status only, and the ConfigMap
+// watch that re-reconciles every instance when the platform version
+// changes.
+func (c *Controller) registerStatusReconciler(ctx context.Context, mgr ctrl.Manager) error {
+	// The bootstrap aggregator only initializes ProvisioningSucceeded.
 	// Seeding other dependencies could change persisted Ready before the
 	// action has captured its previous status.
 	bootstrap, err := fwconditions.NewAggregator(frameworkapi.ConditionTypeProvisioningSucceeded)
@@ -154,6 +186,10 @@ func (c *Controller) configure(ctx context.Context, mgr ctrl.Manager) error {
 		return fmt.Errorf("configure mock reconciler: %w", err)
 	}
 
+	return nil
+}
+
+func addProbes(mgr ctrl.Manager) error {
 	if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
 		return fmt.Errorf("configure mock health probe: %w", err)
 	}
@@ -164,6 +200,10 @@ func (c *Controller) configure(ctx context.Context, mgr ctrl.Manager) error {
 	return nil
 }
 
+// configMapEvents enqueues the exact platform ConfigMap on create,
+// delete, and data changes. Metadata-only updates and other ConfigMaps
+// are ignored so the watch cannot loop on the controller's own
+// activity.
 func configMapEvents(key client.ObjectKey) predicate.Predicate {
 	return predicate.And(
 		predicate.NewPredicateFuncs(func(object client.Object) bool {
@@ -182,4 +222,23 @@ func configMapEventData(object client.Object) any {
 	}
 
 	return nil
+}
+
+// moduleRequests maps a platform ConfigMap change to reconcile requests
+// for every instance of the selected kind.
+func moduleRequests(reader client.Reader) handler.MapFunc {
+	return func(ctx context.Context, _ client.Object) []ctrl.Request {
+		var instances moduleapi.ModuleObjectList
+		if err := reader.List(ctx, &instances); err != nil {
+			log.FromContext(ctx).Error(err, "list module instances after platform ConfigMap change")
+			return nil
+		}
+
+		requests := make([]ctrl.Request, 0, len(instances.Items))
+		for i := range instances.Items {
+			requests = append(requests, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(&instances.Items[i])})
+		}
+
+		return requests
+	}
 }

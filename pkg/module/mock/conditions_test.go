@@ -357,8 +357,10 @@ func TestModuleSchemeIsolatesRuntimeKindsAndExposesStatusToFramework(t *testing.
 	g := NewWithT(t)
 	first := schema.GroupVersionKind{Group: "one.test", Version: "v1alpha1", Kind: "FirstModule"}
 	second := schema.GroupVersionKind{Group: "two.test", Version: "v1beta1", Kind: "SecondModule"}
-	firstScheme := newModuleScheme(first)
-	secondScheme := newModuleScheme(second)
+	firstScheme, err := newModuleScheme(first)
+	g.Expect(err).NotTo(HaveOccurred())
+	secondScheme, schemeErr := newModuleScheme(second)
+	g.Expect(schemeErr).NotTo(HaveOccurred())
 	g.Expect(firstScheme.Recognizes(second)).To(BeFalse())
 	g.Expect(secondScheme.Recognizes(first)).To(BeFalse())
 

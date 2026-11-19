@@ -33,10 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	moduleapi "github.com/lburgazzoli/odh-platform-tools/pkg/module/api"
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
@@ -168,21 +165,4 @@ func readPlatformVersion(ctx context.Context, reader client.Reader, key client.O
 	}
 
 	return version.String(), nil
-}
-
-func moduleRequests(reader client.Reader) handler.MapFunc {
-	return func(ctx context.Context, _ client.Object) []ctrl.Request {
-		var instances moduleapi.ModuleObjectList
-		if err := reader.List(ctx, &instances); err != nil {
-			log.FromContext(ctx).Error(err, "list module instances after platform ConfigMap change")
-			return nil
-		}
-
-		requests := make([]ctrl.Request, 0, len(instances.Items))
-		for i := range instances.Items {
-			requests = append(requests, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(&instances.Items[i])})
-		}
-
-		return requests
-	}
 }

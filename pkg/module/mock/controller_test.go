@@ -223,7 +223,8 @@ func TestConfigMapEventsEnqueueTheDiscoveredInstanceForDataChanges(t *testing.T)
 	g.Expect(filter.Create(event.CreateEvent{Object: unrelated})).To(BeFalse())
 
 	gvk := schema.GroupVersionKind{Group: "testing.example.org", Version: "v1", Kind: "SelectedModule"}
-	scheme := newModuleScheme(gvk)
+	scheme, err := newModuleScheme(gvk)
+	g.Expect(err).NotTo(HaveOccurred())
 	obj := &moduleapi.ModuleObject{Name: "discovered-singleton"}
 	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(obj).Build()
 
