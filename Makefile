@@ -99,7 +99,7 @@ vulncheck: ## Run vulnerability check
 .PHONY: verify
 verify: fmt-check vet lint test ## Run all offline quality checks
 
-##@ Image
+##@ Container
 
 IMAGE_REGISTRY ?= quay.io/lburgazzoli
 IMAGE_NAME     ?= odh-platform-tools
@@ -107,10 +107,14 @@ IMAGE_TAG      ?= dev
 
 export IMAGE_REGISTRY IMAGE_NAME IMAGE_TAG
 
-.PHONY: image
-image: ## Build the tool image for the host platform
+.PHONY: container-build
+container-build: ## Build the tool image for the host platform
 	./hack/scripts/image.sh build --registry "$$IMAGE_REGISTRY" --name "$$IMAGE_NAME" --tag "$$IMAGE_TAG"
 
-.PHONY: image/multiarch
-image/multiarch: ## Build a local linux/amd64 + linux/arm64 manifest list
+.PHONY: container-build/multiarch
+container-build/multiarch: ## Build a local linux/amd64 + linux/arm64 manifest list
 	./hack/scripts/image.sh multiarch --registry "$$IMAGE_REGISTRY" --name "$$IMAGE_NAME" --tag "$$IMAGE_TAG"
+
+.PHONY: container-push
+container-push: ## Push the built tool image or manifest list
+	./hack/scripts/image.sh push --registry "$$IMAGE_REGISTRY" --name "$$IMAGE_NAME" --tag "$$IMAGE_TAG"

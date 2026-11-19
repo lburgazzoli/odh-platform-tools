@@ -53,13 +53,15 @@ GOFLAGS="-p=1" make -j1 fmt
 GOFLAGS="-p=1" make -j1 build verify test-integration test-e2e-compile
 make generate     # deepcopy
 make manifests    # CRD (tracked; rerun after API edits)
-make image        # native-platform container image (Podman only)
-make image/multiarch  # local linux/amd64 + linux/arm64 manifest list
+make container-build            # native-platform container image (Podman only)
+make container-build/multiarch  # local linux/amd64 + linux/arm64 manifest list
+make container-push             # push a built image or manifest list
 ```
 
 ## Image builds
 
-- Podman only; no Docker path, no push target — images stay local.
+- Podman only; no Docker path. Images stay local until
+  `make container-push` explicitly pushes the composed reference.
 - `IMAGE_REGISTRY`/`IMAGE_NAME`/`IMAGE_TAG` override the default reference
   `quay.io/lburgazzoli/odh-platform-tools:dev`.
 - Make recipes stay one-line delegations to `hack/scripts/image.sh`; new

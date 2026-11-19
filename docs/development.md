@@ -28,16 +28,18 @@ Run gates serialized on constrained hosts: `GOFLAGS="-p=1" make -j1 <target>`.
 | `make verify` | fmt-check + vet + lint + test |
 | `make generate` | Deepcopy code (controller-gen) |
 | `make manifests` | Module definition CRD (controller-gen) |
-| `make image` | Container image for the host platform (Podman) |
-| `make image/multiarch` | Local linux/amd64 + linux/arm64 manifest list |
+| `make container-build` | Container image for the host platform (Podman) |
+| `make container-build/multiarch` | Local linux/amd64 + linux/arm64 manifest list |
+| `make container-push` | Push a built image or manifest list |
 
 ## Container images
 
-Local CLI images are built with Podman only. There is no Docker path, no
-push target, and nothing is ever published — images and manifest lists stay
-in local storage. Public base images and Go modules need network access on
-first use; "offline" elsewhere in this repo refers to runtime lint behavior,
-not an uncached image build.
+Local CLI images are built with Podman only. There is no Docker path.
+Images and manifest lists stay in local storage until `make
+container-push` explicitly pushes the composed reference — pushing is
+opt-in, never a side effect of building. Public base images and Go
+modules need network access on first use; "offline" elsewhere in this
+repo refers to runtime lint behavior, not an uncached image build.
 
 The root `Containerfile` has two stages:
 
@@ -51,18 +53,21 @@ The root `Containerfile` has two stages:
   toolchain, non-root UID 1001, writable `HOME=/home/default`, and the
   exec-form entrypoint `/usr/local/bin/odh-platform-tools`.
 
-`make image` builds for the host's native platform; `make image/multiarch`
-builds a local manifest list with exactly one linux/amd64 and one
-linux/arm64 entry. The Make variables `IMAGE_REGISTRY`, `IMAGE_NAME`, and
-`IMAGE_TAG` default to `quay.io/lburgazzoli`, `odh-platform-tools`, and
-`dev`, and compose the image reference `<registry>/<name>:<tag>`.
+`make container-build` builds for the host's native platform; `make
+container-build/multiarch` builds a local manifest list with exactly one
+linux/amd64 and one linux/arm64 entry, and `make container-push` pushes
+whatever was built at the composed reference. The Make variables
+`IMAGE_REGISTRY`, `IMAGE_NAME`, and `IMAGE_TAG` default to
+`quay.io/lburgazzoli`, `odh-platform-tools`, and `dev`, and compose the
+image reference `<registry>/<name>:<tag>`.
 
 Both targets are thin one-line recipes that delegate to
 `hack/scripts/image.sh`, where all branching and validation live:
 
 ```
-hack/scripts/image.sh build    --registry <registry> --name <name> --tag <tag>
+hack/scripts/image.sh build     --registry <registry> --name <name> --tag <tag>
 hack/scripts/image.sh multiarch --registry <registry> --name <name> --tag <tag>
+hack/scripts/image.sh push      --registry <registry> --name <name> --tag <tag>
 ```
 
 New image logic belongs in `hack/scripts/` (POSIX `sh`, Apache-2.0 header),

@@ -14,11 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Build the odh-platform-tools container image locally with Podman.
-# Nothing is ever pushed to a registry.
+# Build and push the odh-platform-tools container image with Podman.
+# Images stay in local storage until the push command explicitly
+# uploads the composed reference; nothing else ever leaves the machine.
 #
-# usage: image.sh build    [--registry VALUE] [--name VALUE] [--tag VALUE]
+# usage: image.sh build     [--registry VALUE] [--name VALUE] [--tag VALUE]
 #        image.sh multiarch [--registry VALUE] [--name VALUE] [--tag VALUE]
+#        image.sh push      [--registry VALUE] [--name VALUE] [--tag VALUE]
 #
 # The repository root is resolved from this script's location, so the
 # script works from any working directory.
@@ -31,15 +33,17 @@ DEFAULT_TAG=dev
 
 usage() {
   cat >&2 <<EOF
-usage: $SCRIPT_NAME build [--registry VALUE] [--name VALUE] [--tag VALUE]
+usage: $SCRIPT_NAME build     [--registry VALUE] [--name VALUE] [--tag VALUE]
        $SCRIPT_NAME multiarch [--registry VALUE] [--name VALUE] [--tag VALUE]
+       $SCRIPT_NAME push      [--registry VALUE] [--name VALUE] [--tag VALUE]
 
-Build the odh-platform-tools image locally with Podman. Nothing is
-pushed to any registry.
+Build and push the odh-platform-tools image with Podman. Images stay
+local until push is asked for explicitly.
 
 commands:
   build      build the image for the host's native platform
   multiarch  build a local manifest list for linux/amd64 and linux/arm64
+  push       push the built image or manifest list at the composed reference
 
 options:
   --registry VALUE   image registry (default: $DEFAULT_REGISTRY)
@@ -81,7 +85,7 @@ command_name=$1
 shift
 
 case $command_name in
-  build | multiarch) ;;
+  build | multiarch | push) ;;
   *) unknown "unknown command: $command_name" ;;
 esac
 
@@ -171,5 +175,23 @@ case $command_name in
     "$podman_bin" manifest rm "$reference" >/dev/null 2>&1 || true
     "$podman_bin" tag "$temp_reference" "$reference"
     "$podman_bin" manifest rm "$temp_reference" >/dev/null 2>&1 || true
+    ;;
+  push)
+    # Push whatever local artifact owns the reference — a manifest
+    # list via "manifest push", a single-architecture image via
+    # "push" — without building anything: build first with "build" or
+    # "multiarch". This is the only command that ever leaves the
+    # machine, and it only ever touches the composed reference.
+    if "$podman_bin" manifest exists "$reference" >/dev/null 2>&1; then
+      exec "$podman_bin" manifest push "$reference"
+    fi
+    if "$podman_bin" image exists "$reference" >/dev/null 2>&1; then
+      exec "$podman_bin" push "$reference"
+    fi
+
+    printf '%s: no local image or manifest list at %s.\n' \
+      "$SCRIPT_NAME" "$reference" >&2
+    printf '%s: build one first with "build" or "multiarch".\n' "$SCRIPT_NAME" >&2
+    exit 1
     ;;
 esac

@@ -27,7 +27,7 @@ kubeconfig="$demo_dir/kubeconfig"
 
 setup_mock_demo() {
   test -d "$demo_dir" &&
-  make image IMAGE_REGISTRY="$image_registry" IMAGE_NAME="$image_name" IMAGE_TAG="$tag" &&
+  make container-build IMAGE_REGISTRY="$image_registry" IMAGE_NAME="$image_name" IMAGE_TAG="$tag" &&
   podman save --format docker-archive --output "$demo_dir/tools.tar" "$image" &&
   KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster --name "$cluster" --kubeconfig "$kubeconfig" &&
   touch "$demo_dir/cluster-created" &&

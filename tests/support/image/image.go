@@ -105,7 +105,7 @@ func (i *Controller) buildAndExport(ctx context.Context, root string) error {
 
 	// A failed build may still have assigned the tag, so claim it before make.
 	i.ownsTag = true
-	if _, err := i.run(ctx, "make", "-C", root, "IMAGE_REGISTRY="+registry, "IMAGE_NAME="+repository, "IMAGE_TAG="+tag, "image"); err != nil {
+	if _, err := i.run(ctx, "make", "-C", root, "IMAGE_REGISTRY="+registry, "IMAGE_NAME="+repository, "IMAGE_TAG="+tag, "container-build"); err != nil {
 		return fmt.Errorf("building controller image %s: %w", i.reference, err)
 	}
 

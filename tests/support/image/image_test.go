@@ -67,7 +67,7 @@ func TestManagedImageBuildsAndCleansOneExactTagAndArchive(t *testing.T) {
 	g.Expect(result.Archive()).To(BeARegularFile())
 	g.Expect(script.calls).To(Equal([][]string{
 		{"podman", "image", "exists", script.reference},
-		{"make", "-C", root, "IMAGE_REGISTRY=quay.io/lburgazzoli", "IMAGE_NAME=odh-platform-tools", "IMAGE_TAG=" + strings.TrimPrefix(script.reference, registry+"/"+repository+":"), "image"},
+		{"make", "-C", root, "IMAGE_REGISTRY=quay.io/lburgazzoli", "IMAGE_NAME=odh-platform-tools", "IMAGE_TAG=" + strings.TrimPrefix(script.reference, registry+"/"+repository+":"), "container-build"},
 		{"podman", "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", script.reference},
 		{"podman", "save", "--format", "docker-archive", "--output", script.archive, script.reference},
 	}))
