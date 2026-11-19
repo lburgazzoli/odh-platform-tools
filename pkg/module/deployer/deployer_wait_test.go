@@ -233,6 +233,15 @@ func waitOptions() Options {
 	return options
 }
 
+// waitProblemOptions returns wait settings with a short budget, for
+// tests that drive the poll to expiry through a persistent problem.
+func waitProblemOptions() Options {
+	options := waitOptions()
+	options.WaitTimeout = 250 * time.Millisecond
+
+	return options
+}
+
 // newWaitDeployer wires the real-operation harness for a wait: the
 // given definition and chart template variants render the payload,
 // and polling goes through the fixture client.
@@ -837,8 +846,10 @@ func TestWaitTimeoutIsRuntimeError(t *testing.T) {
 	g.Expect(fixture.gets).To(ContainElement(waitTargetIdentity("run-namespace", "synthetic-controller")))
 }
 
-// TestWaitAPIErrorFails proves an API failure on observation fails
-// the wait with its cause preserved and the deploy facts retained.
+// TestWaitAPIErrorFails proves a persistent API failure on observation
+// never decides the wait by itself: the poll keeps observing until the
+// budget expires, and the failure then reports the problem with its
+// cause preserved and the deploy facts retained.
 func TestWaitAPIErrorFails(t *testing.T) {
 	t.Parallel()
 
@@ -847,11 +858,12 @@ func TestWaitAPIErrorFails(t *testing.T) {
 	cause := errors.New("api failure")
 
 	fixture := newPrepareCluster(t)
+	// A lone trailing frame repeats: every observation fails.
 	fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = []waitFrame{
 		{err: apierrors.NewInternalError(cause)},
 	}
 
-	target := newWaitDeployer(t, waitOptions(), fixture,
+	target := newWaitDeployer(t, waitProblemOptions(), fixture,
 		literalControllerDefinitionYAML, composeTemplateYAML)
 	deployed(t, target)
 
@@ -862,6 +874,13 @@ func TestWaitAPIErrorFails(t *testing.T) {
 	g.Expect(apierrors.IsInternalError(err)).To(BeTrue())
 	g.Expect(errors.Is(err, moduleerrors.ErrRolloutWait)).To(BeTrue())
 	g.Expect(errors.Is(err, moduleerrors.ErrOwnerPreparation)).To(BeFalse())
+	// The budget outcome and the most recent problem are both
+	// reported, the problem through its classified summary only.
+	g.Expect(err.Error()).To(ContainSubstring("budget expired"))
+	g.Expect(err.Error()).To(ContainSubstring(
+		"observing deployment run-namespace/synthetic-controller failed: InternalError"))
+	// The problem never decided the wait: observations kept polling.
+	g.Expect(len(fixture.gets)).To(BeNumerically(">=", 2))
 
 	g.Expect(target.applied).To(BeTrue())
 	g.Expect(target.owner).NotTo(BeNil())
@@ -885,7 +904,7 @@ func TestWaitErrorIsSafeText(t *testing.T) {
 		{err: apierrors.NewInternalError(errors.New(marker))},
 	}
 
-	target := newWaitDeployer(t, waitOptions(), fixture,
+	target := newWaitDeployer(t, waitProblemOptions(), fixture,
 		literalControllerDefinitionYAML, composeTemplateYAML)
 	deployed(t, target)
 
@@ -900,6 +919,56 @@ func TestWaitErrorIsSafeText(t *testing.T) {
 	g.Expect(apierrors.IsInternalError(err)).To(BeTrue())
 	g.Expect(status.Error()).To(ContainSubstring(marker))
 	g.Expect(errors.Is(err, moduleerrors.ErrRolloutWait)).To(BeTrue())
+}
+
+// TestWaitToleratesTransientObservationError proves one failed
+// observation is a problem, not a verdict: the wait keeps polling and
+// completes once a later observation reports the rollout.
+func TestWaitToleratesTransientObservationError(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	fixture := newPrepareCluster(t)
+	fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = []waitFrame{
+		{err: apierrors.NewInternalError(errors.New("transient"))},
+		{live: waitLive(t, waitDeployment(nil))},
+	}
+
+	target := newWaitDeployer(t, waitOptions(), fixture,
+		literalControllerDefinitionYAML, composeTemplateYAML)
+	deployed(t, target)
+
+	g.Expect(target.Wait(t.Context())).To(Succeed())
+	g.Expect(target.waitCompleted).To(BeTrue())
+	g.Expect(len(fixture.gets)).To(BeNumerically(">=", 2))
+}
+
+// TestWaitSupersededProblemNotReported proves a problem a later clean
+// observation superseded is noise, not the verdict: the wait fails on
+// the budget alone and the failure names no observation problem.
+func TestWaitSupersededProblemNotReported(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	fixture := newPrepareCluster(t)
+	fixture.frames[waitTargetIdentity("run-namespace", "synthetic-controller")] = []waitFrame{
+		{err: apierrors.NewInternalError(errors.New("transient"))},
+		{live: waitLive(t, waitDeployment(func(d *appsv1.Deployment) {
+			d.Status.AvailableReplicas = 0
+		}))},
+	}
+
+	target := newWaitDeployer(t, waitProblemOptions(), fixture,
+		literalControllerDefinitionYAML, composeTemplateYAML)
+	deployed(t, target)
+
+	err := target.Wait(t.Context())
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, moduleerrors.ErrRolloutWait)).To(BeTrue())
+	g.Expect(err.Error()).To(ContainSubstring("budget expired"))
+	g.Expect(err.Error()).NotTo(ContainSubstring("observing deployment"))
 }
 
 // TestApplyRejectsNegativeWaitTimeout proves a negative wait budget on

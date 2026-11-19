@@ -72,6 +72,12 @@ Report: status (`applied` | `failed`), confirmed owner identity, attempted
 and completed stages, `applyCompleted`, wait state, and classified
 `failure`. A missing owner means unconfirmed, not that no write occurred.
 
+With `--wait`, one failed observation is a problem, not a verdict: the
+poll keeps observing under the `--wait-timeout` budget, and a wait that
+fails reports the budget outcome plus the most recent observation
+problem (classified summary only; `--debug` shows the raw cause). A
+problem a later clean observation superseded is not reported.
+
 ### Related-images file
 
 `--related-images-file` accepts YAML regardless of the file name extension.

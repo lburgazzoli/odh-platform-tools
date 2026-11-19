@@ -34,7 +34,10 @@ import (
 // Wait observes matching controller Deployments after a successful Deploy.
 // Targets are deduplicated by namespace/name and judged by kubectl rollout
 // semantics under one shared budget. Missing, replaced, or terminating
-// objects remain pending; a failed wait retains the completed apply.
+// objects remain pending. A failed observation is a problem, not a
+// verdict: the wait keeps polling under the budget, and a wait that
+// fails reports the most recent problem alongside the budget outcome.
+// A failed wait retains the completed apply.
 func (r *Deployer) Wait(ctx context.Context) error {
 	if r.stage != stageDeployed {
 		return moduleerrors.New(
@@ -104,30 +107,61 @@ func (r *Deployer) selectWaitTargets() []types.NamespacedName {
 }
 
 func (r *Deployer) observeUntilRolledOut(ctx context.Context) error {
+	// lastProblem carries the most recent observation problem into the
+	// failure report. Each observation resets it: a problem a later
+	// observation superseded is noise, not the verdict.
+	var lastProblem *waitObservationProblem
+
 	err := wait.PollUntilContextTimeout(
 		ctx,
 		r.options.WaitPollInterval,
 		r.options.WaitTimeout,
 		true,
-		r.observeRolledOut,
+		func(ctx context.Context) (bool, error) {
+			rolledOut, problem := r.observeRollout(ctx)
+			lastProblem = problem
+
+			// One failed observation does not decide the wait: the
+			// poll continues under the shared budget, and the problem
+			// is reported only if the wait ends while observations
+			// keep failing.
+			if problem != nil {
+				return false, nil
+			}
+
+			return rolledOut, nil
+		},
 	)
 	if err == nil {
 		return nil
 	}
 
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		message := fmt.Sprintf(
+			"waiting for module %s controller rollout failed: the wait was cancelled or its budget expired",
+			r.definition.Name)
+		cause := err
+
+		if lastProblem != nil {
+			message += "; " + safeFailureMessage(lastProblem.operation, lastProblem)
+			cause = errors.Join(err, lastProblem)
+		}
+
 		return moduleerrors.New(
 			moduleerrors.ErrRolloutWait,
-			fmt.Sprintf("waiting for module %s controller rollout failed: the wait was cancelled or its budget expired",
-				r.definition.Name),
-			moduleerrors.WithCause(err),
+			message,
+			moduleerrors.WithCause(cause),
 		)
 	}
 
 	return err
 }
 
-func (r *Deployer) observeRolledOut(ctx context.Context) (bool, error) {
+// observeRollout reports whether every wait target is rolled out. A
+// failed observation is returned as a problem for the caller to
+// remember and report, never as a verdict: one failed GET or rollout
+// status check does not decide the wait.
+func (r *Deployer) observeRollout(ctx context.Context) (bool, *waitObservationProblem) {
 	viewer := &polymorphichelpers.DeploymentStatusViewer{}
 
 	rolledOut := true
@@ -143,12 +177,11 @@ func (r *Deployer) observeRolledOut(ctx context.Context) (bool, error) {
 				continue
 			}
 
-			return false, moduleerrors.New(
-				moduleerrors.ErrRolloutWait,
-				fmt.Sprintf("waiting for deployment %s/%s failed: the observation failed",
+			return false, &waitObservationProblem{
+				operation: fmt.Sprintf("observing deployment %s/%s failed",
 					target.Namespace, target.Name),
-				moduleerrors.WithCause(err),
-			)
+				cause: err,
+			}
 		}
 
 		if live.GetDeletionTimestamp() != nil {
@@ -158,12 +191,11 @@ func (r *Deployer) observeRolledOut(ctx context.Context) (bool, error) {
 
 		_, done, err := viewer.Status(live, 0)
 		if err != nil {
-			return false, moduleerrors.New(
-				moduleerrors.ErrRolloutWait,
-				fmt.Sprintf("waiting for deployment %s/%s failed: the rollout status check failed",
+			return false, &waitObservationProblem{
+				operation: fmt.Sprintf("checking the rollout status of deployment %s/%s failed",
 					target.Namespace, target.Name),
-				moduleerrors.WithCause(err),
-			)
+				cause: err,
+			}
 		}
 
 		if !done {
@@ -172,4 +204,23 @@ func (r *Deployer) observeRolledOut(ctx context.Context) (bool, error) {
 	}
 
 	return rolledOut, nil
+}
+
+// waitObservationProblem reports one failed observation during the
+// rollout wait: the operation that failed, carrying the target
+// identity, and the raw cause. It never fails the wait by itself; the
+// wait keeps polling under its budget and reports the most recent
+// problem when it fails. Error echoes the raw cause for the diagnostic
+// chain; the public summary goes through safeFailureMessage.
+type waitObservationProblem struct {
+	operation string
+	cause     error
+}
+
+func (p *waitObservationProblem) Error() string {
+	return p.operation + ": " + p.cause.Error()
+}
+
+func (p *waitObservationProblem) Unwrap() error {
+	return p.cause
 }
