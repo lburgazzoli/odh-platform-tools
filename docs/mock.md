@@ -135,27 +135,35 @@ metadata:
         severity: Info
 ```
 
-- Each entry requires a unique Kubernetes condition `type` and a `status`
-  of `True`, `False`, or `Unknown`. Optional fields are `reason`, `message`,
-  `severity`, `observedGeneration`, and `lastTransitionTime`. Use a
-  nonnegative integer for the generation and a nonzero RFC3339 timestamp.
-  Unknown fields, null values, duplicate keys or types, and malformed
-  documents invalidate the whole annotation.
+- Each entry requires a Kubernetes condition `type` and a `status` of
+  `True`, `False`, or `Unknown`. Optional fields are `reason`, `message`,
+  and `severity`. The annotation must be exactly one YAML or JSON
+  document. `Ready` and `ProvisioningSucceeded` are reserved;
+  `ProvisioningSucceeded` reports the actual reconciliation pipeline
+  result.
+- Every other field is ignored regardless of its value. This is a
+  migration from earlier versions: `observedGeneration`,
+  `lastTransitionTime`, and `lastHeartbeatTime` are no longer honored as
+  controls, and unknown fields of any shape are dropped rather than
+  rejected. Generation and transition times remain in the emitted status
+  as controller-owned outputs (see below); `lastHeartbeatTime` is a
+  deprecated field the platform clears.
+- Repeated condition types keep the last whole entry; earlier entries of
+  the same type are not merged. Duplicate mapping keys, merge keys, and
+  aliases follow ordinary YAML and JSON decoder semantics.
 - Entries override `MockReady=True` and `Degraded=False` or add custom
   conditions. An empty sequence or an absent annotation restores the
   defaults. A present blank annotation is invalid. Removing a custom entry removes that condition from status.
 - The framework derives `Ready` from the current conditions. `Degraded`
   is healthy at `False`, and other types are healthy at `True`.
-  `Info` conditions are excluded from readiness. `Ready` and
-  `ProvisioningSucceeded` are reserved. `ProvisioningSucceeded` reports
-  the actual reconciliation pipeline result.
-- An empty or omitted reason becomes the type plus status, such as
-  `MockReadyFalse`. An empty or omitted message uses the resolved reason.
-- An omitted condition generation uses the CR's current
-  `metadata.generation`. A supplied zero is honored and may serialize as
-  absent. Automatic transition times stay fixed while a condition's
-  final status stays the same. Supplied times are honored at the
-  Kubernetes API's whole-second precision.
+  `Info` conditions are excluded from readiness.
+- An omitted or empty reason becomes the type plus status, such as
+  `MockReadyFalse`. An omitted or empty message uses the resolved reason.
+- The controller owns all observation metadata. Every condition's
+  `observedGeneration` is the processed CR's `metadata.generation`, and
+  transition times are stamped at whole-second UTC precision. A
+  condition keeps its `lastTransitionTime` while its final status stays
+  the same, so reason, message, and dependency changes do not move it.
 - Top-level `status.observedGeneration` uses the processed CR's
   generation on every pass. `status.phase` is `Ready` or `Not Ready`
   according to the derived `Ready` condition.
@@ -166,13 +174,22 @@ and publishes the normalized semantic version in a `status.releases`
 entry named `platform`, even when a valid condition override makes the
 module unready.
 
-An invalid annotation reports `MockReady=False` and `Degraded=True` with
-reason `InvalidMockAnnotation`. With a valid annotation, a missing
-ConfigMap or missing, blank, or invalid version reports the same
-conditions with reason `InvalidPlatformConfiguration`. These input
-failures drop stale custom conditions and keep the last valid persisted
-release, if one exists. Correct the input to resume normal status
-reporting. Actual API failures follow the framework's error handling.
+Input errors fail the framework's provisioning instead of producing
+special mock conditions. A malformed annotation — or a missing
+ConfigMap, or missing, blank, or invalid `data.platformVersion` — makes
+the controller return a classified error: the framework reports
+`ProvisioningSucceeded=False` with that message, derives `Ready=False`
+and phase `Not Ready`, records a warning `ProvisioningError` event, and
+retries automatically. On any input failure the controller installs only
+the healthy `MockReady=True` and `Degraded=False` defaults — these do not
+imply overall readiness while `ProvisioningSucceeded` is `False` — drops
+previously injected custom conditions, and keeps the last valid persisted
+release, if one exists. A valid annotation is never partly applied when
+the platform version cannot be resolved, and an invalid annotation is
+reported before the ConfigMap is read. Correcting the input resumes
+normal status reporting; a simulated unready status from a valid
+annotation keeps `ProvisioningSucceeded=True` and is not an error. Actual
+API failures follow the framework's error handling.
 
 The manager serves process probes on port 8081 at `/healthz` and
 `/readyz` independently of the simulated conditions. The same command runs the

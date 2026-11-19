@@ -103,12 +103,15 @@ and the named ConfigMap in the resolved controller namespace. A
 ConfigMap change queues the module instance through the same framework
 reconciler as a module annotation change.
 
-The action evaluates the condition annotation and platform version,
-then supplies the current dependent conditions and release. The
-framework reports the actual pipeline result as
+The action reads the condition annotation and platform version and
+supplies the current dependent conditions and release; input failures
+return classified errors, so the framework reports provisioning failure
+and retries instead of the controller synthesizing failure conditions.
+The framework reports the actual pipeline result as
 `ProvisioningSucceeded`, drops stale conditions, and derives `Ready`
-and phase. The post-status hook normalizes observation metadata before
-the framework applies status. The controller leaves the instance spec
+and phase. The post-status hook stamps the automatic observation
+metadata — generation and transition times — before the framework
+applies status. The controller leaves the instance spec
 and lifecycle to the caller. [Mock status contract](mock.md#conditions-and-platform-version)
 
 ## Design rules
