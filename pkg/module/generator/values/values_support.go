@@ -67,7 +67,7 @@ func parseDocument(data []byte) (map[string]any, error) {
 		return nil, trailingErr
 	}
 
-	converted, err := convertNode(&document, make(map[*yaml.Node]bool))
+	converted, err := convertNode(&document, make(map[*yaml.Node]bool), newConversionBudget(&document))
 	if err != nil {
 		return nil, err
 	}
@@ -80,29 +80,88 @@ func parseDocument(data []byte) (map[string]any, error) {
 	return mapping, nil
 }
 
+// conversionBudget bounds node conversions during alias expansion.
+// The visiting set only guards cycles, so an acyclic alias graph can
+// otherwise expand exponentially; the allowance is generous linear
+// headroom over the document's distinct node count, keeping moderate
+// anchor reuse working while exploding graphs fail fast with a
+// message that carries no document content.
+type conversionBudget struct {
+	remaining int
+}
+
+// conversionHeadroom multiplies the document's node count to form
+// the allowance; conversionBase keeps tiny documents usable.
+const (
+	conversionHeadroom = 20
+	conversionBase     = 1000
+)
+
+// newConversionBudget sizes one document's conversion allowance.
+func newConversionBudget(node *yaml.Node) *conversionBudget {
+	counted := make(map[*yaml.Node]bool)
+	count := 0
+
+	var countNodes func(node *yaml.Node)
+	countNodes = func(node *yaml.Node) {
+		if node == nil || counted[node] {
+			return
+		}
+
+		counted[node] = true
+		count++
+
+		countNodes(node.Alias)
+
+		for _, child := range node.Content {
+			countNodes(child)
+		}
+	}
+	countNodes(node)
+
+	return &conversionBudget{remaining: count*conversionHeadroom + conversionBase}
+}
+
+// spend consumes one conversion slot.
+func (b *conversionBudget) spend() error {
+	if b.remaining <= 0 {
+		return errors.New("values document expands beyond the YAML alias budget")
+	}
+
+	b.remaining--
+
+	return nil
+}
+
 // convertNode converts one YAML node to a JSON-compatible value. The
-// visiting set expands aliases while guarding against cycles.
+// visiting set expands aliases while guarding against cycles; the
+// budget bounds acyclic alias expansion.
 func convertNode(
 	node *yaml.Node,
 	visiting map[*yaml.Node]bool,
+	budget *conversionBudget,
 ) (any, error) {
+	if err := budget.spend(); err != nil {
+		return nil, err
+	}
+
 	switch node.Kind {
 	case yaml.DocumentNode:
 		if len(node.Content) != 1 {
 			return nil, errors.New("malformed YAML document node")
 		}
 
-		return convertNode(node.Content[0], visiting)
+		return convertNode(node.Content[0], visiting, budget)
 	case yaml.AliasNode:
 		if node.Alias == nil {
 			return nil, errors.New("unresolved YAML alias")
 		}
 
-		return convertNode(node.Alias, visiting)
+		return convertNode(node.Alias, visiting, budget)
 	case yaml.MappingNode:
-		return convertMapping(node, visiting)
+		return convertMapping(node, visiting, budget)
 	case yaml.SequenceNode:
-		return convertSequence(node, visiting)
+		return convertSequence(node, visiting, budget)
 	case yaml.ScalarNode:
 		return convertScalar(node)
 	default:
@@ -116,6 +175,7 @@ func convertNode(
 func convertMapping(
 	node *yaml.Node,
 	visiting map[*yaml.Node]bool,
+	budget *conversionBudget,
 ) (map[string]any, error) {
 	if node.Tag != tagMapping {
 		return nil, tagRejected(node)
@@ -142,7 +202,7 @@ func convertMapping(
 			return nil, fmt.Errorf("duplicate mapping key at line %d", key.Line)
 		}
 
-		converted, err := convertNode(value, visiting)
+		converted, err := convertNode(value, visiting, budget)
 		if err != nil {
 			return nil, err
 		}
@@ -157,6 +217,7 @@ func convertMapping(
 func convertSequence(
 	node *yaml.Node,
 	visiting map[*yaml.Node]bool,
+	budget *conversionBudget,
 ) ([]any, error) {
 	if node.Tag != tagSequence {
 		return nil, tagRejected(node)
@@ -172,7 +233,7 @@ func convertSequence(
 	result := make([]any, 0, len(node.Content))
 
 	for _, item := range node.Content {
-		converted, err := convertNode(item, visiting)
+		converted, err := convertNode(item, visiting, budget)
 		if err != nil {
 			return nil, err
 		}

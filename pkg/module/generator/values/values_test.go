@@ -18,8 +18,10 @@ package values
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -417,4 +419,49 @@ func TestLoadErrorExposesNoValues(t *testing.T) {
 	_, err := Load(valuesFS(secretValuesYAML), "values.yaml", nil)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).NotTo(ContainSubstring("super-secret-value"))
+}
+
+// TestLoadRejectsExponentialAliasExpansion proves an acyclic alias
+// graph that would expand exponentially fails fast with the
+// classified definition error and no document content in the public
+// message.
+func TestLoadRejectsExponentialAliasExpansion(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	document := strings.Builder{}
+	document.WriteString("level0: &level0 [payload]\n")
+
+	for level := 1; level <= 24; level++ {
+		fmt.Fprintf(&document, "level%d: &level%d [*level%d, *level%d]\n",
+			level, level, level-1, level-1)
+	}
+
+	stored, err := Load(valuesFS(document.String()), "values.yaml", nil)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("values.yaml"))
+	g.Expect(err.Error()).NotTo(ContainSubstring("payload"))
+	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
+	g.Expect(stored).To(BeNil())
+}
+
+// TestLoadAllowsModerateAliasReuse proves reasonable anchor reuse
+// stays well inside the conversion budget.
+func TestLoadAllowsModerateAliasReuse(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	document := strings.Builder{}
+	document.WriteString("common: &common\n  level: info\n")
+
+	for consumer := range 12 {
+		fmt.Fprintf(&document, "consumer%d: *common\n", consumer)
+	}
+
+	stored, err := Load(valuesFS(document.String()), "values.yaml", nil)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(decodeEntry(t, stored, "consumer11")).
+		To(Equal(map[string]any{"level": "info"}))
 }

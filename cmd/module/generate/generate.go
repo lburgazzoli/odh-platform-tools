@@ -94,6 +94,8 @@ func classify(err error) (string, int) {
 		return FailureValidation, ExitFailure
 	case errors.Is(err, moduleerrors.ErrGenerateOutput):
 		return FailureOutput, ExitFailure
+	case errors.Is(err, moduleerrors.ErrGenerateRender):
+		return FailureRender, ExitFailure
 	default:
 		return FailureRender, ExitFailure
 	}

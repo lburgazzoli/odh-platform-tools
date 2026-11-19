@@ -185,10 +185,13 @@ The generated file is an editable starting point. It is not synchronized
 with the manifests or image files afterwards; there is no merge, force, or
 sync mode.
 
-Generation failures print one classified diagnostic to stderr. Native
-libraries may load external bases or schemas referenced by local sources
-and print their own warnings, potentially including supplied values; no
-network or diagnostic sandbox is promised.
+Generation failures print one classified diagnostic to stderr.
+Native renderer failures are reported by stage and source path only —
+their raw text is withheld because it may quote chart or values
+content. Native libraries may load external bases or schemas
+referenced by local sources and print their own warnings, potentially
+including supplied values; no network or diagnostic sandbox is
+promised.
 
 ## odh-platform-tools module mock
 

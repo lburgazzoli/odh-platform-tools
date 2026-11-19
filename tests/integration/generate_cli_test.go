@@ -887,3 +887,60 @@ func TestGenerateCLIFileOutputInSourceRoot(t *testing.T) {
 		t.Fatal("a rejected chart-root destination must not be created")
 	}
 }
+
+// TestGenerateCLIWithholdsRendererSecrets proves a native renderer
+// error quoting values content through tpl is rewrapped with a
+// sanitized stage message: the classified render failure reaches
+// stderr without the values themselves.
+func TestGenerateCLIWithholdsRendererSecrets(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	base := t.TempDir()
+	writeGenerateChart(t, filepath.Join(base, "chart"),
+		generateLeakDeploymentTemplateYAML, moduleCRDYAML, nil)
+
+	valuesFile := filepath.Join(base, "values.yaml")
+	writeModuleFile(t, base, "values.yaml", generateSecretValuesYAML)
+
+	stdout, stderr, code := runGenerate(t, base, "--values-file", valuesFile, "chart")
+
+	g.Expect(code).To(Equal(1))
+	g.Expect(stdout).To(BeEmpty())
+	g.Expect(stderr).To(ContainSubstring(": render:"))
+	g.Expect(stderr).NotTo(ContainSubstring("sensitive-render-token"),
+		"native renderer text quoting values must not reach the wrapper diagnostic")
+	g.Expect(stderr).NotTo(ContainSubstring("cannot parse template"),
+		"native renderer text must be withheld entirely")
+}
+
+// TestGenerateCLIRejectsSymlinkedChartDirs proves a destination under
+// a directory a chart-internal symlink points at is chart content:
+// the guard rejects it without creating it, because the pinned
+// loader follows directory symlinks.
+func TestGenerateCLIRejectsSymlinkedChartDirs(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	base := t.TempDir()
+	chart := filepath.Join(base, "chart")
+	writeGenerateChart(t, chart, helmDeploymentTemplateYAML, moduleCRDYAML, nil)
+
+	shared := filepath.Join(base, "shared")
+	g.Expect(os.MkdirAll(shared, 0o755)).To(Succeed())
+	g.Expect(os.Symlink(shared, filepath.Join(chart, "templates", "shared"))).To(Succeed())
+
+	output := filepath.Join(shared, "module.yaml")
+
+	stdout, stderr, code := runGenerate(t, base, "--output", output, "chart")
+
+	g.Expect(code).To(Equal(2))
+	g.Expect(stdout).To(BeEmpty())
+	g.Expect(stderr).To(ContainSubstring(": invalid-options:"))
+
+	if _, statErr := os.Stat(output); statErr == nil {
+		t.Fatal("a destination consumed through a chart symlink must not be created")
+	}
+}

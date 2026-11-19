@@ -286,6 +286,11 @@ func TestGenerateCommandClassifiesFailures(t *testing.T) {
 			code: ExitFailure,
 		},
 		{
+			name: "render failure",
+			err:  moduleerrors.New(moduleerrors.ErrGenerateRender, "render"),
+			code: ExitFailure,
+		},
+		{
 			name: "cancellation",
 			err:  context.Canceled,
 			code: ExitFailure,

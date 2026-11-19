@@ -228,11 +228,43 @@ kind: SyntheticModule
 metadata:
   name: bundled-instance
 `
+
+	// generateLeakDeploymentTemplateYAML pipes a values string
+	// through tpl, so a malformed value surfaces inside the native
+	// renderer error text; the wrapper diagnostic must withhold it.
+	generateLeakDeploymentTemplateYAML = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthetic-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: synthetic
+  template:
+    metadata:
+      labels:
+        app: synthetic
+    spec:
+      serviceAccountName: synthetic-sa
+      containers:
+      - name: manager
+        image: quay.io/chart/synthetic-controller:v9
+        env:
+        - name: CONFIG
+          value: {{ tpl .Values.config . | quote }}
+`
 )
 
 // Generation option fixtures: merged values, related image names,
 // and malformed inputs whose sensitive contents must never surface.
 const (
+	// generateSecretValuesYAML carries a secret-bearing string whose
+	// malformed template content must never reach diagnostics.
+	generateSecretValuesYAML = `config: |
+  token: sensitive-render-token
+  broken: {{ .Values.nope
+`
 	// generateOverrideValuesYAML exercises the preserved value
 	// shapes: booleans, numbers, nested mappings, and explicit nulls.
 	generateOverrideValuesYAML = `enabled: true

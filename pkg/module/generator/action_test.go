@@ -19,6 +19,7 @@ package generator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -772,4 +773,75 @@ func TestRunDoesNotMutateInjectedInputs(t *testing.T) {
 		To(Equal("quay.io/example/controller:v1"))
 	g.Expect(rendered).To(HaveLen(2))
 	g.Expect(rendered[0].GroupVersionKind().Kind).To(Equal("CustomResourceDefinition"))
+}
+
+// TestRunSanitizesNativeRenderErrors proves a raw renderer failure
+// is rewrapped with a stage-and-path message that carries no
+// renderer text, while category and cancellation identity survive
+// through the wrapped cause.
+func TestRunSanitizesNativeRenderErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("native message withheld", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		stub := &renderStub{
+			fail: fmt.Errorf("helm render failed: cannot parse template %q",
+				"token: super-secret-value"),
+		}
+
+		action := NewAction(stub.Render, passValidation)
+
+		source := newHelmSource(t)
+
+		_, err := action.Run(context.Background(), runOptions(source))
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(errors.Is(err, moduleerrors.ErrGenerateRender)).To(BeTrue())
+		g.Expect(err.Error()).To(ContainSubstring("bootstrap render"))
+		g.Expect(err.Error()).To(ContainSubstring(source),
+			"the sanitized message still identifies the source path")
+		g.Expect(err.Error()).NotTo(ContainSubstring("super-secret-value"))
+		g.Expect(err.Error()).NotTo(ContainSubstring("cannot parse"),
+			"native renderer text must not reach the public message")
+	})
+
+	t.Run("classified errors pass through", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		stub := &renderStub{
+			fail: moduleerrors.New(moduleerrors.ErrInvalidDefinition, "render boom"),
+		}
+
+		action := NewAction(stub.Render, passValidation)
+
+		_, err := action.Run(context.Background(), runOptions(newHelmSource(t)))
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("render boom"),
+			"an already-public module message keeps its text")
+		g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
+		g.Expect(errors.Is(err, moduleerrors.ErrGenerateRender)).To(BeFalse())
+	})
+
+	t.Run("cancellation identity survives", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		stub := &renderStub{
+			fail: fmt.Errorf("render interrupted: %w", context.Canceled),
+		}
+
+		action := NewAction(stub.Render, passValidation)
+
+		_, err := action.Run(context.Background(), runOptions(newHelmSource(t)))
+
+		g.Expect(errors.Is(err, context.Canceled)).To(BeTrue(),
+			"cancellation must outrank the render category")
+	})
 }

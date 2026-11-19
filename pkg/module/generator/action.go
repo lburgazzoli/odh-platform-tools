@@ -18,6 +18,7 @@ package generator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -237,7 +238,7 @@ func (a *Action) bootstrap(
 
 	resources, err := a.render(ctx, definition, filepath.Join(sourceDir, syntheticDefinitionName))
 	if err != nil {
-		return moduleDiscovery{}, err
+		return moduleDiscovery{}, renderFailure("bootstrap", sourceDir, err)
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -262,7 +263,7 @@ func (a *Action) renderFinal(
 
 	resources, err := a.render(ctx, definition, filepath.Join(sourceDir, syntheticDefinitionName))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, renderFailure("final", sourceDir, err)
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -275,6 +276,28 @@ func (a *Action) renderFinal(
 	}
 
 	return resources, deployment, nil
+}
+
+// renderFailure rewraps a native render error with a sanitized
+// stage-and-path message: native renderer messages may quote chart
+// templates or supplied values, so the raw cause stays wrapped for
+// category and cancellation identity without its text reaching
+// wrapper diagnostics. Errors that already carry a public module
+// message, such as reserved-resource findings, pass through
+// unchanged.
+func renderFailure(stage string, sourceDir string, err error) error {
+	var moduleErr *moduleerrors.ModuleError
+	if errors.As(err, &moduleErr) {
+		return err
+	}
+
+	return moduleerrors.New(
+		moduleerrors.ErrGenerateRender,
+		"the "+stage+" render of "+sourceDir+" failed; the raw renderer "+
+			"error is wrapped, not printed, because it may quote chart or "+
+			"values content",
+		moduleerrors.WithCause(err),
+	)
 }
 
 // rejectKustomizeValues fails Helm-only value options on Kustomize

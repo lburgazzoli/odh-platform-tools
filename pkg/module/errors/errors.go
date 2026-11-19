@@ -84,6 +84,14 @@ var ErrGenerateOutput = stderrors.New(
 	"generated definition output failed",
 )
 
+// ErrGenerateRender identifies a rendering failure while inferring a
+// generated definition. Native renderer messages may quote chart
+// templates or supplied values, so the raw cause stays wrapped and
+// the public message identifies only the stage and source path.
+var ErrGenerateRender = stderrors.New(
+	"generated definition render failed",
+)
+
 // ErrOwnerPreparation identifies a failure preparing the module's
 // persisted owner: the definition custom resource definition or the
 // definition itself.

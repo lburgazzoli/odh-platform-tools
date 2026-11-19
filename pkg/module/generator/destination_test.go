@@ -21,6 +21,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -379,4 +380,198 @@ func TestPublishFileLeavesNoStagedFilesOnFailure(t *testing.T) {
 	contents, err := os.ReadFile(dest)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(contents).To(Equal([]byte("existing")))
+}
+
+// cancellationAfterStaging cancels at the precommit checkpoint: the
+// first context check passes and the second fails.
+type cancellationAfterStaging struct {
+	context.Context
+	checks int
+}
+
+// Err reports cancellation from the second checkpoint on.
+func (c *cancellationAfterStaging) Err() error {
+	c.checks++
+	if c.checks >= 2 {
+		return context.Canceled
+	}
+
+	return nil
+}
+
+// TestPublishFileHonorsCancellationBeforeInstallation proves a
+// cancellation observed after staging but before the no-replace
+// installation still prevents publication and removes the staging
+// file.
+func TestPublishFileHonorsCancellationBeforeInstallation(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "module.yaml")
+
+	ctx := &cancellationAfterStaging{Context: context.Background()}
+
+	err := publishFile(ctx, dest, []byte("kind: x\n"))
+
+	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue())
+	g.Expect(ctx.checks).To(Equal(2), "both checkpoints must be observed")
+
+	if _, statErr := os.Stat(dest); statErr == nil {
+		t.Fatal("a cancelled publication must not create the destination")
+	}
+
+	entries, readErr := os.ReadDir(dir)
+	g.Expect(readErr).NotTo(HaveOccurred())
+	g.Expect(entries).To(BeEmpty(), "a cancelled publication must leave no staged files")
+}
+
+// TestGuardChartDestinationRejectsSymlinkedChartDirs proves a
+// chart-internal directory symlink makes destinations under its
+// external target chart content: unignored coverage rejects, an
+// ignored symlink path permits, and a file symlink naming the
+// destination rejects.
+func TestGuardChartDestinationRejectsSymlinkedChartDirs(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	shared := filepath.Join(base, "shared")
+
+	if err := os.MkdirAll(filepath.Join(base, "shared", "nested"), 0o755); err != nil {
+		t.Fatalf("create shared: %v", err)
+	}
+
+	t.Run("unignored symlink coverage", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		chart := newChart(t, "")
+		if err := os.Symlink(shared, filepath.Join(chart, "templates", "shared")); err != nil {
+			t.Fatalf("symlink shared: %v", err)
+		}
+
+		for _, dest := range []string{
+			filepath.Join(shared, "module.yaml"),
+			filepath.Join(shared, "nested", "module.yaml"),
+		} {
+			err := guardChartDestination(chart, dest)
+
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(errors.Is(err, moduleerrors.ErrInvalidGenerateOptions)).To(BeTrue(),
+				"coverage through a chart symlink must reject "+dest)
+		}
+	})
+
+	t.Run("ignored symlink path", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		chart := newChart(t, "templates/shared\n")
+		if err := os.Symlink(shared, filepath.Join(chart, "templates", "shared")); err != nil {
+			t.Fatalf("symlink shared: %v", err)
+		}
+
+		g.Expect(guardChartDestination(chart, filepath.Join(shared, "module.yaml"))).
+			To(Succeed(), "an ignored symlink path is never walked by the loader")
+	})
+
+	t.Run("ignored coverage under a symlink", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		chart := newChart(t, "templates/shared/module.yaml\n")
+		if err := os.Symlink(shared, filepath.Join(chart, "templates", "shared")); err != nil {
+			t.Fatalf("symlink shared: %v", err)
+		}
+
+		g.Expect(guardChartDestination(chart, filepath.Join(shared, "module.yaml"))).
+			To(Succeed(), "a rule excluding the composed path permits the destination")
+	})
+
+	t.Run("file symlink naming the destination", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		chart := newChart(t, "")
+
+		dest := filepath.Join(base, "existing.yaml")
+		if err := os.WriteFile(dest, []byte("kind: x\n"), 0o644); err != nil {
+			t.Fatalf("write dest: %v", err)
+		}
+
+		if err := os.Symlink(dest, filepath.Join(chart, "templates", "gen.yaml")); err != nil {
+			t.Fatalf("symlink dest: %v", err)
+		}
+
+		err := guardChartDestination(chart, dest)
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(errors.Is(err, moduleerrors.ErrInvalidGenerateOptions)).To(BeTrue(),
+			"a chart file symlink naming the destination must reject")
+	})
+
+	t.Run("unrelated external symlink", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		chart := newChart(t, "")
+		if err := os.Symlink(shared, filepath.Join(chart, "templates", "shared")); err != nil {
+			t.Fatalf("symlink shared: %v", err)
+		}
+
+		dest := filepath.Join(base, "outside", "module.yaml")
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			t.Fatalf("create outside: %v", err)
+		}
+
+		g.Expect(guardChartDestination(chart, dest)).
+			To(Succeed(), "a destination outside all symlink targets stays allowed")
+	})
+}
+
+// TestPublishFileLeavesNoStagedFilesOnStagingFailure proves a write
+// failure during staging removes the partial staging file: no
+// plaintext overrides survive beside the destination. The file size
+// limit is process state, so this test runs sequentially, restores
+// the previous limit, and must never call t.Parallel.
+func TestPublishFileLeavesNoStagedFilesOnStagingFailure(t *testing.T) {
+	var before syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &before); err != nil {
+		t.Fatalf("get file size limit: %v", err)
+	}
+
+	limit := syscall.Rlimit{Cur: 16, Max: before.Max}
+	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &limit); err != nil {
+		t.Fatalf("set file size limit: %v", err)
+	}
+
+	defer func() {
+		if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &before); err != nil {
+			t.Errorf("restore file size limit: %v", err)
+		}
+	}()
+
+	g := NewWithT(t)
+
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "module.yaml")
+
+	err := publishFile(context.Background(), dest, []byte("kind: PlatformModuleDefinition\n"))
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, moduleerrors.ErrGenerateOutput)).To(BeTrue())
+
+	if _, statErr := os.Stat(dest); statErr == nil {
+		t.Fatal("a failed staging attempt must not create the destination")
+	}
+
+	entries, readErr := os.ReadDir(dir)
+	g.Expect(readErr).NotTo(HaveOccurred())
+	g.Expect(entries).To(BeEmpty(), "a failed staging attempt must leave no staged files")
 }
