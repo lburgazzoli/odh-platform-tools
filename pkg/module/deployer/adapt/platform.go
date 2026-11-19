@@ -55,6 +55,12 @@ type PlatformConfigInjector struct {
 
 var _ enginetypes.PostRenderer = (*PlatformConfigInjector)(nil).Run
 
+// PlatformConfigName returns the platform ConfigMap name derived from a
+// module definition name: odh-<name>-config.
+func PlatformConfigName(definitionName string) string {
+	return platformConfigPrefix + definitionName + platformConfigSuffix
+}
+
 // Run updates the last matching ConfigMap or appends one when absent.
 func (inj *PlatformConfigInjector) Run(
 	_ context.Context,
@@ -64,7 +70,7 @@ func (inj *PlatformConfigInjector) Run(
 
 	cm := &corev1.ConfigMap{}
 	cm.SetGroupVersionKind(k8s.ConfigMap)
-	cm.Name = platformConfigPrefix + name + platformConfigSuffix
+	cm.Name = PlatformConfigName(name)
 	cm.Namespace = inj.Namespace
 
 	match := -1
