@@ -27,8 +27,8 @@
 #     chart's "namespace" value, which its NetworkPolicy templates
 #     require (they have no .Release.Namespace fallback);
 #   - the FeastOperator CRD mandates the "default-feastoperator"
-#     singleton instance name (XValidation), so the generated
-#     definition is post-processed to carry it.
+#     singleton instance name (XValidation), so generate is given
+#     --instance-name to record it.
 #
 # The run is manual-only (workflow_dispatch); enable the commented
 # triggers to run it on changes.
@@ -71,6 +71,7 @@ jobs:
       NAMESPACE: opendatahub-feast-system
       MODULE: feast-module-operator
       CONFIG: .generated/module.yaml
+      RELATED_IMAGES: .generated/related-images.yaml
       # An explicit kubeconfig keeps the tools and kubectl on the same
       # cluster regardless of any default kubeconfig on the runner.
       # Kind selects the new cluster's context when it writes this
@@ -144,6 +145,26 @@ jobs:
           # namespaces — and the deployer requires the target to exist.
           kubectl create namespace "$NAMESPACE"
 
+      - name: Write the related images file
+        run: |
+          # The names are exactly the ones opendatahub-operator's data
+          # module handler injects for this module (RelatedImages):
+          # the two operand images its operator deploys. The module
+          # operator's own image is not a related image — it is the
+          # controller image, passed to the chart at generate time.
+          # The values are the platform's digest-pinned ODH
+          # references; the kube-rbac-proxy image in the operator's
+          # internal map is not listed: the handler does not inject
+          # it for this module.
+          mkdir -p "$(dirname "$RELATED_IMAGES")"
+          cat > "$RELATED_IMAGES" <<EOF
+          relatedImages:
+            - name: RELATED_IMAGE_ODH_FEAST_OPERATOR_IMAGE
+              value: quay.io/opendatahub/feast-operator@sha256:0d821aeaadcd326c1320fa4f81ab8a4b05706dac9bac9c6f03dd4098fe22f4a6
+            - name: RELATED_IMAGE_ODH_FEATURE_SERVER_IMAGE
+              value: quay.io/opendatahub/feature-server@sha256:98672911c37cad76859d38c5ec3c8c26f62147bccaea33f2b4dfb7c50b2f0d40
+          EOF
+
       - name: Generate the module definition
         run: |
           # --name data is the platform module name registered by
@@ -152,29 +173,23 @@ jobs:
           # odh-<module>-config ConfigMap the name derives
           # (odh-data-config). --init-container names the init
           # container the chart's Deployment carries. The namespace
-          # value is the chart's contract with the platform; the image
-          # value points the controller at the build above.
+          # value is the chart's contract with the platform. The image
+          # value is the operator's own image — the controller image,
+          # not a related image. The related-images file contributes
+          # the operand image names the module operator consumes as
+          # RELATED_IMAGE_* env vars. The instance name is the
+          # "default-feastoperator" singleton the FeastOperator CRD
+          # mandates; the default would derive it from the module
+          # name ("data").
           mkdir -p "$(dirname "$CONFIG")"
           $ODH_CLI module generate "$MODULE/config/chart" \
             --name data \
+            --instance-name default-feastoperator \
             --init-container copy-manifests \
             --values "image.fullRef=$IMAGE" \
             --values "namespace=$NAMESPACE" \
+            --related-images-file "$RELATED_IMAGES" \
             --output "$CONFIG"
-
-      - name: Set the instance name
-        run: |
-          # The FeastOperator CRD mandates the "default-feastoperator"
-          # singleton name (XValidation); generate has no instance-name
-          # flag, and the loader would otherwise default the instance
-          # name to the module name ("data"), which validate's
-          # MODULE_EXISTS lookup would not find. The generated file's
-          # shape is owned by this repository's generator, so the
-          # two-space instance key anchors the insert.
-          awk '
-            { print }
-            /^  instance:$/ { print "    name: default-feastoperator" }
-          ' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
 
       - name: Lint the definition
         run: |
@@ -183,9 +198,13 @@ jobs:
 
       - name: Deploy the controller package
         run: |
+          # The related-images file resolves the controller image
+          # token and the operand images injected as env vars on the
+          # module operator Deployment.
           $ODH_CLI module deploy \
             --config "$CONFIG" \
-            --platform-version 2.19.0 \
+            --related-images-file "$RELATED_IMAGES" \
+            --platform-version 3.5.0 \
             --namespace "$NAMESPACE" \
             --wait
 
