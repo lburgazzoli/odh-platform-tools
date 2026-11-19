@@ -96,3 +96,32 @@ func TestValidateInferredNameRequestsExplicitName(t *testing.T) {
 	g.Expect(errors.Is(err, moduleerrors.ErrInvalidDefinition)).To(BeTrue())
 	g.Expect(err.Error()).To(ContainSubstring("pass an explicit name"))
 }
+
+// TestValidateInstanceNameEnforcesKubernetesNaming proves an explicit
+// instance name is rejected as an options failure when it is not a
+// valid Kubernetes name, and that the Helm release-name constraints
+// do not apply: the instance name never names a release.
+func TestValidateInstanceNameEnforcesKubernetesNaming(t *testing.T) {
+	t.Parallel()
+
+	long := "abcdefghijklmnopqrstuvwxyz012345abcdefghijklmnopqrstuvwxyz012345"
+
+	g := NewWithT(t)
+
+	g.Expect(validateInstanceName("default-feastoperator")).To(Succeed())
+	g.Expect(validateInstanceName(long)).To(Succeed(),
+		"the instance name is not a Helm release name")
+
+	for _, name := range []string{"", "Foo", "a_b", "-lead", "trail-", "sp ace"} {
+		t.Run("name "+name, func(t *testing.T) {
+			t.Parallel()
+
+			g := NewWithT(t)
+
+			err := validateInstanceName(name)
+
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(errors.Is(err, moduleerrors.ErrInvalidGenerateOptions)).To(BeTrue())
+		})
+	}
+}

@@ -775,6 +775,55 @@ func TestRunDoesNotMutateInjectedInputs(t *testing.T) {
 	g.Expect(rendered[0].GroupVersionKind().Kind).To(Equal("CustomResourceDefinition"))
 }
 
+// TestRunRecordsInstanceName proves an explicit instance name reaches
+// the validated definition and the published document, while an
+// invalid one fails as an options error before any render.
+func TestRunRecordsInstanceName(t *testing.T) {
+	t.Parallel()
+
+	t.Run("explicit instance name", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		var validated toolApi.PlatformModuleDefinition
+
+		action := NewAction(
+			newRenderStub(t, validModuleResources(t), validModuleResources(t)).Render,
+			func(definition toolApi.PlatformModuleDefinition, _ []unstructured.Unstructured) ([]linter.Diagnostic, error) {
+				validated = definition
+				return nil, nil
+			})
+
+		result, err := action.Run(context.Background(), Options{
+			SourceDir:    newKustomizeSource(t),
+			InstanceName: "default-foobaroperator",
+		})
+		g.Expect(err).NotTo(HaveOccurred())
+
+		g.Expect(validated.Name).To(Equal("foobar"))
+		g.Expect(validated.Spec.Instance.Name).To(Equal("default-foobaroperator"))
+		g.Expect(string(result.YAML)).To(ContainSubstring("name: default-foobaroperator"))
+	})
+
+	t.Run("invalid instance name", func(t *testing.T) {
+		t.Parallel()
+
+		g := NewWithT(t)
+
+		action, stub := stubFor(t, validModuleResources(t), validModuleResources(t))
+
+		_, err := action.Run(context.Background(), Options{
+			SourceDir:    newKustomizeSource(t),
+			InstanceName: "Default Foo",
+		})
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(errors.Is(err, moduleerrors.ErrInvalidGenerateOptions)).To(BeTrue())
+		g.Expect(stub.recorded()).To(BeEmpty(), "no render may run")
+	})
+}
+
 // TestRunSanitizesNativeRenderErrors proves a raw renderer failure
 // is rewrapped with a stage-and-path message that carries no
 // renderer text, while category and cancellation identity survive

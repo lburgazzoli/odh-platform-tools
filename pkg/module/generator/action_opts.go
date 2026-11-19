@@ -36,6 +36,11 @@ type Options struct {
 	// lowercase CRD kind.
 	Name string
 
+	// InstanceName overrides the module instance name recorded in
+	// the generated definition. Empty derives the instance name
+	// from the module name, mirroring the loader default.
+	InstanceName string
+
 	// InitContainer selects the controller init container. It is
 	// mandatory whenever the rendered Deployment has init containers.
 	InitContainer string

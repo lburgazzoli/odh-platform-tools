@@ -102,6 +102,7 @@ func classify(err error) (string, int) {
 // one execution.
 type generateOptions struct {
 	name              nonEmptyValue
+	instanceName      nonEmptyValue
 	initContainer     nonEmptyValue
 	relatedImagesFile string
 	valuesFile        singleValue
@@ -123,7 +124,8 @@ func NewGenerateCommand(run Run) *cobra.Command {
 			"Discovery is strict: the source must render exactly one " +
 			"CustomResourceDefinition with a single served storage " +
 			"version and exactly one Deployment; the module name " +
-			"defaults to the lowercase CRD kind. The controller main " +
+			"defaults to the lowercase CRD kind, and the instance " +
+			"name to the module name. The controller main " +
 			"container is the unique manager, or the only container; " +
 			"an explicit --init-container is mandatory whenever the " +
 			"Deployment has init containers. The generated definition " +
@@ -144,6 +146,8 @@ func NewGenerateCommand(run Run) *cobra.Command {
 	flags := command.Flags()
 	flags.Var(&options.name, "name",
 		"module name; defaults to the lowercase CRD kind")
+	flags.Var(&options.instanceName, "instance-name",
+		"module instance name; defaults to the module name")
 	flags.Var(&options.initContainer, "init-container",
 		"controller init container name; required when the rendered Deployment has init containers")
 	flags.StringVar(&options.relatedImagesFile, "related-images-file", "",
@@ -162,6 +166,7 @@ func (o generateOptions) execute(command *cobra.Command, run Run, source string)
 	options := generator.Options{
 		SourceDir:         source,
 		Name:              o.name.value,
+		InstanceName:      o.instanceName.value,
 		InitContainer:     o.initContainer.value,
 		RelatedImagesFile: o.relatedImagesFile,
 		ValuesFile:        o.valuesFile.value,

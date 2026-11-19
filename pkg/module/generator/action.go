@@ -110,6 +110,12 @@ func (a *Action) Run(ctx context.Context, options Options) (Result, error) {
 		}
 	}
 
+	if options.InstanceName != "" {
+		if err := validateInstanceName(options.InstanceName); err != nil {
+			return Result{}, err
+		}
+	}
+
 	output, err := resolveOutput(options.Output)
 	if err != nil {
 		return Result{}, err
@@ -164,6 +170,13 @@ func (a *Action) Run(ctx context.Context, options Options) (Result, error) {
 		}
 	}
 
+	// The instance name defaults to the module name, mirroring the
+	// loader's default for the published document.
+	instanceName := options.InstanceName
+	if instanceName == "" {
+		instanceName = name
+	}
+
 	resources, deployment, err := a.renderFinal(ctx, sourceDir, format, helmValues, name, discovery)
 	if err != nil {
 		return Result{}, err
@@ -177,7 +190,7 @@ func (a *Action) Run(ctx context.Context, options Options) (Result, error) {
 	manifestsPath := manifestPath(sourceDir, definitionDir)
 
 	definition := effectiveDefinition(
-		name, discovery.moduleType, format, manifestsPath, helmValues, relatedImages, selection)
+		name, instanceName, discovery.moduleType, format, manifestsPath, helmValues, relatedImages, selection)
 
 	if err := renderer.CheckReserved(definition, resources); err != nil {
 		return Result{}, err
@@ -200,7 +213,7 @@ func (a *Action) Run(ctx context.Context, options Options) (Result, error) {
 	}
 
 	document, err := encodeDocument(minimalDocument(
-		name, discovery.moduleType, format, manifestsPath, helmValues, relatedImages, selection))
+		name, instanceName, discovery.moduleType, format, manifestsPath, helmValues, relatedImages, selection))
 	if err != nil {
 		return Result{}, err
 	}

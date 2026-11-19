@@ -131,6 +131,7 @@ func TestGenerateCommandForwardsOptionsAndContext(t *testing.T) {
 
 	_, _, err := executeGenerate(ctx, t, recorder.run,
 		"--name", "demo",
+		"--instance-name", "default-demo",
 		"--init-container", "setup",
 		"--related-images-file", "images.yaml",
 		"--values-file", "values.yaml",
@@ -146,6 +147,7 @@ func TestGenerateCommandForwardsOptionsAndContext(t *testing.T) {
 	g.Expect(recorder.options).To(Equal([]generator.Options{{
 		SourceDir:         "source",
 		Name:              "demo",
+		InstanceName:      "default-demo",
 		InitContainer:     "setup",
 		RelatedImagesFile: "images.yaml",
 		ValuesFile:        "values.yaml",
@@ -227,6 +229,10 @@ func TestGenerateCommandRejectsInvalidFlagUsage(t *testing.T) {
 		{
 			name: "empty name",
 			args: []string{"--name", "", "source"},
+		},
+		{
+			name: "empty instance name",
+			args: []string{"--instance-name", "", "source"},
 		},
 		{
 			name: "empty init container",
@@ -452,6 +458,7 @@ func TestGenerateCommandHelpListsFlags(t *testing.T) {
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(stdout).To(ContainSubstring("--name"))
+	g.Expect(stdout).To(ContainSubstring("--instance-name"))
 	g.Expect(stdout).To(ContainSubstring("--init-container"))
 	g.Expect(stdout).To(ContainSubstring("--related-images-file"))
 	g.Expect(stdout).To(ContainSubstring("--values-file"))

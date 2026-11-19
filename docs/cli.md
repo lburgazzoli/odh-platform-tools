@@ -114,6 +114,7 @@ odh-platform-tools module generate <SOURCE_DIR> [--output <path|stdout>] ...
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--name` | — | Module name; defaults to the lowercase CRD kind |
+| `--instance-name` | — | Module instance name; defaults to the module name |
 | `--init-container` | — | Controller init container name; required when the rendered Deployment has init containers |
 | `--values` | — | Ordered Helm set expression, each preserved verbatim including commas; repeatable (Helm sources only) |
 | `--values-file` | — | Helm values file; a single nonempty occurrence (Helm sources only) |
@@ -121,8 +122,8 @@ odh-platform-tools module generate <SOURCE_DIR> [--output <path|stdout>] ...
 | `--output` | `stdout` | `stdout` or a file path created once with 0600 permissions |
 
 `--values-file` may be given once and must be nonempty; `--name`,
-`--init-container`, and `--output` reject explicit empty values. Repeating
-`--values` is intended and applied in order.
+`--instance-name`, `--init-container`, and `--output` reject explicit empty
+values. Repeating `--values` is intended and applied in order.
 
 ### Discovery
 
@@ -134,6 +135,10 @@ Discovery is strict; ambiguous sources fail (exit 2) instead of guessing:
 - The module name is the lowercase CRD kind. `--name` overrides it and is
   also the fallback when inference cannot run; an explicit name must be a
   valid DNS label acceptable as a Helm release name.
+- The instance name recorded in `spec.instance.name` defaults to the module
+  name. `--instance-name` overrides it — for CRDs that mandate a specific
+  singleton name — and must be a valid DNS subdomain; it is omitted from the
+  generated file when it equals the module name.
 - The source must render exactly one Deployment. Its main container is the
   unique container named `manager`, or the only regular container; two
   regular containers without a `manager` fail.

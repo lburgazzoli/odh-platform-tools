@@ -64,6 +64,7 @@ func renderDefinition(
 // and the injected lint composition.
 func effectiveDefinition(
 	name string,
+	instanceName string,
 	moduleType toolApi.ModuleType,
 	format toolApi.Format,
 	manifestsPath string,
@@ -73,7 +74,7 @@ func effectiveDefinition(
 ) toolApi.PlatformModuleDefinition {
 	definition := renderDefinition(name, moduleType, format, values)
 
-	definition.Spec.Instance.Name = name
+	definition.Spec.Instance.Name = instanceName
 
 	switch format {
 	case toolApi.FormatHelm:
@@ -121,9 +122,11 @@ func effectiveDefinition(
 
 // minimalDocument builds the wire document: exactly the fields the
 // loader cannot default — identity, manifests, applicable values and
-// related images, and nondefault controller selections.
+// related images, nondefault controller selections, and a nondefault
+// instance name.
 func minimalDocument(
 	name string,
+	instanceName string,
 	moduleType toolApi.ModuleType,
 	format toolApi.Format,
 	manifestsPath string,
@@ -172,14 +175,22 @@ func minimalDocument(
 		deployment["initContainer"] = init
 	}
 
-	spec := map[string]any{
-		"instance": map[string]any{
-			"type": map[string]any{
-				"group":   moduleType.Group,
-				"version": moduleType.Version,
-				"kind":    moduleType.Kind,
-			},
+	instance := map[string]any{
+		"type": map[string]any{
+			"group":   moduleType.Group,
+			"version": moduleType.Version,
+			"kind":    moduleType.Kind,
 		},
+	}
+
+	// Mirror the loader default: an instance name matching the
+	// module name is omitted and derived on load.
+	if instanceName != name {
+		instance["name"] = instanceName
+	}
+
+	spec := map[string]any{
+		"instance":  instance,
 		"manifests": manifests,
 		"controller": map[string]any{
 			"deployment": deployment,

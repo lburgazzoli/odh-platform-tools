@@ -67,6 +67,20 @@ func validateInferredName(name string, format toolApi.Format) error {
 	return nil
 }
 
+// validateInstanceName enforces Kubernetes naming for the module
+// instance name. Unlike the module name it never names a Helm
+// release, so the release-name constraints do not apply.
+func validateInstanceName(name string) error {
+	if len(validation.IsDNS1123Subdomain(name)) != 0 {
+		return moduleerrors.New(
+			moduleerrors.ErrInvalidGenerateOptions,
+			fmt.Sprintf("instance name %q is not a valid Kubernetes name", name),
+		)
+	}
+
+	return nil
+}
+
 // validateModuleName checks Kubernetes naming for every backend and
 // Helm release-name usability for Helm sources.
 func validateModuleName(

@@ -66,7 +66,7 @@ func TestMinimalDocumentRoundTripsThroughLoader(t *testing.T) {
 	relatedImages := []string{"a-image", "b-image"}
 
 	document, err := encodeDocument(minimalDocument(
-		"foobar", fooBarType(), toolApi.FormatHelm, "chart",
+		"foobar", "foobar", fooBarType(), toolApi.FormatHelm, "chart",
 		values, relatedImages, selection))
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -77,7 +77,7 @@ func TestMinimalDocumentRoundTripsThroughLoader(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	effective := effectiveDefinition(
-		"foobar", fooBarType(), toolApi.FormatHelm, "chart",
+		"foobar", "foobar", fooBarType(), toolApi.FormatHelm, "chart",
 		values, relatedImages, selection)
 
 	g.Expect(loaded.TypeMeta).To(Equal(effective.TypeMeta))
@@ -104,7 +104,7 @@ func TestMinimalDocumentOmitsDefaultFields(t *testing.T) {
 	}
 
 	document, err := encodeDocument(minimalDocument(
-		"foobar", fooBarType(), toolApi.FormatKustomize, "",
+		"foobar", "foobar", fooBarType(), toolApi.FormatKustomize, "",
 		nil, nil, selection))
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -128,6 +128,32 @@ func TestMinimalDocumentOmitsDefaultFields(t *testing.T) {
 	// The deployment name fallback is computed, not defaulted in place.
 	g.Expect(loaded.Spec.Controller.Deployment.Name).To(BeEmpty())
 	g.Expect(loaded.ControllerDeploymentName()).To(Equal("foobar"))
+}
+
+// TestMinimalDocumentKeepsNondefaultInstanceName proves an instance
+// name differing from the module name is carried in the wire
+// document and survives a load roundtrip, while the module name
+// stays the document identity.
+func TestMinimalDocumentKeepsNondefaultInstanceName(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	document, err := encodeDocument(minimalDocument(
+		"foobar", "default-foobaroperator", fooBarType(), toolApi.FormatHelm, "chart",
+		nil, nil, baseSelection()))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(string(document)).To(ContainSubstring("name: default-foobaroperator"))
+
+	path := filepath.Join(t.TempDir(), "module.yaml")
+	g.Expect(os.WriteFile(path, document, 0o644)).To(Succeed())
+
+	loaded, err := loader.LoadFromPath(context.Background(), path)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(loaded.Name).To(Equal("foobar"))
+	g.Expect(loaded.Spec.Instance.Name).To(Equal("default-foobaroperator"))
 }
 
 // TestMinimalDocumentKeepsNondefaultSelections proves nondefault
@@ -175,7 +201,7 @@ func TestMinimalDocumentKeepsNondefaultSelections(t *testing.T) {
 			g := NewWithT(t)
 
 			document, err := encodeDocument(minimalDocument(
-				"foobar", fooBarType(), toolApi.FormatHelm, "chart",
+				"foobar", "foobar", fooBarType(), toolApi.FormatHelm, "chart",
 				nil, nil, tc.selection))
 			g.Expect(err).NotTo(HaveOccurred())
 
@@ -199,7 +225,7 @@ func TestEncodeDocumentPreservesLiteralValues(t *testing.T) {
 	g := NewWithT(t)
 
 	document, err := encodeDocument(minimalDocument(
-		"foobar", fooBarType(), toolApi.FormatHelm, "chart",
+		"foobar", "foobar", fooBarType(), toolApi.FormatHelm, "chart",
 		documentValues(), nil, baseSelection()))
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -213,7 +239,7 @@ func TestEncodeDocumentPreservesLiteralValues(t *testing.T) {
 	// Values above the loader's exact range still serialize as exact
 	// literals; only the loader's own YAML decoder would degrade them.
 	edge, err := encodeDocument(minimalDocument(
-		"foobar", fooBarType(), toolApi.FormatHelm, "chart",
+		"foobar", "foobar", fooBarType(), toolApi.FormatHelm, "chart",
 		map[string]apiextensionsv1.JSON{
 			"max": {Raw: []byte("18446744073709551615")},
 		}, nil, baseSelection()))
@@ -232,12 +258,12 @@ func TestEncodeDocumentIsDeterministic(t *testing.T) {
 	values := documentValues()
 
 	first, err := encodeDocument(minimalDocument(
-		"foobar", fooBarType(), toolApi.FormatHelm, "chart",
+		"foobar", "foobar", fooBarType(), toolApi.FormatHelm, "chart",
 		values, []string{"a-image", "b-image"}, baseSelection()))
 	g.Expect(err).NotTo(HaveOccurred())
 
 	second, err := encodeDocument(minimalDocument(
-		"foobar", fooBarType(), toolApi.FormatHelm, "chart",
+		"foobar", "foobar", fooBarType(), toolApi.FormatHelm, "chart",
 		values, []string{"a-image", "b-image"}, baseSelection()))
 	g.Expect(err).NotTo(HaveOccurred())
 
