@@ -217,8 +217,18 @@ func encodeDocument(document map[string]any) ([]byte, error) {
 
 // manifestPath computes the authored manifests path relative to the
 // definition directory, omitting it when source and destination
-// coincide. Absolute fallback keeps absolute sources usable.
+// coincide. Both sides are canonicalized so a symlinked working
+// directory or output path cannot leak a resolved prefix into the
+// authored relative path; the absolute fallback keeps absolute
+// sources usable.
 func manifestPath(sourceDir string, definitionDir string) string {
+	sourcePhysical, sourceErr := filepath.EvalSymlinks(sourceDir)
+	definitionPhysical, definitionErr := filepath.EvalSymlinks(definitionDir)
+
+	if sourceErr == nil && definitionErr == nil {
+		sourceDir, definitionDir = sourcePhysical, definitionPhysical
+	}
+
 	if sourceDir == definitionDir {
 		return ""
 	}

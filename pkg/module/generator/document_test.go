@@ -259,3 +259,28 @@ func TestManifestPathResolvesRelativeSources(t *testing.T) {
 
 	g.Expect(manifestPath("not/a/path", "")).To(ContainSubstring("not"))
 }
+
+// TestManifestPathCanonicalizesSymlinks proves a symlinked definition
+// directory does not leak its resolved prefix into the authored
+// relative path, and a symlinked alias of the source directory still
+// omits the manifests path entirely.
+func TestManifestPathCanonicalizesSymlinks(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	root := t.TempDir()
+
+	g.Expect(os.MkdirAll(filepath.Join(root, "real", "chart"), 0o755)).To(Succeed())
+	g.Expect(os.MkdirAll(filepath.Join(root, "real", "out"), 0o755)).To(Succeed())
+	g.Expect(os.Symlink(filepath.Join(root, "real"), filepath.Join(root, "alias"))).
+		To(Succeed())
+
+	g.Expect(manifestPath(filepath.Join(root, "real", "chart"),
+		filepath.Join(root, "alias", "out"))).
+		To(Equal(filepath.Join("..", "chart")))
+
+	g.Expect(manifestPath(filepath.Join(root, "alias", "chart"),
+		filepath.Join(root, "real", "chart"))).
+		To(Equal(""))
+}
