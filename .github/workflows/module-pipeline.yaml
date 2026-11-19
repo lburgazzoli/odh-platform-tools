@@ -74,7 +74,7 @@ jobs:
           # the same variable, so they cannot drift apart. The UUID is
           # lowercased because image names must be (macOS uuidgen
           # prints uppercase; Linux already lowercase).
-          id="odh-platform-tools-ci-$(uuidgen | tr 'A-Z' 'a-z')"
+          id="$(uuidgen | tr 'A-Z' 'a-z')"
           echo "IMAGE_ID=$id" >> "$GITHUB_ENV"
           echo "IMAGE=ttl.sh/$id:1h" >> "$GITHUB_ENV"
           echo "RELATED_IMAGE_MOCK_CONTROLLER=ttl.sh/$id:1h" >> "$GITHUB_ENV"
