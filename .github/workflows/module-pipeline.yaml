@@ -17,10 +17,11 @@
 #     feast module under that name, and the module reads its
 #     platformVersion from the odh-<module>-config ConfigMap the name
 #     derives (odh-data-config), not from the CRD kind;
-#   - the prometheus operator must be installed before the module
+#   - the prometheus operator CRDs must be installed before the module
 #     deploys: the module controller watches ServiceMonitors
 #     unconditionally, and without the CRD its informer never syncs,
-#     so the controller runs but reconciles nothing;
+#     so the controller runs but reconciles nothing (the operator
+#     itself is not needed — nothing consumes the monitors here);
 #   - the chart renders no Namespace (the platform owns namespaces),
 #     so the target namespace is created up front and passed as the
 #     chart's "namespace" value, which its NetworkPolicy templates
@@ -37,10 +38,6 @@ name: module pipeline
 on:
   workflow_dispatch:
     inputs:
-      tools-ref:
-        description: "odh-platform-tools module ref the go-run commands use"
-        default: main
-        type: string
       module-ref:
         description: "feast-module-operator git ref to check out"
         default: main
@@ -62,9 +59,8 @@ env:
   KIND_EXPERIMENTAL_PROVIDER: podman
   # The tools run from their module path on GitHub, so the pipeline
   # exercises the published tooling; $ODH_CLI must stay unquoted so the
-  # invocation splits into words. No tag exists yet; pin a SHA here for
-  # reproducible runs.
-  ODH_CLI: go run github.com/lburgazzoli/odh-platform-tools/cmd@${{ github.event.inputs.tools-ref || 'main' }}
+  # invocation splits into words.
+  ODH_CLI: go run github.com/lburgazzoli/odh-platform-tools/cmd@main
 
 jobs:
   pipeline:
@@ -127,16 +123,18 @@ jobs:
           $KIND create cluster \
             --name "$CLUSTER"
 
-      - name: Install the prometheus operator
+      - name: Install the prometheus operator CRDs
         run: |
           # Prerequisite, not convenience: the module controller
           # watches ServiceMonitors unconditionally, and without the
           # CRD its informer never syncs — the controller runs but
-          # reconciles nothing. The bundle is applied server-side
-          # because its CRDs are too large for client-side apply.
+          # reconciles nothing. Nothing consumes the monitors in this
+          # pipeline, so the operator itself is not installed: only
+          # its CRDs, from the release's stripped-down asset. Applied
+          # server-side because the CRDs are too large for
+          # client-side apply.
           kubectl apply --server-side \
-            --filename https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.95.2/bundle.yaml
-          kubectl -n default rollout status deployment/prometheus-operator --timeout=180s
+            --filename https://github.com/prometheus-operator/prometheus-operator/releases/download/v0.95.2/stripped-down-crds.yaml
           kubectl wait --for=condition=Established \
             crd/servicemonitors.monitoring.coreos.com --timeout=60s
 
