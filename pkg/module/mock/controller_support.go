@@ -18,7 +18,6 @@ package mock
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -43,15 +42,13 @@ import (
 	moduleerrors "github.com/lburgazzoli/odh-platform-tools/pkg/module/errors"
 )
 
-const (
-	platformVersionKey = "platformVersion"
-	mockStatusStateKey = "mock.platform.opendatahub.io/status"
-)
+const platformVersionKey = "platformVersion"
 
-type mockStatusState struct {
-	previous []frameworkapi.Condition
-	desired  map[string]frameworkapi.Condition
-}
+// persistedConditionsKey carries the conditions observed before the
+// reconcile from the action to the post-status hook through
+// rr.Extensions. It names per-request in-memory state, not an annotation
+// persisted on the resource.
+const persistedConditionsKey = "mock-persisted-conditions"
 
 func discoverModuleMapper(ctx context.Context, config *rest.Config, gvk schema.GroupVersionKind) (meta.RESTMapper, error) {
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
@@ -90,27 +87,47 @@ func moduleMapper(gvk schema.GroupVersionKind, resources []metav1.APIResource) (
 	return nil, moduleerrors.New(moduleerrors.ErrInvalidMockOptions, fmt.Sprintf("custom resource %s is not discoverable", gvk))
 }
 
+// reconcileStatus is the reconciler action. It resolves the annotation and
+// platform version inputs, then installs the current condition set for the
+// framework to aggregate. Input failures are returned as errors for the
+// framework to report through ProvisioningSucceeded; they still install
+// the healthy defaults so the framework can clean up stale simulated
+// conditions and the post-status hook can stamp metadata.
 func (c *Controller) reconcileStatus(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
 	obj := rr.Instance.(*moduleapi.ModuleObject)
-	previous := obj.GetStatus().DeepCopy().Conditions
-	injected, version, err := c.readInputs(ctx, rr.Client, obj)
-	desired := desiredConditions(injected, obj.Generation)
-	aggregator, aggregatorErr := fwconditions.NewAggregator(frameworkapi.ConditionTypeReady, conditionDependents(desired)...)
+	persisted := obj.GetStatus().DeepCopy().Conditions
+
+	// The annotation is resolved first: an invalid annotation must not
+	// read or publish a platform version for this pass.
+	injected, err := readAnnotationConditions(obj.Annotations)
+	var version string
+	if err == nil {
+		version, err = readPlatformVersion(ctx, rr.Client, c.configMap)
+	}
+	if err != nil {
+		// An input failure still installs the healthy defaults; a valid
+		// annotation must not be partly applied when the platform
+		// version cannot be resolved.
+		injected = nil
+	}
+
+	current := currentConditions(injected, obj.Generation)
+	aggregator, aggregatorErr := fwconditions.NewAggregator(frameworkapi.ConditionTypeReady, readyDependents(current)...)
 	if aggregatorErr != nil {
 		return fmt.Errorf("configure mock readiness: %w", aggregatorErr)
 	}
 
 	rr.Conditions = fwconditions.NewManager(obj, aggregator)
 	rr.Conditions.Reset()
-	for _, condition := range desired {
+	for _, condition := range current {
 		rr.Conditions.SetCondition(condition)
 	}
 	if rr.Extensions == nil {
 		rr.Extensions = make(map[string]any)
 	}
-	rr.Extensions[mockStatusStateKey] = mockStatusState{previous: previous, desired: desired}
+	rr.Extensions[persistedConditionsKey] = persisted
 
-	if version != "" {
+	if err == nil {
 		obj.SetReleaseStatus(frameworkapi.ComponentReleaseStatus{
 			Releases: []frameworkapi.ComponentRelease{{Name: frameworkapi.ReleasePlatform, Version: version}},
 		})
@@ -119,35 +136,17 @@ func (c *Controller) reconcileStatus(ctx context.Context, rr *fwtypes.Reconcilia
 	return err
 }
 
-func (c *Controller) readInputs(ctx context.Context, reader client.Reader, obj *moduleapi.ModuleObject) ([]frameworkapi.Condition, string, error) {
-	conditions, err := readConditions(obj.Annotations, obj.Generation)
-	if err != nil {
-		return invalidInputConditions(obj.Generation, "InvalidMockAnnotation", err), "", nil
-	}
-
-	version, err := readPlatformVersion(ctx, reader, c.configMap)
-	if errors.Is(err, moduleerrors.ErrInvalidMockPlatformConfiguration) {
-		return invalidInputConditions(obj.Generation, "InvalidPlatformConfiguration", err), "", nil
-	}
-
-	return conditions, version, err
-}
-
-func invalidInputConditions(generation int64, reason string, cause error) []frameworkapi.Condition {
-	return []frameworkapi.Condition{
-		{Type: string(conditionTypeMockReady), Status: metav1.ConditionFalse, ObservedGeneration: generation, Reason: reason, Message: cause.Error()},
-		{Type: string(frameworkapi.ConditionTypeDegraded), Status: metav1.ConditionTrue, ObservedGeneration: generation, Reason: reason, Message: cause.Error()},
-	}
-}
-
+// finishMockStatus stamps the metadata the controller owns after the
+// framework aggregated Ready and cleaned up stale conditions. It runs for
+// successful and failed actions alike.
 func finishMockStatus(_ context.Context, rr *fwtypes.ReconciliationRequest, _ bool) error {
-	state, ok := rr.Extensions[mockStatusStateKey].(mockStatusState)
+	persisted, ok := rr.Extensions[persistedConditionsKey].([]frameworkapi.Condition)
 	if !ok {
-		// A failed action may not have created a per-request status state.
+		// A failed action may not have created the per-request state.
 		return nil
 	}
 
-	normalizeConditionMetadata(rr.Instance.GetStatus(), state.previous, state.desired, rr.Instance.GetGeneration(), time.Now())
+	stampAutomaticMetadata(rr.Instance.GetStatus(), persisted, rr.Instance.GetGeneration(), time.Now())
 
 	return nil
 }

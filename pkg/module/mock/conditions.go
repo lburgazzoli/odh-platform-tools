@@ -28,87 +28,104 @@ import (
 const conditionsAnnotation = "mock.platform.opendatahub.io/conditions"
 const conditionTypeMockReady frameworkapi.ConditionType = "MockReady"
 
-func desiredConditions(injected []frameworkapi.Condition, generation int64) map[string]frameworkapi.Condition {
-	mockReady, degraded := string(conditionTypeMockReady), string(frameworkapi.ConditionTypeDegraded)
-	desired := map[string]frameworkapi.Condition{
-		mockReady: {Type: mockReady, Status: metav1.ConditionTrue, ObservedGeneration: generation},
-		degraded:  {Type: degraded, Status: metav1.ConditionFalse, ObservedGeneration: generation},
-	}
-
-	for _, entry := range injected {
-		desired[entry.Type] = entry
-	}
-
-	for typ, condition := range desired {
-		condition.Reason = cmp.Or(condition.Reason, condition.Type+string(condition.Status))
-		condition.Message = cmp.Or(condition.Message, condition.Reason)
-		desired[typ] = condition
-	}
-
-	return desired
+// annotationCondition holds the five annotation fields that shape the
+// simulated status. The controller owns generations and transition
+// timestamps, so every other annotation field is ignored.
+type annotationCondition struct {
+	Type     string                         `json:"type"`
+	Status   metav1.ConditionStatus         `json:"status"`
+	Reason   string                         `json:"reason"`
+	Message  string                         `json:"message"`
+	Severity frameworkapi.ConditionSeverity `json:"severity"`
 }
 
-func conditionDependents(desired map[string]frameworkapi.Condition) []fwconditions.DependentDefinition {
-	dependents := make([]fwconditions.DependentDefinition, 0, len(desired)+1)
-	dependents = append(dependents, fwconditions.Dependent(frameworkapi.ConditionTypeProvisioningSucceeded, fwconditions.HealthyWhenTrue))
-	for name := range desired {
-		conditionType := frameworkapi.ConditionType(name)
-		polarity := fwconditions.HealthyWhenTrue
-		if conditionType == frameworkapi.ConditionTypeDegraded {
-			polarity = fwconditions.HealthyWhenFalse
-		}
-
-		dependents = append(dependents, fwconditions.Dependent(conditionType, polarity))
-	}
-
-	return dependents
-}
-
-// normalizeConditionMetadata runs after aggregation so transient Ready states
-// during the action cannot reset the persisted transition timestamp.
-func normalizeConditionMetadata(
-	status *frameworkapi.Status,
-	previous []frameworkapi.Condition,
-	desired map[string]frameworkapi.Condition,
-	generation int64,
-	now time.Time,
-) {
-	priorByType := make(map[string]frameworkapi.Condition, len(previous))
-	for _, condition := range previous {
-		priorByType[condition.Type] = condition
-	}
-
-	status.ObservedGeneration = generation
-	for i := range status.Conditions {
-		condition := &status.Conditions[i]
-		configured, hasConfigured := desired[condition.Type]
-		prior := priorByType[condition.Type]
-
-		condition.ObservedGeneration = generation
-		if hasConfigured {
-			condition.ObservedGeneration = configured.ObservedGeneration
-		}
-
-		switch {
-		case !configured.LastTransitionTime.IsZero():
-			condition.LastTransitionTime = conditionTime(configured.LastTransitionTime.Time)
-		case prior.Status == condition.Status && !prior.LastTransitionTime.IsZero():
-			condition.LastTransitionTime = prior.LastTransitionTime
-		default:
-			condition.LastTransitionTime = conditionTime(now)
-		}
-	}
-}
-
-func conditionTime(value time.Time) metav1.Time {
-	return metav1.NewTime(value.UTC().Truncate(time.Second))
-}
-
-func readConditions(annotations map[string]string, generation int64) ([]frameworkapi.Condition, error) {
+// readAnnotationConditions returns the conditions configured by the
+// annotation. A missing annotation or an empty sequence means none.
+func readAnnotationConditions(annotations map[string]string) ([]annotationCondition, error) {
 	raw, present := annotations[conditionsAnnotation]
 	if !present {
 		return nil, nil
 	}
 
-	return decodeConditions(raw, generation)
+	return decodeAnnotationConditions(raw)
+}
+
+// currentConditions assembles the condition set for one reconcile: the
+// healthy MockReady and Degraded defaults, then the annotation entries
+// with the last entry per type winning. A missing reason defaults to
+// Type+Status and a missing message to the resolved reason.
+func currentConditions(injected []annotationCondition, generation int64) map[string]frameworkapi.Condition {
+	mockReady, degraded := string(conditionTypeMockReady), string(frameworkapi.ConditionTypeDegraded)
+	current := map[string]frameworkapi.Condition{
+		mockReady: {Type: mockReady, Status: metav1.ConditionTrue},
+		degraded:  {Type: degraded, Status: metav1.ConditionFalse},
+	}
+
+	for _, entry := range injected {
+		current[entry.Type] = frameworkapi.Condition{
+			Type:     entry.Type,
+			Status:   entry.Status,
+			Reason:   entry.Reason,
+			Message:  entry.Message,
+			Severity: entry.Severity,
+		}
+	}
+
+	for typ, condition := range current {
+		condition.ObservedGeneration = generation
+		condition.Reason = cmp.Or(condition.Reason, condition.Type+string(condition.Status))
+		condition.Message = cmp.Or(condition.Message, condition.Reason)
+		current[typ] = condition
+	}
+
+	return current
+}
+
+// readyDependents defines what the framework aggregates into Ready: the
+// framework-managed ProvisioningSucceeded plus every current condition.
+// Degraded counts against readiness when True; all other conditions count
+// for it when True.
+func readyDependents(current map[string]frameworkapi.Condition) []fwconditions.DependentDefinition {
+	dependents := make([]fwconditions.DependentDefinition, 0, len(current)+1)
+	dependents = append(dependents, fwconditions.Dependent(frameworkapi.ConditionTypeProvisioningSucceeded, fwconditions.HealthyWhenTrue))
+	for name := range current {
+		polarity := fwconditions.HealthyWhenTrue
+		if name == string(frameworkapi.ConditionTypeDegraded) {
+			polarity = fwconditions.HealthyWhenFalse
+		}
+		dependents = append(dependents, fwconditions.Dependent(frameworkapi.ConditionType(name), polarity))
+	}
+
+	return dependents
+}
+
+// stampAutomaticMetadata runs after the framework aggregated Ready and
+// cleaned up stale conditions. The controller owns generations and
+// transition timestamps: every condition reports the processed
+// generation, and a condition keeps its persisted transition time while
+// its status value is unchanged, even when its reason, message, or
+// dependency membership changed.
+func stampAutomaticMetadata(
+	status *frameworkapi.Status,
+	persisted []frameworkapi.Condition,
+	generation int64,
+	now time.Time,
+) {
+	previous := make(map[string]frameworkapi.Condition, len(persisted))
+	for _, condition := range persisted {
+		previous[condition.Type] = condition
+	}
+
+	status.ObservedGeneration = generation
+	for i := range status.Conditions {
+		condition := &status.Conditions[i]
+		condition.ObservedGeneration = generation
+
+		prior := previous[condition.Type]
+		if prior.Status == condition.Status && !prior.LastTransitionTime.IsZero() {
+			condition.LastTransitionTime = prior.LastTransitionTime
+		} else {
+			condition.LastTransitionTime = metav1.NewTime(now.UTC().Truncate(time.Second))
+		}
+	}
 }

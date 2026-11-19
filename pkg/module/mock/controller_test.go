@@ -44,7 +44,7 @@ import (
 
 const invalidConditionControls = `[{"type":"Ready","status":"True"}]`
 
-func TestStatusActionReportsVersionAndConditionControls(t *testing.T) {
+func TestStatusActionAppliesCurrentConditionsAndPublishesThePlatformVersion(t *testing.T) {
 	g := NewWithT(t)
 	ctx := t.Context()
 	key := client.ObjectKey{Namespace: "mock-system", Name: "platform-config"}
@@ -55,7 +55,7 @@ func TestStatusActionReportsVersionAndConditionControls(t *testing.T) {
 	}
 	obj := &moduleapi.ModuleObject{
 		Generation:  4,
-		Annotations: map[string]string{conditionsAnnotation: yamlConditionControls},
+		Annotations: map[string]string{conditionsAnnotation: yamlSimulatedConditions},
 	}
 	reader := fake.NewClientBuilder().WithObjects(config).Build()
 	request := &fwtypes.ReconciliationRequest{Client: reader, Instance: obj}
@@ -66,7 +66,7 @@ func TestStatusActionReportsVersionAndConditionControls(t *testing.T) {
 	g.Expect(obj.GetStatus().ObservedGeneration).To(Equal(int64(4)))
 	g.Expect(request.Conditions.GetTopLevelCondition()).To(gstruct.PointTo(HaveField("Status", metav1.ConditionFalse)))
 	g.Expect(request.Conditions.GetCondition(conditionTypeMockReady)).To(gstruct.PointTo(SatisfyAll(
-		HaveField("ObservedGeneration", int64(0)),
+		HaveField("ObservedGeneration", int64(4)),
 		HaveField("Reason", "Maintenance"),
 	)))
 	g.Expect(request.Conditions.GetCondition(frameworkapi.ConditionTypeProvisioningSucceeded)).To(
@@ -83,18 +83,20 @@ func TestStatusActionReportsVersionAndConditionControls(t *testing.T) {
 	g.Expect(obj.GetReleaseStatus().GetPlatformRelease()).To(Equal("3.13.0"))
 }
 
-func TestStatusActionPreservesPersistedReleaseOnInputFailure(t *testing.T) {
+func TestStatusActionReturnsInputErrorsWithHealthyDefaults(t *testing.T) {
 	for _, scenario := range []struct {
 		name       string
 		annotation string
 		config     map[string]string
-		reason     string
+		category   error
 	}{
-		{name: "missing ConfigMap", reason: "InvalidPlatformConfiguration"},
-		{name: "missing version", config: map[string]string{}, reason: "InvalidPlatformConfiguration"},
-		{name: "invalid version", config: map[string]string{platformVersionKey: "newest"}, reason: "InvalidPlatformConfiguration"},
-		{name: "invalid annotation takes precedence", annotation: invalidConditionControls, reason: "InvalidMockAnnotation"},
-		{name: "invalid annotation blocks new version", annotation: invalidConditionControls, config: map[string]string{platformVersionKey: "4.0.0"}, reason: "InvalidMockAnnotation"},
+		{name: "missing ConfigMap", category: moduleerrors.ErrInvalidMockPlatformConfiguration},
+		{name: "missing version", config: map[string]string{}, category: moduleerrors.ErrInvalidMockPlatformConfiguration},
+		{name: "invalid version", config: map[string]string{platformVersionKey: "newest"}, category: moduleerrors.ErrInvalidMockPlatformConfiguration},
+		{name: "valid annotation is not applied when the ConfigMap is missing", annotation: yamlSimulatedConditions, category: moduleerrors.ErrInvalidMockPlatformConfiguration},
+		{name: "valid annotation is not applied when the version is invalid", annotation: yamlSimulatedConditions, config: map[string]string{platformVersionKey: "newest"}, category: moduleerrors.ErrInvalidMockPlatformConfiguration},
+		{name: "invalid annotation takes precedence over missing config", annotation: invalidConditionControls, category: moduleerrors.ErrInvalidMockAnnotation},
+		{name: "invalid annotation blocks a new version", annotation: invalidConditionControls, config: map[string]string{platformVersionKey: "4.0.0"}, category: moduleerrors.ErrInvalidMockAnnotation},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			g := NewWithT(t)
@@ -109,28 +111,68 @@ func TestStatusActionPreservesPersistedReleaseOnInputFailure(t *testing.T) {
 			}
 			obj := &moduleapi.ModuleObject{Generation: 5}
 			obj.GetReleaseStatus().SetPlatformRelease("3.0.0")
+			obj.SetConditions([]frameworkapi.Condition{{Type: "Custom", Status: metav1.ConditionTrue, ObservedGeneration: 4}})
 			if scenario.annotation != "" {
 				obj.Annotations = map[string]string{conditionsAnnotation: scenario.annotation}
 			}
 			request := &fwtypes.ReconciliationRequest{Client: builder.Build(), Instance: obj}
 
-			g.Expect(runMockStatusAction(t.Context(), key, request)).To(Succeed())
+			err := runMockStatusAction(t.Context(), key, request)
 
+			g.Expect(err).To(MatchError(scenario.category))
 			g.Expect(obj.GetReleaseStatus().GetPlatformRelease()).To(Equal("3.0.0"))
 			g.Expect(obj.GetStatus().ObservedGeneration).To(Equal(int64(5)))
 			g.Expect(request.Conditions.GetCondition(conditionTypeMockReady)).To(gstruct.PointTo(SatisfyAll(
-				HaveField("Status", metav1.ConditionFalse),
-				HaveField("Reason", scenario.reason),
+				HaveField("Status", metav1.ConditionTrue),
+				HaveField("ObservedGeneration", int64(5)),
+				HaveField("Reason", "MockReadyTrue"),
 			)))
 			g.Expect(request.Conditions.GetCondition(frameworkapi.ConditionTypeDegraded)).To(gstruct.PointTo(SatisfyAll(
-				HaveField("Status", metav1.ConditionTrue),
-				HaveField("Reason", scenario.reason),
+				HaveField("Status", metav1.ConditionFalse),
+				HaveField("ObservedGeneration", int64(5)),
 			)))
+			g.Expect(request.Conditions.GetCondition("Custom")).To(BeNil())
+			g.Expect(request.Conditions.GetCondition("example.org/Custom")).To(BeNil())
 			g.Expect(request.Conditions.GetCondition(frameworkapi.ConditionTypeProvisioningSucceeded)).To(
-				gstruct.PointTo(HaveField("Status", metav1.ConditionTrue)),
+				gstruct.PointTo(HaveField("Status", metav1.ConditionFalse)),
 			)
+			g.Expect(request.Conditions.GetTopLevelCondition()).To(gstruct.PointTo(HaveField("Status", metav1.ConditionFalse)))
 		})
 	}
+}
+
+func TestStatusActionFailsFirstReconcileAndRecoversAfterCorrection(t *testing.T) {
+	g := NewWithT(t)
+	ctx := t.Context()
+	key := client.ObjectKey{Namespace: "mock-system", Name: "platform-config"}
+	reader := fake.NewClientBuilder().Build()
+	obj := &moduleapi.ModuleObject{Generation: 2}
+	request := &fwtypes.ReconciliationRequest{Client: reader, Instance: obj}
+
+	g.Expect(runMockStatusAction(ctx, key, request)).To(MatchError(moduleerrors.ErrInvalidMockPlatformConfiguration))
+	g.Expect(obj.GetReleaseStatus().GetPlatformRelease()).To(BeEmpty())
+	g.Expect(obj.GetStatus().ObservedGeneration).To(Equal(int64(2)))
+	g.Expect(request.Conditions.GetCondition(conditionTypeMockReady)).To(gstruct.PointTo(
+		HaveField("ObservedGeneration", int64(2)),
+	))
+	g.Expect(request.Conditions.GetCondition(frameworkapi.ConditionTypeProvisioningSucceeded)).To(gstruct.PointTo(SatisfyAll(
+		HaveField("Status", metav1.ConditionFalse),
+		HaveField("ObservedGeneration", int64(2)),
+	)))
+
+	config := &corev1.ConfigMap{
+		Name:      key.Name,
+		Namespace: key.Namespace,
+		Data:      map[string]string{platformVersionKey: "3.1.0"},
+	}
+	g.Expect(reader.Create(ctx, config)).To(Succeed())
+
+	g.Expect(runMockStatusAction(ctx, key, request)).To(Succeed())
+	g.Expect(obj.GetReleaseStatus().GetPlatformRelease()).To(Equal("3.1.0"))
+	g.Expect(request.Conditions.GetTopLevelCondition()).To(gstruct.PointTo(HaveField("Status", metav1.ConditionTrue)))
+	g.Expect(request.Conditions.GetCondition(frameworkapi.ConditionTypeProvisioningSucceeded)).To(
+		gstruct.PointTo(HaveField("Status", metav1.ConditionTrue)),
+	)
 }
 
 func TestStatusActionReturnsRealAPIErrors(t *testing.T) {
@@ -141,7 +183,10 @@ func TestStatusActionReturnsRealAPIErrors(t *testing.T) {
 			return apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, key.Name, errors.New("access denied"))
 		},
 	}).Build()
-	obj := &moduleapi.ModuleObject{Generation: 2}
+	obj := &moduleapi.ModuleObject{
+		Generation:  2,
+		Annotations: map[string]string{conditionsAnnotation: yamlSimulatedConditions},
+	}
 	request := &fwtypes.ReconciliationRequest{Client: reader, Instance: obj}
 
 	err := runMockStatusAction(t.Context(), key, request)
@@ -149,6 +194,10 @@ func TestStatusActionReturnsRealAPIErrors(t *testing.T) {
 	g.Expect(apierrors.IsForbidden(err)).To(BeTrue())
 	g.Expect(obj.GetReleaseStatus().GetPlatformRelease()).To(BeEmpty())
 	g.Expect(obj.GetStatus().ObservedGeneration).To(Equal(int64(2)))
+	g.Expect(request.Conditions.GetCondition(conditionTypeMockReady)).To(gstruct.PointTo(
+		HaveField("Status", metav1.ConditionTrue),
+	))
+	g.Expect(request.Conditions.GetCondition("example.org/Custom")).To(BeNil())
 	g.Expect(request.Conditions.GetCondition(frameworkapi.ConditionTypeProvisioningSucceeded)).To(
 		gstruct.PointTo(HaveField("Status", metav1.ConditionFalse)),
 	)
@@ -219,6 +268,10 @@ func TestControllerRejectsCoreGVKBeforeDiscovery(t *testing.T) {
 	g.Expect(controller.Run(t.Context())).To(MatchError(moduleerrors.ErrInvalidMockOptions))
 }
 
+// runMockStatusAction runs the action and mimics the pinned framework
+// apply sequence around it: provisioning result, stale cleanup, happiness,
+// then the post-status hook. It does not prove real persistence, retries,
+// or events.
 func runMockStatusAction(ctx context.Context, key client.ObjectKey, rr *fwtypes.ReconciliationRequest) error {
 	controller := &Controller{configMap: key}
 	err := controller.reconcileStatus(ctx, rr)
