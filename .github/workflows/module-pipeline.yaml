@@ -1,23 +1,52 @@
-# Example pipeline driving the tools binary through `go run`: generate a
-# definition from an example source, lint it, deploy the bundled
-# controller package into a throwaway Kind cluster, and validate the
-# running module read-only. The two examples run as parallel matrix
-# legs, each with its own cluster.
+# End-to-end pipeline for a real third-party module operator: it checks
+# out opendatahub-io/feast-module-operator, builds its controller image
+# and pushes it to ttl.sh — an anonymous ephemeral registry: no
+# credentials, and the image vanishes after the TTL carried in the tag
+# (here one hour) — then drives the full module workflow (generate,
+# lint, deploy, validate) against a throwaway Kind cluster whose nodes
+# pull the image directly from ttl.sh.
 #
-# The tools image is pushed to ttl.sh, an anonymous ephemeral registry:
-# no credentials, and the image vanishes after the TTL carried in the
-# tag (here one hour). The Kind nodes pull it directly, so nothing is
-# saved or loaded into the cluster. kubectl comes preinstalled on the
-# runner. The run is manual-only (workflow_dispatch); enable the
-# commented triggers to run it on changes.
+# This repository is never checked out: the tools run go-run style from
+# their module path on GitHub, exactly as an external module author
+# would consume them. The dispatch inputs pin either side for a
+# debugging run. kubectl comes preinstalled on the runner.
+#
+# Platform contract notes encoded below, learned from a live run of
+# this exact flow:
+#   - the module name is "data": opendatahub-operator registers the
+#     feast module under that name, and the module reads its
+#     platformVersion from the odh-<module>-config ConfigMap the name
+#     derives (odh-data-config), not from the CRD kind;
+#   - the prometheus operator must be installed before the module
+#     deploys: the module controller watches ServiceMonitors
+#     unconditionally, and without the CRD its informer never syncs,
+#     so the controller runs but reconciles nothing;
+#   - the chart renders no Namespace (the platform owns namespaces),
+#     so the target namespace is created up front and passed as the
+#     chart's "namespace" value, which its NetworkPolicy templates
+#     require (they have no .Release.Namespace fallback);
+#   - the FeastOperator CRD mandates the "default-feastoperator"
+#     singleton instance name (XValidation), so the generated
+#     definition is post-processed to carry it.
+#
+# The run is manual-only (workflow_dispatch); enable the commented
+# triggers to run it on changes.
 
 name: module pipeline
 
 on:
   workflow_dispatch:
+    inputs:
+      tools-ref:
+        description: "odh-platform-tools module ref the go-run commands use"
+        default: main
+        type: string
+      module-ref:
+        description: "feast-module-operator git ref to check out"
+        default: main
+        type: string
   # push:
   #   branches: [main]
-  # pull_request:
 
 permissions:
   contents: read
@@ -26,69 +55,71 @@ env:
   # Kind runs go-run style like the module commands; $KIND must stay
   # unquoted so the invocation splits into words. Pinning the version
   # also fixes the default node image (kindest/node v1.37.0,
-  # digest-pinned by kind itself), which matches the Kubernetes line
-  # this repository tests against — no --image needed. The provider
-  # selection is a plain environment variable kind reads, so it lives
-  # here instead of a per-command prefix.
+  # digest-pinned by kind itself). The provider selection is a plain
+  # environment variable kind reads, so it lives here instead of a
+  # per-command prefix.
   KIND: go run sigs.k8s.io/kind@v0.33.0
   KIND_EXPERIMENTAL_PROVIDER: podman
-  # The tools binary, same go-run style; $ODH_CLI must stay unquoted
-  # so the invocation splits into words.
-  ODH_CLI: go run ./cmd
+  # The tools run from their module path on GitHub, so the pipeline
+  # exercises the published tooling; $ODH_CLI must stay unquoted so the
+  # invocation splits into words. No tag exists yet; pin a SHA here for
+  # reproducible runs.
+  ODH_CLI: go run github.com/lburgazzoli/odh-platform-tools/cmd@${{ github.event.inputs.tools-ref || 'main' }}
 
 jobs:
   pipeline:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        example:
-          - name: helm
-            config: examples/helm/chart/module.yaml
-          - name: kustomize
-            config: examples/kustomize/module.yaml
     env:
-      CLUSTER: module-pipeline-${{ matrix.example.name }}
-      NAMESPACE: odh-${{ matrix.example.name }}-ci
-      CONFIG: ${{ matrix.example.config }}
+      CLUSTER: module-pipeline
+      NAMESPACE: opendatahub-feast-system
+      MODULE: feast-module-operator
+      CONFIG: .generated/module.yaml
       # An explicit kubeconfig keeps the tools and kubectl on the same
       # cluster regardless of any default kubeconfig on the runner.
       # Kind selects the new cluster's context when it writes this
       # file, so no --kubeconfig or --context flags are needed.
       KUBECONFIG: ${{ github.workspace }}/.kind/kubeconfig
     steps:
-      - name: Check out the repository
+      - name: Check out the module operator
         uses: actions/checkout@v4
+        with:
+          repository: opendatahub-io/feast-module-operator
+          ref: ${{ github.event.inputs.module-ref || 'main' }}
+          path: feast-module-operator
 
       - name: Set up Go
+        # stable satisfies both sides: the tools module requires a
+        # newer Go line than the module operator's go.mod pins, and the
+        # same toolchain compiles the go-run tools fetch.
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: stable
 
       - name: Resolve the image reference
         run: |
-          # A random UUID keeps concurrent runs and legs from sharing a
-          # ttl.sh reference; the :1h tag is the TTL. IMAGE and the
-          # related-image source deploy resolves are written once from
-          # the same variable, so they cannot drift apart. The UUID is
-          # lowercased because image names must be (macOS uuidgen
-          # prints uppercase; Linux already lowercase).
-          id="$(uuidgen | tr 'A-Z' 'a-z')"
+          # A random UUID keeps concurrent runs from sharing a ttl.sh
+          # reference; the :1h tag is the TTL. IMAGE is written once
+          # and reused by the build and the definition values, so they
+          # cannot drift apart. The UUID is lowercased because image
+          # names must be (macOS uuidgen prints uppercase; Linux
+          # already lowercase).
+          id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
           echo "IMAGE_ID=$id" >> "$GITHUB_ENV"
           echo "IMAGE=ttl.sh/$id:1h" >> "$GITHUB_ENV"
-          echo "RELATED_IMAGE_MOCK_CONTROLLER=ttl.sh/$id:1h" >> "$GITHUB_ENV"
 
-      - name: Build and push the tools image
+      - name: Build and push the module operator image
         run: |
-          make container-build \
-            IMAGE_REGISTRY=ttl.sh \
-            IMAGE_NAME="$IMAGE_ID" \
-            IMAGE_TAG=1h
-          make container-push \
-            IMAGE_REGISTRY=ttl.sh \
-            IMAGE_NAME="$IMAGE_ID" \
-            IMAGE_TAG=1h
+          # The module operator's own Makefile builds its Containerfile;
+          # podman is preinstalled on the runner. Its bundled upstream
+          # manifests are git-tracked, so the container-prep hook skips
+          # the feast manifests fetch and only regenerates code.
+          make -C "$MODULE" container-build \
+            CONTAINER_TOOL=podman \
+            IMG="$IMAGE"
+          make -C "$MODULE" container-push \
+            CONTAINER_TOOL=podman \
+            IMG="$IMAGE"
 
       - name: Create the Kind cluster
         run: |
@@ -96,25 +127,58 @@ jobs:
           $KIND create cluster \
             --name "$CLUSTER"
 
+      - name: Install the prometheus operator
+        run: |
+          # Prerequisite, not convenience: the module controller
+          # watches ServiceMonitors unconditionally, and without the
+          # CRD its informer never syncs — the controller runs but
+          # reconciles nothing. The bundle is applied server-side
+          # because its CRDs are too large for client-side apply.
+          kubectl apply --server-side \
+            --filename https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.95.2/bundle.yaml
+          kubectl -n default rollout status deployment/prometheus-operator --timeout=180s
+          kubectl wait --for=condition=Established \
+            crd/servicemonitors.monitoring.coreos.com --timeout=60s
+
       - name: Create the target namespace
         run: |
+          # The chart renders no Namespace — the platform owns
+          # namespaces — and the deployer requires the target to exist.
           kubectl create namespace "$NAMESPACE"
 
-      - name: Generate and lint a definition from the Helm chart
-        if: matrix.example.name == 'helm'
+      - name: Generate the module definition
         run: |
-          mkdir -p .generated
-          $ODH_CLI module generate \
-            examples/helm/chart \
-            --output .generated/helm-module.yaml
-          # The generated file records the source's absolute path, so
-          # it is an artifact for verification here; the deploy step
-          # below uses the checked-in definition, whose manifest path
-          # is relative.
-          $ODH_CLI module lint \
-            --config .generated/helm-module.yaml
+          # --name data is the platform module name registered by
+          # opendatahub-operator for this operator, not the CRD kind:
+          # the module reads its platformVersion from the
+          # odh-<module>-config ConfigMap the name derives
+          # (odh-data-config). --init-container names the init
+          # container the chart's Deployment carries. The namespace
+          # value is the chart's contract with the platform; the image
+          # value points the controller at the build above.
+          mkdir -p "$(dirname "$CONFIG")"
+          $ODH_CLI module generate "$MODULE/config/chart" \
+            --name data \
+            --init-container copy-manifests \
+            --values "image.fullRef=$IMAGE" \
+            --values "namespace=$NAMESPACE" \
+            --output "$CONFIG"
 
-      - name: Lint the checked-in definition
+      - name: Set the instance name
+        run: |
+          # The FeastOperator CRD mandates the "default-feastoperator"
+          # singleton name (XValidation); generate has no instance-name
+          # flag, and the loader would otherwise default the instance
+          # name to the module name ("data"), which validate's
+          # MODULE_EXISTS lookup would not find. The generated file's
+          # shape is owned by this repository's generator, so the
+          # two-space instance key anchors the insert.
+          awk '
+            { print }
+            /^  instance:$/ { print "    name: default-feastoperator" }
+          ' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+
+      - name: Lint the definition
         run: |
           $ODH_CLI module lint \
             --config "$CONFIG"
@@ -130,7 +194,7 @@ jobs:
       - name: Apply the module instance
         run: |
           kubectl apply \
-            --filename "examples/${{ matrix.example.name }}/instance.yaml"
+            --filename "$MODULE/config/samples/components_v1alpha1_feastoperator.yaml"
 
       - name: Validate the running module
         run: |
@@ -142,6 +206,7 @@ jobs:
             --timeout 120s
 
       - name: Delete the Kind cluster
+        if: always()
         run: |
           $KIND delete cluster \
             --name "$CLUSTER"
