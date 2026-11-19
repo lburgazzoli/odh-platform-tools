@@ -174,7 +174,7 @@ func readyMock(ready string, version string) gomegatypes.GomegaMatcher {
 	}
 	return SatisfyAll(
 		HaveField("Phase", phase),
-		mockCondition("Ready", ready, HaveKey("lastTransitionTime")),
+		mockCondition("Ready", ready, HaveKeyWithValue("lastTransitionTime", automaticTimestamp())),
 		mockCondition("ProvisioningSucceeded", "True"),
 		HaveField("Releases", releases),
 	)
@@ -189,11 +189,57 @@ func absentMockCondition(kind string) gomegatypes.GomegaMatcher {
 	return HaveField("Conditions", Not(HaveKey(kind)))
 }
 
-func mockInputFailed(version string, reason string) gomegatypes.GomegaMatcher {
+// automaticTimestamp matches the controller's automatic transition
+// stamps: present, whole-second UTC RFC 3339, and not the zero time —
+// never a value authored through the annotation.
+func automaticTimestamp() gomegatypes.GomegaMatcher {
 	return SatisfyAll(
-		readyMock("False", version),
-		mockCondition("MockReady", "False", HaveKeyWithValue("reason", reason), HaveKeyWithValue("message", Not(BeEmpty()))),
-		mockCondition("Degraded", "True", HaveKeyWithValue("reason", reason), HaveKeyWithValue("message", Not(BeEmpty()))),
+		Not(BeEmpty()),
+		MatchRegexp(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$`),
+		Not(Equal("0001-01-01T00:00:00Z")),
+	)
+}
+
+// The classified failure messages distinguish input causes: annotation
+// errors name the annotation, configuration errors name the version
+// key. Consecutive failure steps assert different notes so a stale
+// status cannot satisfy the next step.
+const (
+	annotationFailureNote = mockAnnotation
+	configFailureNote     = "data.platformVersion"
+)
+
+// mockInputFailed matches the framework-owned failure status after an
+// input error: provisioning failed with the classified error message,
+// readiness derived False, and the healthy mock defaults installed
+// instead of the annotation's controls. The last persisted release is
+// retained, empty on the first-ever failure.
+func mockInputFailed(version string, notes ...string) gomegatypes.GomegaMatcher {
+	releases := BeEmpty()
+	if version != "" {
+		releases = ConsistOf(SatisfyAll(
+			HaveKeyWithValue("name", "platform"),
+			HaveKeyWithValue("version", version),
+		))
+	}
+	provisioning := []gomegatypes.GomegaMatcher{
+		HaveKeyWithValue("reason", "Error"),
+		HaveKeyWithValue("lastTransitionTime", automaticTimestamp()),
+	}
+	for _, note := range notes {
+		provisioning = append(provisioning, HaveKeyWithValue("message", ContainSubstring(note)))
+	}
+	return SatisfyAll(
+		HaveField("Phase", "Not Ready"),
+		mockCondition("Ready", "False", HaveKeyWithValue("lastTransitionTime", automaticTimestamp())),
+		mockCondition("ProvisioningSucceeded", "False", provisioning...),
+		mockCondition("MockReady", "True",
+			HaveKeyWithValue("reason", "MockReadyTrue"),
+			HaveKeyWithValue("lastTransitionTime", automaticTimestamp())),
+		mockCondition("Degraded", "False",
+			HaveKeyWithValue("reason", "DegradedFalse"),
+			HaveKeyWithValue("lastTransitionTime", automaticTimestamp())),
+		HaveField("Releases", releases),
 	)
 }
 
@@ -372,11 +418,61 @@ func (s *scenario) logControllerOutput(t *testing.T, ctx context.Context) {
 	}
 }
 
-func matchingFailureEvent(events []eventsv1.Event, uid types.UID) (eventsv1.Event, error) {
+// matchingModuleEvent selects the event a reconcile failure recorded
+// against the module instance. The caller names the framework reason:
+// ProvisioningError for input errors, ReconcileError for status write
+// failures — the two proofs select on different reasons, so neither
+// can satisfy the other's check.
+func matchingModuleEvent(events []eventsv1.Event, uid types.UID, reason string) (eventsv1.Event, error) {
 	for _, event := range events {
-		if event.Regarding.UID == uid && event.Reason == "ReconcileError" {
+		if event.Regarding.UID == uid && event.Reason == reason {
 			return event, nil
 		}
 	}
-	return eventsv1.Event{}, fmt.Errorf("no ReconcileError event for %s", uid)
+	return eventsv1.Event{}, fmt.Errorf("no %s event for %s", reason, uid)
+}
+
+// awaitControllerRetry proves the framework retried the failing
+// reconcile after the given time while the inputs stayed unchanged:
+// controller-runtime logs one "Reconciler error" line per failed
+// attempt. An unchanged status read alone would not show the retry ran.
+func (s *scenario) awaitControllerRetry(t *testing.T, after time.Time) {
+	t.Helper()
+
+	g := NewWithT(t)
+	active := engine(t)
+	kube, err := kubernetes.NewForConfig(active.Config())
+	g.Expect(err).NotTo(HaveOccurred())
+	pods := &corev1.PodList{}
+	g.Expect(active.Client().List(t.Context(), pods, crclient.InNamespace(s.targetNS),
+		crclient.MatchingLabels{"app": mockControllerName})).To(Succeed())
+	g.Expect(pods.Items).To(HaveLen(1))
+	since := metav1.NewTime(after)
+	g.Eventually(func(g Gomega) {
+		logs, err := kube.CoreV1().Pods(s.targetNS).GetLogs(pods.Items[0].Name,
+			&corev1.PodLogOptions{Container: "manager", SinceTime: &since, LimitBytes: new(int64(16384))}).DoRaw(t.Context())
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(string(logs)).To(ContainSubstring("Reconciler error"))
+	}).WithContext(t.Context()).WithTimeout(30 * time.Second).WithPolling(500 * time.Millisecond).Should(Succeed())
+}
+
+// awaitInputErrorEvent proves the packaged recorder published a warning
+// ProvisioningError event against the module instance while its inputs
+// were failing.
+func (s *scenario) awaitInputErrorEvent(t *testing.T, instance *unstructured.Unstructured) {
+	t.Helper()
+
+	g := NewWithT(t)
+	kube := engine(t).Client()
+	g.Eventually(func(g Gomega) {
+		events, err := s.moduleEvents(t.Context(), kube, instance.GetUID())
+		g.Expect(err).NotTo(HaveOccurred())
+		event, err := matchingModuleEvent(events, instance.GetUID(), "ProvisioningError")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(event.Namespace).To(Equal(metav1.NamespaceDefault))
+		g.Expect(event.Type).To(Equal(corev1.EventTypeWarning))
+		g.Expect(event.Regarding.Name).To(Equal(instance.GetName()))
+		g.Expect(event.Regarding.Kind).To(Equal(s.moduleGVK().Kind))
+		g.Expect(event.Note).To(ContainSubstring(annotationFailureNote))
+	}).WithContext(t.Context()).WithTimeout(30 * time.Second).WithPolling(500 * time.Millisecond).Should(Succeed())
 }

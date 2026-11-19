@@ -66,6 +66,9 @@ const mockInfoDegraded = `
   severity: Info
 `
 
+// The authored generation and transition time are ignored under the
+// simplified contract: the controller reports the current generation
+// and its own automatic timestamp.
 const mockUnknownObservation = `
 - type: Probe
   status: "Unknown"
@@ -80,17 +83,28 @@ const mockFailedObservation = `
   status: "False"
 `
 
+// Repeated condition types are valid: the last whole entry wins.
 const mockDuplicateTypes = `
 - type: Probe
   status: "True"
+  reason: Superseded
 - type: Probe
   status: "False"
 `
 
+// Unknown fields keep any shape, and the removed metadata fields keep
+// arbitrary values: everything outside type, status, reason, message,
+// and severity is ignored rather than validated.
 const mockUnknownField = `
 - type: Probe
   status: "True"
   unexpected: true
+  tags: [one, 2, null]
+  labels:
+    team: mock
+  observedGeneration: -7
+  lastTransitionTime: garbage
+  lastHeartbeatTime: null
 `
 
 const mockReservedReady = `
@@ -100,6 +114,15 @@ const mockReservedReady = `
 
 const mockReservedProvisioning = `
 - type: ProvisioningSucceeded
+  status: "False"
+`
+
+// Exactly one YAML document is allowed.
+const mockExtraDocument = `
+- type: Probe
+  status: "True"
+---
+- type: Probe
   status: "False"
 `
 
@@ -144,7 +167,31 @@ func TestMockModuleExamplesPublishStatusUnderPackagedRBAC(t *testing.T) {
 			// The first reconciliation has no prior persisted status to
 			// supply an observed generation or a release.
 			g.Expect(instance.GetGeneration()).To(BeNumerically(">", 0))
-			awaitMockStatus(t, instance, mockInputFailed("", "InvalidMockAnnotation"))
+			failed := awaitMockStatus(t, instance, mockInputFailed("", annotationFailureNote))
+
+			// The framework retries the unchanged failing input on its
+			// own. Wait out a whole second first, then take the log
+			// cutoff: the server filters pod logs at whole-second
+			// precision, so the cutoff's second is strictly later than
+			// the initial failure's, and any "Reconciler error" line
+			// the poll finds is a later attempt rather than the initial
+			// one. Then assert the generations and transition times the
+			// retries reported stayed stable, and that the recorder
+			// published a warning ProvisioningError event.
+			awaitNextTransitionSecond(t)
+			s.awaitControllerRetry(t, time.Now())
+			retried := awaitMockStatus(t, instance, mockInputFailed("", annotationFailureNote))
+			for _, kind := range []string{"Ready", "ProvisioningSucceeded", "MockReady", "Degraded"} {
+				g.Expect(retried.Conditions[kind]).To(SatisfyAll(
+					HaveKeyWithValue("observedGeneration", instance.GetGeneration()),
+					HaveKeyWithValue("lastTransitionTime", automaticTimestamp()),
+				), "%s", kind)
+				g.Expect(retried.Conditions[kind]["lastTransitionTime"]).
+					To(Equal(failed.Conditions[kind]["lastTransitionTime"]),
+						"%s transition time moved on an identical retry", kind)
+			}
+			s.awaitInputErrorEvent(t, instance)
+
 			setMockAnnotation(t, instance, &authored)
 			awaitMockStatus(t, instance, readyMock("True", "2.19.0"))
 			setMockAnnotation(t, instance, nil)
@@ -198,8 +245,9 @@ func (s *scenario) exerciseMockConditions(t *testing.T, instance *unstructured.U
 	awaitMockStatus(t, instance, readyMock("Unknown", "2.19.0"), mockCondition("Probe", "Unknown",
 		HaveKeyWithValue("reason", "ObservationPending"),
 		HaveKeyWithValue("message", "waiting for the probe"),
-		HaveKeyWithValue("lastTransitionTime", "2026-04-07T10:02:03Z"),
-		SatisfyAny(Not(HaveKey("observedGeneration")), HaveKeyWithValue("observedGeneration", BeNumerically("==", 0)))))
+		HaveKeyWithValue("observedGeneration", instance.GetGeneration()),
+		HaveKeyWithValue("lastTransitionTime", SatisfyAll(
+			automaticTimestamp(), Not(Equal("2026-04-07T10:02:03Z"))))))
 
 	setMockAnnotation(t, instance, new(mockFailedObservation))
 	failed := awaitMockStatus(t, instance, readyMock("False", "2.19.0"), mockCondition("Probe", "False",
@@ -215,13 +263,26 @@ func (s *scenario) exerciseMockConditions(t *testing.T, instance *unstructured.U
 		mockCondition("Ready", "False", HaveKeyWithValue("lastTransitionTime", failed.Conditions["Ready"]["lastTransitionTime"])))
 
 	setMockAnnotation(t, instance, new(mockMalformed))
-	awaitMockStatus(t, instance, mockInputFailed("2.20.0", "InvalidMockAnnotation"), absentMockCondition("Probe"))
+	awaitMockStatus(t, instance, mockInputFailed("2.20.0", annotationFailureNote), absentMockCondition("Probe"))
 	setMockAnnotation(t, instance, nil)
 	awaitMockStatus(t, instance, readyMock("True", "2.20.0"))
 
-	for _, invalid := range []string{mockDuplicateTypes, mockUnknownField, mockReservedReady, mockReservedProvisioning} {
+	// Permissive controls: the last whole entry wins for a repeated
+	// type, and unknown or removed fields are ignored.
+	setMockAnnotation(t, instance, new(mockDuplicateTypes))
+	awaitMockStatus(t, instance, readyMock("False", "2.20.0"), mockCondition("Probe", "False",
+		HaveKeyWithValue("reason", "ProbeFalse"), HaveKeyWithValue("message", "ProbeFalse")))
+	setMockAnnotation(t, instance, new(mockUnknownField))
+	awaitMockStatus(t, instance, readyMock("True", "2.20.0"), mockCondition("Probe", "True",
+		HaveKeyWithValue("reason", "ProbeTrue"),
+		HaveKeyWithValue("observedGeneration", instance.GetGeneration()),
+		HaveKeyWithValue("lastTransitionTime", automaticTimestamp())))
+	setMockAnnotation(t, instance, nil)
+	awaitMockStatus(t, instance, readyMock("True", "2.20.0"), absentMockCondition("Probe"))
+
+	for _, invalid := range []string{mockReservedReady, mockReservedProvisioning, mockExtraDocument} {
 		setMockAnnotation(t, instance, &invalid)
-		awaitMockStatus(t, instance, mockInputFailed("2.20.0", "InvalidMockAnnotation"))
+		awaitMockStatus(t, instance, mockInputFailed("2.20.0", annotationFailureNote), absentMockCondition("Probe"))
 		setMockAnnotation(t, instance, nil)
 		awaitMockStatus(t, instance, readyMock("True", "2.20.0"))
 	}
@@ -235,16 +296,31 @@ func (s *scenario) exercisePlatformConfig(t *testing.T, instance *unstructured.U
 	s.setPlatformVersion(t, "v3.1")
 	awaitMockStatus(t, instance, readyMock("True", "3.1.0"))
 	s.deletePlatformConfig(t)
-	awaitMockStatus(t, instance, mockInputFailed("3.1.0", "InvalidPlatformConfiguration"))
+	awaitMockStatus(t, instance, mockInputFailed("3.1.0", configFailureNote))
 
 	s.createPlatformConfig(t, "3.2.0")
 	awaitMockStatus(t, instance, readyMock("True", "3.2.0"))
 	s.setPlatformVersion(t, "")
-	awaitMockStatus(t, instance, mockInputFailed("3.2.0", "InvalidPlatformConfiguration"))
+	awaitMockStatus(t, instance, mockInputFailed("3.2.0", configFailureNote))
 	s.setPlatformVersion(t, "3.3.0")
 	awaitMockStatus(t, instance, readyMock("True", "3.3.0"))
+
+	// A valid unready annotation must not leak into the failure status
+	// when the platform configuration breaks: the healthy defaults are
+	// installed and the release is retained.
+	setMockAnnotation(t, instance, new(mockUnready))
+	awaitMockStatus(t, instance, readyMock("False", "3.3.0"), mockCondition("MockReady", "False"))
 	s.setPlatformVersion(t, "not-semver")
-	awaitMockStatus(t, instance, mockInputFailed("3.3.0", "InvalidPlatformConfiguration"))
+	awaitMockStatus(t, instance, mockInputFailed("3.3.0", configFailureNote))
+	s.setPlatformVersion(t, "3.3.0")
+	awaitMockStatus(t, instance, readyMock("False", "3.3.0"), mockCondition("MockReady", "False"))
+	setMockAnnotation(t, instance, nil)
+	awaitMockStatus(t, instance, readyMock("True", "3.3.0"))
+
+	// Break the configuration again so the restart section proves the
+	// replacement pod retains the release read from a failing state.
+	s.setPlatformVersion(t, "not-semver")
+	awaitMockStatus(t, instance, mockInputFailed("3.3.0", configFailureNote))
 
 	previous := s.awaitControllerPod(t, "")
 	g.Expect(engine(t).Client().Delete(t.Context(), &previous, crclient.Preconditions{UID: &previous.UID})).To(Succeed())
@@ -252,12 +328,12 @@ func (s *scenario) exercisePlatformConfig(t *testing.T, instance *unstructured.U
 	// Force a fresh reconciliation through the replacement pod and prove
 	// its version came from the persisted status, including on bad input.
 	setMockAnnotation(t, instance, new(mockMalformed))
-	awaitMockStatus(t, instance, mockInputFailed("3.3.0", "InvalidMockAnnotation"))
+	awaitMockStatus(t, instance, mockInputFailed("3.3.0", annotationFailureNote))
 	setMockAnnotation(t, instance, nil)
-	awaitMockStatus(t, instance, mockInputFailed("3.3.0", "InvalidPlatformConfiguration"))
+	awaitMockStatus(t, instance, mockInputFailed("3.3.0", configFailureNote))
 
 	setMockAnnotation(t, instance, new(mockMalformed))
-	awaitMockStatus(t, instance, mockInputFailed("3.3.0", "InvalidMockAnnotation"))
+	awaitMockStatus(t, instance, mockInputFailed("3.3.0", annotationFailureNote))
 	s.setPlatformVersion(t, "2.19.0")
 	g.Consistently(func(g Gomega) {
 		current := instance.DeepCopy()
@@ -304,7 +380,7 @@ func (s *scenario) exerciseMockEventRBAC(t *testing.T, instance *unstructured.Un
 	g.Eventually(func(g Gomega) {
 		events, err := s.moduleEvents(t.Context(), kube, instance.GetUID())
 		g.Expect(err).NotTo(HaveOccurred())
-		event, err := matchingFailureEvent(events, instance.GetUID())
+		event, err := matchingModuleEvent(events, instance.GetUID(), "ReconcileError")
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(event.Namespace).To(Equal(metav1.NamespaceDefault))
 		g.Expect(event.Regarding.Name).To(Equal(instance.GetName()))
