@@ -1,13 +1,15 @@
 # Example pipeline driving the tools binary through `go run`: generate a
-# definition from an example source, lint it, deploy both bundled
-# controller packages into a throwaway Kind cluster, and validate the
-# running modules read-only.
+# definition from an example source, lint it, deploy the bundled
+# controller package into a throwaway Kind cluster, and validate the
+# running module read-only. The two examples run as parallel matrix
+# legs, each with its own cluster.
 #
-# The tools image is built locally with Podman and loaded into Kind —
-# nothing is ever pushed to a registry. kubectl comes preinstalled on
-# the runner (1.37.x, within one minor of the node image's line). The
-# run is manual-only (workflow_dispatch); enable the commented
-# triggers to run it on changes.
+# The tools image is pushed to ttl.sh, an anonymous ephemeral registry:
+# no credentials, and the image vanishes after the TTL carried in the
+# tag (here one hour). The Kind nodes pull it directly, so nothing is
+# saved or loaded into the cluster. kubectl comes preinstalled on the
+# runner. The run is manual-only (workflow_dispatch); enable the
+# commented triggers to run it on changes.
 
 name: module pipeline
 
@@ -21,21 +23,6 @@ permissions:
   contents: read
 
 env:
-  # One image reference for the whole run, built by `make image`
-  # (Podman) and loaded into Kind. The run-unique tag keeps concurrent
-  # runs from sharing a reference.
-  IMAGE: quay.io/lburgazzoli/odh-platform-tools:ci-${{ github.run_id }}
-  # The related-image source deploy resolves into the rendered
-  # controller package; must stay identical to IMAGE (workflow env
-  # vars cannot reference each other).
-  RELATED_IMAGE_MOCK_CONTROLLER: quay.io/lburgazzoli/odh-platform-tools:ci-${{ github.run_id }}
-  CLUSTER: module-pipeline
-  # An explicit kubeconfig keeps the tools and kubectl on the same
-  # cluster regardless of any default kubeconfig on the runner. Kind
-  # selects the new cluster's context when it writes this file, so
-  # kubectl and the module commands need no --kubeconfig or --context
-  # flags.
-  KUBECONFIG: ${{ github.workspace }}/.kind/kubeconfig
   # Kind runs go-run style like the module commands; $KIND must stay
   # unquoted so the invocation splits into words. Pinning the version
   # also fixes the default node image (kindest/node v1.37.0,
@@ -53,6 +40,31 @@ jobs:
   pipeline:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        example:
+          - name: helm
+            config: examples/helm/chart/module.yaml
+          - name: kustomize
+            config: examples/kustomize/module.yaml
+    env:
+      # One image reference per leg, pushed to ttl.sh and pulled by the
+      # Kind nodes; the run- and leg-unique name keeps concurrent runs
+      # and legs from sharing a reference, and the :1h tag is the TTL.
+      IMAGE: ttl.sh/odh-platform-tools-ci-${{ github.run_id }}-${{ matrix.example.name }}:1h
+      # The related-image source deploy resolves into the rendered
+      # controller package; must stay identical to IMAGE (env vars
+      # cannot reference each other).
+      RELATED_IMAGE_MOCK_CONTROLLER: ttl.sh/odh-platform-tools-ci-${{ github.run_id }}-${{ matrix.example.name }}:1h
+      CLUSTER: module-pipeline-${{ matrix.example.name }}
+      NAMESPACE: odh-${{ matrix.example.name }}-ci
+      CONFIG: ${{ matrix.example.config }}
+      # An explicit kubeconfig keeps the tools and kubectl on the same
+      # cluster regardless of any default kubeconfig on the runner.
+      # Kind selects the new cluster's context when it writes this
+      # file, so no --kubeconfig or --context flags are needed.
+      KUBECONFIG: ${{ github.workspace }}/.kind/kubeconfig
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
@@ -62,81 +74,66 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build the tools image
-        run: make image IMAGE_TAG="ci-${{ github.run_id }}"
+      - name: Build and push the tools image
+        run: |
+          make image \
+            IMAGE_REGISTRY=ttl.sh \
+            IMAGE_NAME="odh-platform-tools-ci-${{ github.run_id }}-${{ matrix.example.name }}" \
+            IMAGE_TAG=1h
+          podman push "$IMAGE"
 
-      - name: Create the Kind cluster and load the image
+      - name: Create the Kind cluster
         run: |
           mkdir -p "$(dirname "$KUBECONFIG")"
-          podman save --format docker-archive --output tools.tar "$IMAGE"
           $KIND create cluster \
-            --name "$CLUSTER" \
-            --kubeconfig "$KUBECONFIG"
-          $KIND load image-archive \
-            --name "$CLUSTER" \
-            tools.tar
-          rm tools.tar
+            --name "$CLUSTER"
 
-      - name: Create the target namespaces
+      - name: Create the target namespace
         run: |
-          kubectl create namespace odh-helm-ci
-          kubectl create namespace odh-kustomize-ci
+          kubectl create namespace "$NAMESPACE"
 
-      - name: Generate a definition from the Helm example
+      - name: Generate and lint a definition from the Helm chart
+        if: matrix.example.name == 'helm'
         run: |
           mkdir -p .generated
           $ODH_CLI module generate \
             examples/helm/chart \
             --output .generated/helm-module.yaml
-
-      - name: Lint the generated and checked-in definitions
-        run: |
-          # The generated file records the source's absolute path, so it
-          # is an artifact for verification here; the deploy step below
-          # uses the checked-in definitions, whose manifest paths are
-          # relative.
+          # The generated file records the source's absolute path, so
+          # it is an artifact for verification here; the deploy step
+          # below uses the checked-in definition, whose manifest path
+          # is relative.
           $ODH_CLI module lint \
             --config .generated/helm-module.yaml
+
+      - name: Lint the checked-in definition
+        run: |
           $ODH_CLI module lint \
-            --config examples/kustomize/module.yaml
+            --config "$CONFIG"
 
-      - name: Deploy both controller packages
+      - name: Deploy the controller package
         run: |
           $ODH_CLI module deploy \
-            --config examples/helm/chart/module.yaml \
+            --config "$CONFIG" \
             --platform-version 2.19.0 \
-            --namespace odh-helm-ci \
+            --namespace "$NAMESPACE" \
             --wait
 
-          $ODH_CLI module deploy \
-            --config examples/kustomize/module.yaml \
-            --platform-version 2.19.0 \
-            --namespace odh-kustomize-ci \
-            --wait
-
-      - name: Apply the module instances
+      - name: Apply the module instance
         run: |
           kubectl apply \
-            --filename examples/helm/instance.yaml
-          kubectl apply \
-            --filename examples/kustomize/instance.yaml
+            --filename "examples/${{ matrix.example.name }}/instance.yaml"
 
-      - name: Validate both running modules
+      - name: Validate the running module
         run: |
           # --timeout raises the overall validation budget for a cold
           # CI cluster; the default is 30s.
           $ODH_CLI module validate \
-            --config examples/helm/chart/module.yaml \
-            --namespace odh-helm-ci \
-            --timeout 120s
-
-          $ODH_CLI module validate \
-            --config examples/kustomize/module.yaml \
-            --namespace odh-kustomize-ci \
+            --config "$CONFIG" \
+            --namespace "$NAMESPACE" \
             --timeout 120s
 
       - name: Delete the Kind cluster
-        if: always()
         run: |
           $KIND delete cluster \
             --name "$CLUSTER"
