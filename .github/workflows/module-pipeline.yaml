@@ -49,14 +49,6 @@ jobs:
           - name: kustomize
             config: examples/kustomize/module.yaml
     env:
-      # One image reference per leg, pushed to ttl.sh and pulled by the
-      # Kind nodes; the run- and leg-unique name keeps concurrent runs
-      # and legs from sharing a reference, and the :1h tag is the TTL.
-      IMAGE: ttl.sh/odh-platform-tools-ci-${{ github.run_id }}-${{ matrix.example.name }}:1h
-      # The related-image source deploy resolves into the rendered
-      # controller package; must stay identical to IMAGE (env vars
-      # cannot reference each other).
-      RELATED_IMAGE_MOCK_CONTROLLER: ttl.sh/odh-platform-tools-ci-${{ github.run_id }}-${{ matrix.example.name }}:1h
       CLUSTER: module-pipeline-${{ matrix.example.name }}
       NAMESPACE: odh-${{ matrix.example.name }}-ci
       CONFIG: ${{ matrix.example.config }}
@@ -74,11 +66,24 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Resolve the image reference
+        run: |
+          # A random UUID keeps concurrent runs and legs from sharing a
+          # ttl.sh reference; the :1h tag is the TTL. IMAGE and the
+          # related-image source deploy resolves are written once from
+          # the same variable, so they cannot drift apart. The UUID is
+          # lowercased because image names must be (macOS uuidgen
+          # prints uppercase; Linux already lowercase).
+          id="odh-platform-tools-ci-$(uuidgen | tr 'A-Z' 'a-z')"
+          echo "IMAGE_ID=$id" >> "$GITHUB_ENV"
+          echo "IMAGE=ttl.sh/$id:1h" >> "$GITHUB_ENV"
+          echo "RELATED_IMAGE_MOCK_CONTROLLER=ttl.sh/$id:1h" >> "$GITHUB_ENV"
+
       - name: Build and push the tools image
         run: |
           make image \
             IMAGE_REGISTRY=ttl.sh \
-            IMAGE_NAME="odh-platform-tools-ci-${{ github.run_id }}-${{ matrix.example.name }}" \
+            IMAGE_NAME="$IMAGE_ID" \
             IMAGE_TAG=1h
           podman push "$IMAGE"
 
