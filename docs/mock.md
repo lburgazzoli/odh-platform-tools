@@ -66,6 +66,29 @@ kubectl --kubeconfig "$kubeconfig" --context "$context" apply -f examples/helm/i
 kubectl --kubeconfig "$kubeconfig" --context "$context" apply -f examples/kustomize/instance.yaml
 ```
 
+Validate both running modules read-only. Each invocation waits under its
+overall `--timeout` until every check passes in one observation cycle and
+exits 0 only then; the report names each check and, on findings, the
+field that failed. The commands reuse the walkthrough's explicit
+connection variables and require the instances to have been applied
+separately, as above. [Validate flags and checks](cli.md#odh-platform-tools-module-validate)
+
+```sh
+go run ./cmd module validate \
+  --config examples/helm/chart/module.yaml \
+  --kubeconfig "$kubeconfig" --context "$context" \
+  --namespace "$helm_namespace"
+
+go run ./cmd module validate \
+  --config examples/kustomize/module.yaml \
+  --kubeconfig "$kubeconfig" --context "$context" \
+  --namespace "$kustomize_namespace"
+```
+
+The controls below are visible to `module validate`: while the
+`MockReady=False` annotation is set, a validation invocation holds its
+readiness finding until the timeout instead of passing.
+
 Run the same controls against both instances. Each controller watches the
 platform ConfigMap in its own namespace.
 

@@ -1,9 +1,9 @@
 # Architecture
 
-The tools binary provides four module commands. `cmd/` wires Cobra
+The tools binary provides five module commands. `cmd/` wires Cobra
 commands to action functions; each subcommand package owns its
 default service composition (`Action`), and `cmd/main.go` wires the
-four Actions. `pkg/` holds the reusable services and never imports
+five Actions. `pkg/` holds the reusable services and never imports
 Cobra.
 
 ## Package map
@@ -16,6 +16,7 @@ Cobra.
 | `cmd/module/deploy` | `module deploy` command, report output, exit classification |
 | `cmd/module/generate` | `module generate` command, result output, exit classification |
 | `cmd/module/mock` | `module mock` command, option validation and cluster connection |
+| `cmd/module/validate` | `module validate` command, report output, exit classification |
 | `pkg/module/api` | Related-image types and the platform status object and list |
 | `pkg/module/api/v1alpha1` | `PlatformModuleDefinition` API, Scheme, generated deepcopy |
 | `pkg/module/loader` | Decode one definition document (unknown fields dropped) + placement defaults |
@@ -33,6 +34,7 @@ Cobra.
 | `pkg/module/deployer/cluster` | Connection and namespace resolution from a REST config getter |
 | `pkg/module/deployer/images` | Related-image snapshot from YAML and the environment |
 | `pkg/module/mock` | Foreground framework controller, scoped watches, condition and release reporting |
+| `pkg/module/validator` | Live read-only validation: pure check evaluation over one observation snapshot, bounded polling service, no mutation |
 | `pkg/module/errors` | Module error taxonomy (category sentinels) |
 | `pkg/k8s` | Shared K8s helpers: GVK identity, resource decode, containers |
 | `pkg/k8s/{configmap,deployment,crd}` | Typed builders/customizers, CRD establishment wait |
@@ -94,6 +96,34 @@ Wait    optional (--wait): kubectl rollout semantics on the controller
 The framework dependency (`odh-platform-utilities/framework`) supplies the
 deploy action, resource apply/decode helpers, and the release/ownership
 model; `adapt.ControllerBridge` supplies its ownership policy.
+
+## validate pipeline
+
+`module validate` is read-only and never renders: it loads the
+definition, resolves the namespace, and runs the validator service
+under one overall deadline (default 30s; an earlier caller deadline
+shortens it).
+
+```
+resolve  validate options → start deadline → resolve namespace
+         (explicit flag, else context, else default) → load definition
+         without rendering → validate selectors
+observe  context-aware discovery for the module group/version, then
+         explicit GVR reads of the module CR, controller Deployment,
+         and platform ConfigMap — never lazy REST mapping
+evaluate pure checks over the snapshot (API, existence, status
+         contract, readiness, Deployment health, platform config and
+         release); every check judged in the same cycle
+poll     retry ordinary findings each cycle (internal one-second
+         interval) until every check passes or the budget expires;
+         a missing group/object is a finding, any other read error
+         returns promptly as a runtime failure with the partial result
+```
+
+The service keeps no state between cycles: each poll takes a fresh
+snapshot, and the report carries the latest cycle only. Timeout and
+cancellation keep the latest checks and a classified failure; the
+command exits 0 only when every check passes in one cycle.
 
 ## Mock controller
 

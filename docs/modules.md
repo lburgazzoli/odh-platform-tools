@@ -4,8 +4,9 @@ A module is described by one `PlatformModuleDefinition`
 (`config.opendatahub.io/v1alpha1`, cluster-scoped) YAML file plus a local
 manifest source (Helm chart or Kustomize tree). The bundled packages
 install controllers for `HelmModule` and `KustomizeModule`. Each instance
-manifest sits beside the package and is applied separately after deploy.
-[Run the bundled examples](mock.md)
+manifest sits beside the package and is applied separately after deploy,
+then `module validate` checks the running module against the platform
+contract. [Run the bundled examples](mock.md)
 
 ## Skeleton
 
@@ -105,7 +106,9 @@ file.
 - Placement defaults (`instance.name`, container `name`) are applied by the
   loader after decode.
 - `module lint` validates offline; `module deploy` renders, injects images
-  and platform config, and installs the controller package.
+  and platform config, and installs the controller package; after the
+  instance is created separately, `module validate` checks the running
+  module read-only with automatic waiting.
 
 ## Checks (lint)
 

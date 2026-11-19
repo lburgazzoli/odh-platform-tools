@@ -136,6 +136,7 @@ cmd/                    binary + Cobra commands (no business logic)
   module/deploy         module deploy command + reports
   module/generate       module generate command + result output
   module/mock           module mock command + flag validation
+  module/validate       module validate command + reports
 pkg/
   module/api            related images and shared platform status types
   module/api/v1alpha1   versioned APIs, Scheme, generated code only
@@ -145,6 +146,7 @@ pkg/
   module/linter         lint action + checks/{types,deployments,crd}
   module/deployer       deploy orchestration (adapt/, cluster/, images/)
   module/mock           framework mock controller and status handling
+  module/validator      live read-only validation checks and polling
   module/errors         module error taxonomy
   k8s/                  shared Kubernetes helpers (configmap, deployment, crd)
   util/                 jq, option, retry

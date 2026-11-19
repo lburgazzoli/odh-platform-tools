@@ -222,12 +222,105 @@ Run one replica. Process health and readiness probes listen on port
 8081. Status controls and the example startup procedure are documented
 in the [mock walkthrough](mock.md).
 
+## odh-platform-tools module validate
+
+Loads one definition and checks the running module it describes against
+the platform contract. Read-only: it never renders, applies, or mutates
+anything — a matching report is evidence about what the cluster serves,
+not a change to it. Waiting is automatic under one overall `--timeout`
+budget; there is no wait toggle.
+
+```
+odh-platform-tools module validate --config <definition.yaml> [--timeout 30s] [--output text|json]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--config` | — | Module definition file (required) |
+| `--timeout` | `30s` | Overall validation budget — connection, discovery, and waiting included; must be positive; an earlier caller deadline shortens it |
+| `--output` | `text` | Report format: `text` or `json` |
+
+Standard kubeconfig/context/namespace/auth flags are inherited from the
+root command (kubectl semantics: explicit flag, else context namespace,
+else `default`). The namespace is resolved inside the timed action, so
+it counts against the budget.
+
+### Required access
+
+Read-only access is enough: API discovery for the module's
+group/version, plus `get` on the module custom resource, the controller
+Deployment, and the platform ConfigMap in the resolved namespace. No
+CRD object is read and nothing is written.
+
+### Checks
+
+Every invocation reports the same seven checks, each `pass`, `fail`
+(an observed defect or a not-yet-healthy state), `skipped` (a required
+input is unavailable, for example the custom resource is missing so its
+status cannot be judged), or `error` (the read itself failed).
+
+| ID | Requires |
+|----|----------|
+| `MODULE_API` | The module group/version is discoverable, serves the module kind cluster-scoped, and advertises a `/status` subresource |
+| `MODULE_EXISTS` | The module custom resource exists and is not terminating |
+| `MODULE_CONTRACT` | The observed status is structurally valid: phase, observedGeneration, conditions, and releases have the contract's types and shapes |
+| `MODULE_READY` | Current `status.observedGeneration`, `Ready=True`, `ProvisioningSucceeded=True`, and `status.phase == Ready` |
+| `DEPLOYMENT` | The controller Deployment exists, is not terminating or scaled to zero, has a current generation, all replicas updated/ready/available, none unavailable, and no `ProgressDeadlineExceeded` |
+| `PLATFORM_CONFIG` | The `odh-<definition-name>-config` ConfigMap exists with a valid semantic version at `data.platformVersion` |
+| `PLATFORM_CONSUMED` | The module reports a `platform` release whose normalized version equals the ConfigMap's normalized `data.platformVersion` |
+
+A matching platform release is read-only consistency evidence. It does
+not prove that the module read this particular ConfigMap, watches its
+updates, or consumes every key.
+
+### Waiting and the deadline
+
+The first observation cycle runs immediately; success requires every
+check to pass in the same cycle. Ordinary findings — a missing API,
+custom resource, Deployment, or ConfigMap, malformed or stale status,
+an unready or scaled-zero Deployment, a mismatched version — are retried
+each cycle until the budget expires, and the report always contains the
+latest cycle, not a finding history.
+
+The overall `--timeout` bounds every context-aware cluster operation:
+connection, discovery, reads, and polling. Local setup — kubeconfig
+loading, file reads, and exec-based credential plugins — is not
+hard-interruptible and may block past the deadline; this standard
+Kubernetes CLI limitation is documented, not worked around. The
+inherited `--request-timeout` bounds each single server request
+independently and never extends the invocation budget.
+
+A missing group (discovery 404) or a missing object (GET NotFound) is a
+finding and keeps waiting. Any other read error — forbidden, connection
+failure — is a runtime execution failure: the invocation returns
+promptly with the partial result instead of waiting out the budget.
+
+### Report and exit codes
+
+The JSON report has `definition`, `namespace`, overall `status`
+(`pass` | `failed`), `checks` (always an array), and on an execution
+failure a classified `failure {category, message}`. Check entries carry
+`id`, `status`, object identity fields (`group`, `version`, `kind`,
+`namespace`, `name`), and where applicable `field` and `message`; empty
+identity fields are omitted. The text report prints every check,
+including passes, skips, and the checks retained by an execution
+failure, followed by the failure line. Execution failures also print
+one summary line to stderr; observed findings stay in the report.
+
+Exit 0 only when every check passes. Exit 1 for findings, runtime,
+timeout, or cancellation failures (categories `runtime`, `timeout`,
+`cancelled`; timeout and cancellation identities take precedence). Exit
+2 for usage, invalid options, or definition input errors (categories
+`invalid-options`, `definition`). An expired invocation still prints
+its latest checks with the timeout failure. If writing the report
+itself fails, the invocation exits 1 preserving the action's cause.
+
 ## Exit codes
 
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | Runtime, connection, apply, wait, timeout, cancellation failures; lint error-severity findings; generation render, validation, reserved-resource, or output failures |
+| 1 | Runtime, connection, apply, wait, timeout, cancellation failures; lint error-severity findings; generation render, validation, reserved-resource, or output failures; validate findings or report failures |
 | 2 | Usage, invalid options, definition, or image-file errors |
 
 Cancellation (SIGINT/SIGTERM) is classified as exit 1.

@@ -4,8 +4,9 @@ Tools for OpenDataHub platform modules. `module generate` infers a
 `PlatformModuleDefinition` from local Helm or Kustomize manifests.
 `module lint` validates a rendered module package offline. `module deploy`
 installs the controller package in one pass and can wait for its Deployment
-rollout. `module mock` runs a status-only controller for testing the module
-contract.
+rollout. `module validate` checks a running module against the platform
+contract, read-only, with automatic waiting. `module mock` runs a status-only
+controller for testing the module contract.
 
 ## Quickstart
 

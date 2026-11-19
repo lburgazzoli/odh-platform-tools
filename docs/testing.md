@@ -80,4 +80,8 @@ ODH_PLATFORM_TOOLS_E2E_EXTERNAL_CONTEXT    required with the external engine
 The live suite deploys both example packages, applies their module
 instances separately, and checks persisted status, ConfigMap updates,
 and recovery under the packaged ServiceAccounts. It also exercises a
-real status-write denial and checks the controller's Kubernetes event.
+real status-write denial and checks the controller's Kubernetes event,
+and runs the real validate CLI against both running modules — waiting
+through instance creation, all-pass reports over a quiescent module,
+and held failure states (unready condition, invalid platform version,
+scaled-zero controller) each recovered from within the same scenario.

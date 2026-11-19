@@ -1,19 +1,22 @@
 # AGENTS.md
 
 CLI tooling for OpenDataHub platform modules. Lint controller packages
-offline, install a package in one pass, and run a status-only mock module
-controller.
+offline, install a package in one pass, check a running module against
+the platform contract, and run a status-only mock module controller.
 
 ## Layout
 
 - `cmd/` — binary, Cobra commands, and each subcommand's default
   service composition (`Action`); no other business logic. Root in
-  `cmd/main.go`, subcommands in `cmd/module/{lint,deploy,generate,mock}`.
+  `cmd/main.go`, subcommands in
+  `cmd/module/{lint,deploy,generate,mock,validate}`.
 - `pkg/` — reusable services. Packages under `pkg/` never import Cobra
   and never compose command defaults.
 - `pkg/module/api` — reusable module types and generated deepcopy methods.
 - `pkg/module/api/v1alpha1` — versioned APIs, Scheme, generated code only.
 - `pkg/module/mock` — status-only controller with runtime GVK registration.
+- `pkg/module/validator` — live read-only module validation: pure check
+  evaluation, bounded polling orchestration, no cluster mutation.
 - `config/crd` — embedded generated CRD manifests (`make manifests`); the
   generated CRD under `config/crd/bases/` is tracked in git.
 - `hack/scripts/` — POSIX sh helpers for image builds, called by Make.
@@ -31,7 +34,7 @@ controller.
 - One type per parameter — never group same-type parameter declarations.
 - Every `cmd/module/$name` defines `type Run` (the injectable boundary)
   and `func Action` (the default composition of pkg services);
-  `cmd/main.go` passes the four Actions to the command group. Actions
+  `cmd/main.go` passes the five Actions to the command group. Actions
   step compose → run → `moduleerrors.WrapStage`: classified errors
   pass through untouched, raw ones gain a stage prefix.
 - Command exit failures return `pkg/util/exit.Error`; the
