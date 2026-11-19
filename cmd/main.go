@@ -18,6 +18,7 @@ import (
 	generatecli "github.com/lburgazzoli/odh-platform-tools/cmd/module/generate"
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
 	mockcli "github.com/lburgazzoli/odh-platform-tools/cmd/module/mock"
+	validatecli "github.com/lburgazzoli/odh-platform-tools/cmd/module/validate"
 )
 
 func main() {
@@ -38,7 +39,8 @@ func run() int {
 		lint.Action,
 		deploycli.Action,
 		mockcli.Action,
-		generatecli.Action)
+		generatecli.Action,
+		validatecli.Action)
 
 	if err := command.ExecuteContext(ctx); err != nil {
 		// Classified outcomes already wrote their report; every
@@ -62,6 +64,7 @@ func NewRootCommand(
 	deployRun deploycli.Run,
 	mockRun mockcli.Run,
 	generateRun generatecli.Run,
+	validateRun validatecli.Run,
 ) *cobra.Command {
 	flags := genericclioptions.NewConfigFlags(true)
 
@@ -76,7 +79,7 @@ func NewRootCommand(
 
 	flags.AddFlags(root.PersistentFlags())
 
-	root.AddCommand(climodule.NewModuleCommand(lintRun, deployRun, mockRun, generateRun, flags))
+	root.AddCommand(climodule.NewModuleCommand(lintRun, deployRun, mockRun, generateRun, validateRun, flags))
 
 	return root
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/generate"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/generator"
@@ -18,8 +19,10 @@ import (
 
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/deploy"
 	"github.com/lburgazzoli/odh-platform-tools/cmd/module/lint"
+	"github.com/lburgazzoli/odh-platform-tools/cmd/module/validate"
 	deployer "github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer"
 	"github.com/lburgazzoli/odh-platform-tools/pkg/module/linter"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/validator"
 )
 
 // recordingRun is a fake lint action boundary recording every
@@ -58,6 +61,32 @@ func (r *recordingModuleDeploy) deploy(
 	return deployer.Result{}, nil
 }
 
+// recordingModuleValidate is a fake validate action boundary recording
+// every invocation, including the getter it received.
+type recordingModuleValidate struct {
+	calls   int
+	getters []genericclioptions.RESTClientGetter
+	options []validator.Options
+}
+
+// validate records one invocation and returns a minimal passing
+// result.
+func (r *recordingModuleValidate) validate(
+	_ context.Context,
+	getter genericclioptions.RESTClientGetter,
+	options validator.Options,
+) (validator.Result, error) {
+	r.calls++
+	r.getters = append(r.getters, getter)
+	r.options = append(r.options, options)
+
+	return validator.Result{
+		Checks: []validator.CheckResult{
+			{ID: validator.CheckModuleAPI, Status: validator.StatusPass},
+		},
+	}, nil
+}
+
 // execute runs one module group execution with captured streams.
 func execute(
 	ctx context.Context,
@@ -65,12 +94,13 @@ func execute(
 	lintRun lint.Run,
 	deployRun deploy.Run,
 	generateRun generate.Run,
+	validateRun validate.Run,
 	getter genericclioptions.RESTClientGetter,
 	args ...string,
 ) (string, error) {
 	t.Helper()
 
-	group := NewModuleCommand(lintRun, deployRun, nil, generateRun, getter)
+	group := NewModuleCommand(lintRun, deployRun, nil, generateRun, validateRun, getter)
 
 	var stdout, stderr bytes.Buffer
 	group.SetOut(&stdout)
@@ -90,7 +120,7 @@ func TestModuleCommandShowsHelp(t *testing.T) {
 	lintRecorder := &recordingRun{}
 	runRecorder := &recordingModuleDeploy{}
 
-	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil,
+	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil, nil,
 		genericclioptions.NewConfigFlags(true))
 
 	g.Expect(err).NotTo(HaveOccurred())
@@ -110,7 +140,7 @@ func TestModuleCommandRejectsUnknownCommands(t *testing.T) {
 	lintRecorder := &recordingRun{}
 	runRecorder := &recordingModuleDeploy{}
 
-	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil,
+	stdout, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil, nil,
 		genericclioptions.NewConfigFlags(true),
 		"frobnicate", "--config", "definition.yaml")
 
@@ -130,7 +160,7 @@ func TestModuleCommandRunsLint(t *testing.T) {
 	lintRecorder := &recordingRun{}
 	runRecorder := &recordingModuleDeploy{}
 
-	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil,
+	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil, nil,
 		genericclioptions.NewConfigFlags(true),
 		"lint", "--config", "definition.yaml")
 
@@ -155,7 +185,7 @@ func TestModuleCommandRunsDeploy(t *testing.T) {
 	runNamespace := "run-namespace"
 	getter.Namespace = &runNamespace
 
-	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil, getter,
+	_, err := execute(t.Context(), t, lintRecorder.run, runRecorder.deploy, nil, nil, getter,
 		"deploy",
 		"--config", "definition.yaml",
 		"--platform-version", "2.19.0")
@@ -244,7 +274,7 @@ func TestModuleCommandRunsGenerate(t *testing.T) {
 	getter := inaccessibleGetter{ConfigFlags: genericclioptions.NewConfigFlags(true)}
 
 	stdout, err := execute(t.Context(), t, lintRecorder.run, deployRecorder.deploy,
-		generateRecorder.generate, getter,
+		generateRecorder.generate, nil, getter,
 		"generate", "source-dir")
 
 	g.Expect(err).NotTo(HaveOccurred())
@@ -270,12 +300,12 @@ func TestModuleCommandGenerateHelpListsCommand(t *testing.T) {
 	getter := inaccessibleGetter{ConfigFlags: genericclioptions.NewConfigFlags(true)}
 
 	groupStdout, err := execute(t.Context(), t, lintRecorder.run, deployRecorder.deploy,
-		generateRecorder.generate, getter)
+		generateRecorder.generate, nil, getter)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(groupStdout).To(ContainSubstring("generate"))
 
 	helpStdout, err := execute(t.Context(), t, lintRecorder.run, deployRecorder.deploy,
-		generateRecorder.generate, getter,
+		generateRecorder.generate, nil, getter,
 		"generate", "--help")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(helpStdout).To(ContainSubstring("--values-file"))
@@ -283,4 +313,63 @@ func TestModuleCommandGenerateHelpListsCommand(t *testing.T) {
 	g.Expect(lintRecorder.calls).To(Equal(0))
 	g.Expect(deployRecorder.calls).To(Equal(0))
 	g.Expect(generateRecorder.calls).To(Equal(0))
+}
+
+// TestModuleCommandRunsValidate proves the group forwards the standard
+// getter and flags to the injected validate action and reports its
+// result.
+func TestModuleCommandRunsValidate(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	lintRecorder := &recordingRun{}
+	deployRecorder := &recordingModuleDeploy{}
+	validateRecorder := &recordingModuleValidate{}
+
+	getter := genericclioptions.NewConfigFlags(true)
+
+	stdout, err := execute(t.Context(), t, lintRecorder.run, deployRecorder.deploy,
+		nil, validateRecorder.validate, getter,
+		"validate", "--config", "definition.yaml", "--timeout", "15s")
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(stdout).To(ContainSubstring("module validate definition.yaml: pass"))
+	g.Expect(validateRecorder.calls).To(Equal(1))
+	g.Expect(validateRecorder.options).To(HaveLen(1))
+	g.Expect(validateRecorder.options[0].DefinitionFile).To(Equal("definition.yaml"))
+	g.Expect(validateRecorder.options[0].Timeout).To(Equal(15 * time.Second))
+	g.Expect(validateRecorder.getters[0]).To(Equal(getter))
+	g.Expect(lintRecorder.calls).To(Equal(0))
+	g.Expect(deployRecorder.calls).To(Equal(0))
+}
+
+// TestModuleCommandValidateHelpListsCommand proves the group help
+// documents validate and its help works without any action or getter
+// access.
+func TestModuleCommandValidateHelpListsCommand(t *testing.T) {
+	t.Parallel()
+
+	g := NewWithT(t)
+
+	lintRecorder := &recordingRun{}
+	deployRecorder := &recordingModuleDeploy{}
+	validateRecorder := &recordingModuleValidate{}
+
+	getter := inaccessibleGetter{ConfigFlags: genericclioptions.NewConfigFlags(true)}
+
+	groupStdout, err := execute(t.Context(), t, lintRecorder.run, deployRecorder.deploy,
+		nil, validateRecorder.validate, getter)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(groupStdout).To(ContainSubstring("validate"))
+
+	helpStdout, err := execute(t.Context(), t, lintRecorder.run, deployRecorder.deploy,
+		nil, validateRecorder.validate, getter,
+		"validate", "--help")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(helpStdout).To(ContainSubstring("--timeout"))
+
+	g.Expect(lintRecorder.calls).To(Equal(0))
+	g.Expect(deployRecorder.calls).To(Equal(0))
+	g.Expect(validateRecorder.calls).To(Equal(0))
 }
