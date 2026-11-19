@@ -4,9 +4,10 @@
 # running modules read-only.
 #
 # The tools image is built locally with Podman and loaded into Kind —
-# nothing is ever pushed to a registry. The run is manual-only
-# (workflow_dispatch); enable the commented triggers to run it on
-# changes.
+# nothing is ever pushed to a registry. kubectl comes preinstalled on
+# the runner (1.37.x, within one minor of the node image's line). The
+# run is manual-only (workflow_dispatch); enable the commented
+# triggers to run it on changes.
 
 name: module pipeline
 
@@ -60,11 +61,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
-      - name: Install kubectl
-        run: |
-          curl -sfSLO https://dl.k8s.io/release/v1.37.0/bin/linux/amd64/kubectl
-          install -m 0755 kubectl /usr/local/bin/kubectl
 
       - name: Build the tools image
         run: make image IMAGE_TAG="ci-${{ github.run_id }}"
