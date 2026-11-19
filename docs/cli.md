@@ -278,7 +278,7 @@ CRD object is read and nothing is written.
 
 ### Checks
 
-Every invocation reports the same seven checks, each `pass`, `fail`
+Every invocation reports the same ten checks, each `pass`, `fail`
 (an observed defect or a not-yet-healthy state), `skipped` (a required
 input is unavailable, for example the custom resource is missing so its
 status cannot be judged), or `error` (the read itself failed).
@@ -290,6 +290,9 @@ status cannot be judged), or `error` (the read itself failed).
 | `MODULE_CONTRACT` | The observed status is structurally valid: phase, observedGeneration, conditions, and releases have the contract's types and shapes |
 | `MODULE_READY` | Current `status.observedGeneration`, `Ready=True`, `ProvisioningSucceeded=True`, and `status.phase == Ready` |
 | `DEPLOYMENT` | The controller Deployment exists, is not terminating or scaled to zero, has a current generation, all replicas updated/ready/available, none unavailable, and no `ProgressDeadlineExceeded` |
+| `CONTROLLER_IMAGE` | The controller container runs the defined image: a literal reference must match exactly; a `{{SOURCE}}` token must have been resolved at deploy time to a nonempty image that is not the raw token |
+| `INIT_CONTAINER` | The configured init container exists and runs the controller image, or its own when the definition gives it one; skipped when the definition configures no init container |
+| `RELATED_IMAGES` | Every related image the definition declares is set as a nonempty env var on the controller container; skipped when the definition declares none |
 | `PLATFORM_CONFIG` | The `odh-<definition-name>-config` ConfigMap exists with a valid semantic version at `data.platformVersion` |
 | `PLATFORM_CONSUMED` | The module reports a `platform` release whose normalized version equals the ConfigMap's normalized `data.platformVersion` |
 

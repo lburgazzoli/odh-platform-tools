@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/lburgazzoli/odh-platform-tools/pkg/k8s"
+	"github.com/lburgazzoli/odh-platform-tools/pkg/module/deployer/images"
 )
 
 // phaseReady is the framework reconciler's ready phase name.
@@ -142,7 +143,7 @@ func hasStatusEndpoint(resources []metav1.APIResource, resourceName string) bool
 // unavailable.
 func Evaluate(snapshot Snapshot) Result {
 	result := Result{Namespace: snapshot.Namespace}
-	checks := make([]CheckResult, 0, 7)
+	checks := make([]CheckResult, 0, 10)
 
 	api := evaluateModuleAPI(snapshot.Selectors, snapshot.Discovery)
 	checks = append(checks, api.check)
@@ -178,6 +179,11 @@ func Evaluate(snapshot Snapshot) Result {
 	}
 
 	checks = append(checks, evaluateDeployment(snapshot.Namespace, snapshot.Selectors, snapshot.Deployment))
+
+	checks = append(checks,
+		evaluateControllerImage(snapshot.Namespace, snapshot.Selectors, snapshot.Deployment),
+		evaluateInitContainer(snapshot.Namespace, snapshot.Selectors, snapshot.Deployment),
+		evaluateRelatedImages(snapshot.Namespace, snapshot.Selectors, snapshot.Deployment))
 
 	configCheck, platformVersion, platformVersionValid :=
 		evaluatePlatformConfig(snapshot.Namespace, snapshot.Selectors, snapshot.ConfigMap)
@@ -463,6 +469,247 @@ func evaluateDeployment(namespace string, selectors Selectors, observation Objec
 	}
 
 	return failedFindings(identity, findings)
+}
+
+// deploymentTemplate resolves the pod template the controller checks
+// observe, or a skip reason naming the missing prerequisite.
+func deploymentTemplate(namespace string, observation ObjectObservation) (podTemplateObservation, string) {
+	switch {
+	case namespace == "":
+		return podTemplateObservation{}, "requires a resolved namespace"
+	case observation.Err != nil:
+		return podTemplateObservation{}, "requires a readable controller Deployment"
+	case observation.NotFound || observation.Object == nil:
+		return podTemplateObservation{}, "requires the controller Deployment"
+	case terminating(observation.Object):
+		return podTemplateObservation{}, "requires a non-terminating controller Deployment"
+	}
+
+	return observePodTemplate(observation.Object), ""
+}
+
+// evaluateControllerImage proves the controller container runs the
+// defined controller image: a literal must match exactly; a whole
+// {{SOURCE}} token must have been resolved at deploy time to a
+// nonempty image that is not the raw token.
+func evaluateControllerImage(
+	namespace string,
+	selectors Selectors,
+	observation ObjectObservation,
+) CheckResult {
+	identity := CheckResult{
+		ID:        CheckControllerImage,
+		GVK:       k8s.Deployment,
+		Namespace: namespace,
+		Name:      selectors.DeploymentName,
+	}
+
+	expectations := selectors.Controller
+
+	if expectations.ContainerImage == "" {
+		return skipped(identity, "controller image validation requires a defined controller image")
+	}
+
+	template, reason := deploymentTemplate(namespace, observation)
+	if reason != "" {
+		return skipped(identity, "controller image validation "+reason)
+	}
+
+	findings := append([]violation{}, template.containerFindings...)
+
+	container := findContainer(template.containers, expectations.ContainerName)
+	if container == nil {
+		findings = append(findings, violation{
+			field: "spec.template.spec.containers",
+			message: fmt.Sprintf("container %q was not found in Deployment %q; the definition selects it as the controller container",
+				expectations.ContainerName, selectors.DeploymentName),
+		})
+	} else {
+		findings = append(findings, controllerImageFindings(
+			fmt.Sprintf("spec.template.spec.containers[%d].image", container.Index),
+			"container", container.Name, container.Image, expectations.ContainerImage)...)
+	}
+
+	if len(findings) == 0 {
+		if _, token := images.ImageSourceKey(expectations.ContainerImage); token {
+			return passed(identity, fmt.Sprintf(
+				"container %q runs %s, the deploy-time resolution of the definition's %s image source",
+				expectations.ContainerName, container.Image, expectations.ContainerImage))
+		}
+
+		return passed(identity, fmt.Sprintf(
+			"container %q runs the defined image %s", expectations.ContainerName, container.Image))
+	}
+
+	return failedFindings(identity, findings)
+}
+
+// evaluateInitContainer proves the configured init container exists and
+// runs the controller image, unless the definition gives it its own. A
+// definition that configures no init container skips the check.
+func evaluateInitContainer(
+	namespace string,
+	selectors Selectors,
+	observation ObjectObservation,
+) CheckResult {
+	identity := CheckResult{
+		ID:        CheckInitContainer,
+		GVK:       k8s.Deployment,
+		Namespace: namespace,
+		Name:      selectors.DeploymentName,
+	}
+
+	expectations := selectors.Controller
+
+	if expectations.InitContainerName == "" {
+		return skipped(identity, "definition configures no init container")
+	}
+
+	expectedImage := expectations.InitContainerImage
+	if expectedImage == "" {
+		expectedImage = expectations.ContainerImage
+	}
+
+	if expectedImage == "" {
+		return skipped(identity, "init container validation requires a defined controller image")
+	}
+
+	template, reason := deploymentTemplate(namespace, observation)
+	if reason != "" {
+		return skipped(identity, "init container validation "+reason)
+	}
+
+	findings := append([]violation{}, template.initContainerFindings...)
+
+	init := findContainer(template.initContainers, expectations.InitContainerName)
+	if init == nil {
+		findings = append(findings, violation{
+			field: "spec.template.spec.initContainers",
+			message: fmt.Sprintf("init container %q was not found in Deployment %q; the definition selects it as the controller init container",
+				expectations.InitContainerName, selectors.DeploymentName),
+		})
+	} else {
+		findings = append(findings, controllerImageFindings(
+			fmt.Sprintf("spec.template.spec.initContainers[%d].image", init.Index),
+			"init container", init.Name, init.Image, expectedImage)...)
+	}
+
+	if len(findings) == 0 {
+		if _, token := images.ImageSourceKey(expectedImage); token {
+			return passed(identity, fmt.Sprintf(
+				"init container %q runs %s, the deploy-time resolution of the definition's %s image source",
+				expectations.InitContainerName, init.Image, expectedImage))
+		}
+
+		return passed(identity, fmt.Sprintf(
+			"init container %q runs the controller image %s", expectations.InitContainerName, init.Image))
+	}
+
+	return failedFindings(identity, findings)
+}
+
+// evaluateRelatedImages proves every related image the definition
+// declares is set as a nonempty env var on the controller container,
+// matching the deployer's injection. A definition that declares none
+// skips the check.
+func evaluateRelatedImages(
+	namespace string,
+	selectors Selectors,
+	observation ObjectObservation,
+) CheckResult {
+	identity := CheckResult{
+		ID:        CheckRelatedImages,
+		GVK:       k8s.Deployment,
+		Namespace: namespace,
+		Name:      selectors.DeploymentName,
+	}
+
+	expectations := selectors.Controller
+
+	if len(expectations.RelatedImages) == 0 {
+		return skipped(identity, "definition declares no related images")
+	}
+
+	template, reason := deploymentTemplate(namespace, observation)
+	if reason != "" {
+		return skipped(identity, "related images validation "+reason)
+	}
+
+	findings := append([]violation{}, template.containerFindings...)
+
+	container := findContainer(template.containers, expectations.ContainerName)
+	if container == nil {
+		findings = append(findings, violation{
+			field: "spec.template.spec.containers",
+			message: fmt.Sprintf("container %q was not found in Deployment %q; the definition selects it as the controller container",
+				expectations.ContainerName, selectors.DeploymentName),
+		})
+	} else {
+		for _, name := range expectations.RelatedImages {
+			field := fmt.Sprintf("spec.template.spec.containers[%d].env", container.Index)
+
+			value, found := container.Env[name]
+			switch {
+			case !found:
+				findings = append(findings, violation{
+					field: field,
+					message: fmt.Sprintf("related image %q is not set on controller container %q",
+						name, container.Name),
+				})
+			case value == "":
+				findings = append(findings, violation{
+					field: field,
+					message: fmt.Sprintf("related image %q is set on controller container %q with an empty value",
+						name, container.Name),
+				})
+			}
+		}
+	}
+
+	if len(findings) == 0 {
+		return passed(identity, fmt.Sprintf(
+			"controller container %q sets every declared related image env var (%s)",
+			expectations.ContainerName, strings.Join(expectations.RelatedImages, ", ")))
+	}
+
+	return failedFindings(identity, findings)
+}
+
+// controllerImageFindings judges one live container image against a
+// defined image expectation. A literal must match exactly; a whole
+// {{SOURCE}} token must have been resolved at deploy time to a
+// nonempty image that is not the raw token — the exact resolved value
+// is not observable read-only. The role names the container kind in
+// messages.
+func controllerImageFindings(field string, role string, name string, live string, expected string) []violation {
+	if key, token := images.ImageSourceKey(expected); token {
+		switch live {
+		case "":
+			return []violation{{
+				field: field,
+				message: fmt.Sprintf("%s %q has no image; the definition's image source {{%s}} must be resolved at deploy time",
+					role, name, key),
+			}}
+		case expected:
+			return []violation{{
+				field: field,
+				message: fmt.Sprintf("%s %q image is the unresolved token {{%s}}; deploy must resolve it",
+					role, name, key),
+			}}
+		default:
+			return nil
+		}
+	}
+
+	if live != expected {
+		return []violation{{
+			field: field,
+			message: fmt.Sprintf("%s %q image is %q; want the defined image %q",
+				role, name, live, expected),
+		}}
+	}
+
+	return nil
 }
 
 // observeDeploymentConditions scans Deployment status conditions for the

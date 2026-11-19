@@ -120,6 +120,15 @@ func TestSelectorsFromDefinition(t *testing.T) {
 		Kind:    "MockModule",
 	}
 	explicit.Spec.Controller.Deployment.Name = "mock-controller"
+	explicit.Spec.Controller.Deployment.Container = &v1alpha1.ContainerDefinition{
+		Name:  "controller",
+		Image: "{{RELATED_IMAGE_CONTROLLER}}",
+	}
+	explicit.Spec.Controller.Deployment.InitContainer = &v1alpha1.ContainerTarget{
+		Name:  "copy-manifests",
+		Image: "registry.example.com/mock/init:latest",
+	}
+	explicit.Spec.RelatedImages = []string{"RELATED_IMAGE_CONTROLLER", "RELATED_IMAGE_OPERAND"}
 
 	selectors := SelectorsFromDefinition(explicit)
 
@@ -133,6 +142,13 @@ func TestSelectorsFromDefinition(t *testing.T) {
 		ModuleName:     "mock-instance",
 		DeploymentName: "mock-controller",
 		ConfigMapName:  "odh-mock-config",
+		Controller: ControllerExpectations{
+			ContainerName:      "controller",
+			ContainerImage:     "{{RELATED_IMAGE_CONTROLLER}}",
+			InitContainerName:  "copy-manifests",
+			InitContainerImage: "registry.example.com/mock/init:latest",
+			RelatedImages:      []string{"RELATED_IMAGE_CONTROLLER", "RELATED_IMAGE_OPERAND"},
+		},
 	}))
 
 	fallback := v1alpha1.PlatformModuleDefinition{}
@@ -150,6 +166,12 @@ func TestSelectorsFromDefinition(t *testing.T) {
 
 	g.Expect(SelectorsFromDefinition(fallback).ModuleName).To(Equal("mock"))
 	g.Expect(SelectorsFromDefinition(fallback).DeploymentName).To(Equal("mock"))
+	// The controller container name falls back to the same default the
+	// loader applies, and no init container or related images are
+	// configured.
+	g.Expect(SelectorsFromDefinition(fallback).Controller).To(Equal(ControllerExpectations{
+		ContainerName: v1alpha1.DefaultMainContainerName,
+	}))
 }
 
 // TestValidateSelectors checks local selector validation before any

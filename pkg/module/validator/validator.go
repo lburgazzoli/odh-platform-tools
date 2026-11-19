@@ -44,6 +44,9 @@ const (
 	CheckModuleContract   = "MODULE_CONTRACT"
 	CheckModuleReady      = "MODULE_READY"
 	CheckDeployment       = "DEPLOYMENT"
+	CheckControllerImage  = "CONTROLLER_IMAGE"
+	CheckInitContainer    = "INIT_CONTAINER"
+	CheckRelatedImages    = "RELATED_IMAGES"
 	CheckPlatformConfig   = "PLATFORM_CONFIG"
 	CheckPlatformConsumed = "PLATFORM_CONSUMED"
 )
@@ -115,6 +118,38 @@ type Selectors struct {
 
 	// ConfigMapName is the derived platform ConfigMap name.
 	ConfigMapName string
+
+	// Controller carries the controller Deployment's pod-template
+	// expectations the controller checks judge.
+	Controller ControllerExpectations
+}
+
+// ControllerExpectations carries what the controller Deployment's pod
+// template must satisfy, mirroring what the deployer's inject action
+// establishes: the main container's image is the defined controller
+// image — a literal reference or a whole {{SOURCE}} token resolved at
+// deploy time — the configured init container runs the same resolved
+// image unless the definition gives it its own, and every declared
+// related image is injected as an env var on the main container.
+type ControllerExpectations struct {
+	// ContainerName is the controller main container name.
+	ContainerName string
+
+	// ContainerImage is the defined controller image: a literal
+	// reference or a whole {{SOURCE}} token.
+	ContainerImage string
+
+	// InitContainerName is the defined init container name; empty
+	// means the definition configures none.
+	InitContainerName string
+
+	// InitContainerImage is the defined init container image; empty
+	// means the controller image applies.
+	InitContainerImage string
+
+	// RelatedImages lists the related image env var names the
+	// definition declares; empty means none.
+	RelatedImages []string
 }
 
 // SelectorsFromDefinition derives selectors from a loaded, defaulted
@@ -126,7 +161,34 @@ func SelectorsFromDefinition(definition v1alpha1.PlatformModuleDefinition) Selec
 		ModuleName:     definition.Spec.Instance.Name,
 		DeploymentName: definition.ControllerDeploymentName(),
 		ConfigMapName:  adapt.PlatformConfigName(definition.Name),
+		Controller:     ControllerExpectationsFromDefinition(definition),
 	}
+}
+
+// ControllerExpectationsFromDefinition derives the controller
+// pod-template expectations from a loaded, defaulted definition. The
+// container name falls back to the same default the loader applies.
+func ControllerExpectationsFromDefinition(definition v1alpha1.PlatformModuleDefinition) ControllerExpectations {
+	expectations := ControllerExpectations{
+		ContainerName: v1alpha1.DefaultMainContainerName,
+	}
+
+	if container := definition.Spec.Controller.Deployment.Container; container != nil {
+		if container.Name != "" {
+			expectations.ContainerName = container.Name
+		}
+
+		expectations.ContainerImage = container.Image
+	}
+
+	if init := definition.Spec.Controller.Deployment.InitContainer; init != nil {
+		expectations.InitContainerName = init.Name
+		expectations.InitContainerImage = init.Image
+	}
+
+	expectations.RelatedImages = definition.Spec.RelatedImages
+
+	return expectations
 }
 
 // ValidateSelectors checks the local inputs validation needs before any

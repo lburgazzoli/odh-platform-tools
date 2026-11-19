@@ -26,6 +26,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	v1alpha1 "github.com/lburgazzoli/odh-platform-tools/pkg/module/api/v1alpha1"
 )
 
 var testModuleGVK = schema.GroupVersionKind{
@@ -40,6 +42,11 @@ const (
 	testGeneration   = int64(3)
 	testReadFailure  = "connection refused"
 	testCheckMissing = "missing"
+
+	testControllerImage   = "registry.example.com/mock/controller@sha256:abc123"
+	testInitContainerName = "copy-manifests"
+	testRelatedImageName  = "RELATED_IMAGE_MOCK"
+	testRelatedImageValue = "registry.example.com/mock/operand@sha256:def456"
 )
 
 func testSelectors() Selectors {
@@ -49,6 +56,12 @@ func testSelectors() Selectors {
 		ModuleName:     "mock",
 		DeploymentName: "mock-controller",
 		ConfigMapName:  "odh-mock-config",
+		Controller: ControllerExpectations{
+			ContainerName:     v1alpha1.DefaultMainContainerName,
+			ContainerImage:    testControllerImage,
+			InitContainerName: testInitContainerName,
+			RelatedImages:     []string{testRelatedImageName},
+		},
 	}
 }
 
@@ -124,6 +137,28 @@ func healthyDeployment() *unstructured.Unstructured {
 			},
 			"spec": map[string]any{
 				"replicas": int64(1),
+				"template": map[string]any{
+					"spec": map[string]any{
+						"containers": []any{
+							map[string]any{
+								"name":  v1alpha1.DefaultMainContainerName,
+								"image": testControllerImage,
+								"env": []any{
+									map[string]any{
+										"name":  testRelatedImageName,
+										"value": testRelatedImageValue,
+									},
+								},
+							},
+						},
+						"initContainers": []any{
+							map[string]any{
+								"name":  testInitContainerName,
+								"image": testControllerImage,
+							},
+						},
+					},
+				},
 			},
 			"status": map[string]any{
 				"observedGeneration": int64(2),
@@ -175,7 +210,7 @@ func healthyCRStatus() map[string]any {
 	return status
 }
 
-// TestEvaluateHealthyCycle checks the all-pass cycle: stable order, seven
+// TestEvaluateHealthyCycle checks the all-pass cycle: stable order, ten
 // checks, object identities, and the resolved namespace.
 func TestEvaluateHealthyCycle(t *testing.T) {
 	t.Parallel()
@@ -198,6 +233,9 @@ func TestEvaluateHealthyCycle(t *testing.T) {
 		CheckModuleContract,
 		CheckModuleReady,
 		CheckDeployment,
+		CheckControllerImage,
+		CheckInitContainer,
+		CheckRelatedImages,
 		CheckPlatformConfig,
 		CheckPlatformConsumed,
 	}))
@@ -218,6 +256,21 @@ func TestEvaluateHealthyCycle(t *testing.T) {
 	g.Expect(deployment.GVK).To(Equal(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}))
 	g.Expect(deployment.Namespace).To(Equal(testNamespace))
 	g.Expect(deployment.Name).To(Equal("mock-controller"))
+
+	controllerImage := check(result, CheckControllerImage)
+	g.Expect(controllerImage.Status).To(Equal(StatusPass))
+	g.Expect(controllerImage.GVK).To(Equal(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}))
+	g.Expect(controllerImage.Namespace).To(Equal(testNamespace))
+	g.Expect(controllerImage.Name).To(Equal("mock-controller"))
+	g.Expect(controllerImage.Message).To(ContainSubstring(testControllerImage))
+
+	initContainer := check(result, CheckInitContainer)
+	g.Expect(initContainer.Status).To(Equal(StatusPass))
+	g.Expect(initContainer.Message).To(ContainSubstring(testInitContainerName))
+
+	relatedImages := check(result, CheckRelatedImages)
+	g.Expect(relatedImages.Status).To(Equal(StatusPass))
+	g.Expect(relatedImages.Message).To(ContainSubstring(testRelatedImageName))
 
 	config := check(result, CheckPlatformConfig)
 	g.Expect(config.Status).To(Equal(StatusPass))
@@ -324,7 +377,7 @@ func TestEvaluateModuleAPI(t *testing.T) {
 
 			result := Evaluate(snapshot)
 
-			g.Expect(result.Checks).To(HaveLen(7))
+			g.Expect(result.Checks).To(HaveLen(10))
 			g.Expect(check(result, CheckModuleAPI).Status).To(Equal(test.api))
 			g.Expect(check(result, CheckModuleExists).Status).To(Equal(test.exists))
 
@@ -1141,6 +1194,332 @@ func TestEvaluateDeploymentReadError(t *testing.T) {
 	g.Expect(check(result, CheckDeployment).Status).To(Equal(StatusError))
 	g.Expect(check(result, CheckModuleReady).Status).To(Equal(StatusPass))
 	g.Expect(result.Passed()).To(BeFalse())
+}
+
+// controllerSnapshot returns a healthy snapshot with the Deployment
+// observation and the controller expectations replaced.
+func controllerSnapshot(
+	observation ObjectObservation,
+	expectations ControllerExpectations,
+) Snapshot {
+	snapshot := healthySnapshot()
+	snapshot.Deployment = observation
+
+	selectors := testSelectors()
+	selectors.Controller = expectations
+	snapshot.Selectors = selectors
+
+	return snapshot
+}
+
+// controllerExpectations returns the healthy expectations with the
+// given mutations applied.
+func controllerExpectations(mutate func(expectations *ControllerExpectations)) ControllerExpectations {
+	expectations := testSelectors().Controller
+	if mutate != nil {
+		mutate(&expectations)
+	}
+
+	return expectations
+}
+
+// mutatedDeployment returns the healthy Deployment with one mutation
+// applied to its first main container.
+func mutatedDeployment(mutateContainer func(container map[string]any)) *unstructured.Unstructured {
+	object := healthyDeployment()
+
+	containers := object.Object["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)["containers"].([]any)
+	mutateContainer(containers[0].(map[string]any))
+
+	return object
+}
+
+// TestEvaluateControllerImage covers the controller container image
+// contract: literal equality, token resolution, and the structural and
+// prerequisite findings.
+func TestEvaluateControllerImage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		observation ObjectObservation
+		expectation func(expectations *ControllerExpectations)
+		deployment  func() *unstructured.Unstructured
+		status      string
+		field       string
+		contains    string
+	}{
+		{
+			name:        "literal image matches",
+			observation: ObjectObservation{Object: healthyDeployment()},
+			status:      StatusPass,
+		},
+		{
+			name: "literal image mismatch",
+			observation: ObjectObservation{Object: mutatedDeployment(func(container map[string]any) {
+				container["image"] = "registry.example.com/other:latest"
+			})},
+			status:   StatusFail,
+			field:    "spec.template.spec.containers[0].image",
+			contains: `want the defined image "registry.example.com/mock/controller@sha256:abc123"`,
+		},
+		{
+			name:        "token resolved at deploy time",
+			observation: ObjectObservation{Object: healthyDeployment()},
+			expectation: func(expectations *ControllerExpectations) {
+				expectations.ContainerImage = "{{RELATED_IMAGE_CONTROLLER}}"
+			},
+			status: StatusPass,
+		},
+		{
+			name: "token left unresolved",
+			observation: ObjectObservation{Object: mutatedDeployment(func(container map[string]any) {
+				container["image"] = "{{RELATED_IMAGE_CONTROLLER}}"
+			})},
+			expectation: func(expectations *ControllerExpectations) {
+				expectations.ContainerImage = "{{RELATED_IMAGE_CONTROLLER}}"
+			},
+			status:   StatusFail,
+			field:    "spec.template.spec.containers[0].image",
+			contains: "unresolved token",
+		},
+		{
+			name: "token resolved to no image",
+			observation: ObjectObservation{Object: mutatedDeployment(func(container map[string]any) {
+				delete(container, "image")
+			})},
+			expectation: func(expectations *ControllerExpectations) {
+				expectations.ContainerImage = "{{RELATED_IMAGE_CONTROLLER}}"
+			},
+			status:   StatusFail,
+			field:    "spec.template.spec.containers[0].image",
+			contains: "has no image",
+		},
+		{
+			name: "controller container missing",
+			observation: ObjectObservation{Object: mutatedDeployment(func(container map[string]any) {
+				container["name"] = "other"
+			})},
+			status:   StatusFail,
+			field:    "spec.template.spec.containers",
+			contains: `container "manager" was not found`,
+		},
+		{
+			name: "malformed container list",
+			observation: ObjectObservation{Object: func() *unstructured.Unstructured {
+				object := healthyDeployment()
+				object.Object["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)["containers"] = "nope"
+
+				return object
+			}()},
+			status:   StatusFail,
+			field:    "spec.template.spec.containers",
+			contains: "must be an array of container objects",
+		},
+		{
+			name:        "no defined controller image",
+			observation: ObjectObservation{Object: healthyDeployment()},
+			expectation: func(expectations *ControllerExpectations) {
+				expectations.ContainerImage = ""
+			},
+			status: StatusSkipped,
+		},
+		{
+			name:        "missing deployment",
+			observation: ObjectObservation{},
+			status:      StatusSkipped,
+		},
+		{
+			name:        "deployment read error",
+			observation: ObjectObservation{Err: errors.New(testReadFailure)},
+			status:      StatusSkipped,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := NewWithT(t)
+
+			result := Evaluate(controllerSnapshot(test.observation, controllerExpectations(test.expectation)))
+
+			controllerImage := check(result, CheckControllerImage)
+			g.Expect(controllerImage.Status).To(Equal(test.status))
+			g.Expect(controllerImage.Field).To(Equal(test.field))
+			if test.contains != "" {
+				g.Expect(controllerImage.Message).To(ContainSubstring(test.contains))
+			}
+		})
+	}
+}
+
+// TestEvaluateInitContainer covers the init container contract: the
+// configured init container exists and runs the controller image, or
+// its own when the definition gives it one.
+func TestEvaluateInitContainer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		observation ObjectObservation
+		expectation func(expectations *ControllerExpectations)
+		deployment  func() *unstructured.Unstructured
+		status      string
+		contains    string
+	}{
+		{
+			name:        "init container runs the controller image",
+			observation: ObjectObservation{Object: healthyDeployment()},
+			status:      StatusPass,
+		},
+		{
+			name:        "init container runs its own defined image",
+			observation: ObjectObservation{Object: healthyDeployment()},
+			expectation: func(expectations *ControllerExpectations) {
+				expectations.InitContainerImage = testControllerImage
+			},
+			status: StatusPass,
+		},
+		{
+			name: "init container missing from the template",
+			observation: ObjectObservation{Object: func() *unstructured.Unstructured {
+				object := healthyDeployment()
+				templateSpec := object.Object["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+				delete(templateSpec, "initContainers")
+
+				return object
+			}()},
+			status:   StatusFail,
+			contains: `init container "copy-manifests" was not found`,
+		},
+		{
+			name: "init container image mismatch",
+			observation: ObjectObservation{Object: func() *unstructured.Unstructured {
+				object := healthyDeployment()
+				initContainers := object.Object["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)["initContainers"].([]any)
+				initContainers[0].(map[string]any)["image"] = "registry.example.com/other:latest"
+
+				return object
+			}()},
+			status:   StatusFail,
+			contains: `init container "copy-manifests" image is "registry.example.com/other:latest"`,
+		},
+		{
+			name:        "definition configures no init container",
+			observation: ObjectObservation{Object: healthyDeployment()},
+			expectation: func(expectations *ControllerExpectations) {
+				expectations.InitContainerName = ""
+			},
+			status: StatusSkipped,
+		},
+		{
+			name:        "missing deployment",
+			observation: ObjectObservation{},
+			status:      StatusSkipped,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := NewWithT(t)
+
+			result := Evaluate(controllerSnapshot(test.observation, controllerExpectations(test.expectation)))
+
+			initContainer := check(result, CheckInitContainer)
+			g.Expect(initContainer.Status).To(Equal(test.status))
+			if test.contains != "" {
+				g.Expect(initContainer.Message).To(ContainSubstring(test.contains))
+			}
+		})
+	}
+}
+
+// TestEvaluateRelatedImages covers the related images contract: every
+// declared name is a nonempty env var on the controller container.
+func TestEvaluateRelatedImages(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		observation ObjectObservation
+		expectation func(expectations *ControllerExpectations)
+		deployment  func() *unstructured.Unstructured
+		status      string
+		contains    string
+	}{
+		{
+			name:        "declared related image is set",
+			observation: ObjectObservation{Object: healthyDeployment()},
+			status:      StatusPass,
+		},
+		{
+			name: "declared related image is not set",
+			observation: ObjectObservation{Object: mutatedDeployment(func(container map[string]any) {
+				delete(container, "env")
+			})},
+			status:   StatusFail,
+			contains: `related image "RELATED_IMAGE_MOCK" is not set`,
+		},
+		{
+			name: "declared related image is set with an empty value",
+			observation: ObjectObservation{Object: mutatedDeployment(func(container map[string]any) {
+				container["env"].([]any)[0].(map[string]any)["value"] = ""
+			})},
+			status:   StatusFail,
+			contains: `related image "RELATED_IMAGE_MOCK" is set on controller container "manager" with an empty value`,
+		},
+		{
+			name: "undeclared env var does not satisfy the contract",
+			observation: ObjectObservation{Object: mutatedDeployment(func(container map[string]any) {
+				container["env"].([]any)[0].(map[string]any)["name"] = "RELATED_IMAGE_OTHER"
+			})},
+			expectation: func(expectations *ControllerExpectations) {
+				expectations.RelatedImages = []string{"RELATED_IMAGE_MOCK", "RELATED_IMAGE_OPERAND"}
+			},
+			status:   StatusFail,
+			contains: `related image "RELATED_IMAGE_OPERAND" is not set`,
+		},
+		{
+			name:        "definition declares no related images",
+			observation: ObjectObservation{Object: healthyDeployment()},
+			expectation: func(expectations *ControllerExpectations) {
+				expectations.RelatedImages = nil
+			},
+			status: StatusSkipped,
+		},
+		{
+			name: "controller container missing",
+			observation: ObjectObservation{Object: mutatedDeployment(func(container map[string]any) {
+				container["name"] = "other"
+			})},
+			status:   StatusFail,
+			contains: `container "manager" was not found`,
+		},
+		{
+			name:        "missing deployment",
+			observation: ObjectObservation{},
+			status:      StatusSkipped,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := NewWithT(t)
+
+			result := Evaluate(controllerSnapshot(test.observation, controllerExpectations(test.expectation)))
+
+			relatedImages := check(result, CheckRelatedImages)
+			g.Expect(relatedImages.Status).To(Equal(test.status))
+			if test.contains != "" {
+				g.Expect(relatedImages.Message).To(ContainSubstring(test.contains))
+			}
+		})
+	}
 }
 
 // TestEvaluatePlatformConfig covers the ConfigMap read and the

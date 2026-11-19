@@ -186,6 +186,206 @@ func terminating(object *unstructured.Unstructured) bool {
 	return state == fieldPresent && deletion != ""
 }
 
+// containerObservation is one parsed pod-template container entry.
+type containerObservation struct {
+	// Name is the container's name; blank when absent or malformed.
+	Name string
+
+	// Image is the container's image; blank when absent.
+	Image string
+
+	// Index is the entry's position in its container list, for field
+	// paths in findings.
+	Index int
+
+	// Env maps env var names to plain values. Entries sourced from
+	// valueFrom carry an empty value; malformed entries are findings,
+	// not empty values.
+	Env map[string]string
+}
+
+// podTemplateObservation parses a Deployment's pod-template container
+// lists before typed conversion can erase absent, malformed, or
+// unknown-shaped data. Malformed entries stay visible as findings,
+// split by list: the main container findings gate the controller image
+// and related images checks, the init container findings gate the init
+// container check.
+type podTemplateObservation struct {
+	containers            []containerObservation
+	initContainers        []containerObservation
+	containerFindings     []violation
+	initContainerFindings []violation
+}
+
+// observePodTemplate parses both pod-template container lists of one
+// Deployment.
+func observePodTemplate(object *unstructured.Unstructured) podTemplateObservation {
+	spec, _ := observedMap(object.Object, "spec")
+	template, _ := observedMap(spec, "template")
+	templateSpec, _ := observedMap(template, "spec")
+
+	observation := podTemplateObservation{}
+	observation.containers, observation.containerFindings =
+		observeContainers(templateSpec, "containers")
+	observation.initContainers, observation.initContainerFindings =
+		observeContainers(templateSpec, "initContainers")
+
+	return observation
+}
+
+// observeContainers parses one pod-template container list. A missing
+// list is empty; a malformed list or entry is a finding, never a
+// silent default.
+func observeContainers(templateSpec map[string]any, list string) ([]containerObservation, []violation) {
+	entries, state := observedSlice(templateSpec, list)
+	if state != fieldPresent {
+		if state == fieldMalformed {
+			field := "spec.template.spec." + list
+
+			return nil, []violation{{
+				field:   field,
+				message: field + " must be an array of container objects when set",
+			}}
+		}
+
+		return nil, nil
+	}
+
+	containers := make([]containerObservation, 0, len(entries))
+	var findings []violation
+
+	for i, entry := range entries {
+		field := fmt.Sprintf("spec.template.spec.%s[%d]", list, i)
+
+		object, ok := entry.(map[string]any)
+		if !ok {
+			findings = append(findings, violation{
+				field:   field,
+				message: field + " must be a container object",
+			})
+
+			continue
+		}
+
+		container := containerObservation{Index: i}
+
+		name, state := observedString(object, "name")
+		switch state {
+		case fieldMalformed:
+			findings = append(findings, violation{
+				field:   field + ".name",
+				message: field + ".name must be a string when set",
+			})
+		case fieldPresent:
+			container.Name = name
+		}
+
+		image, state := observedString(object, "image")
+		switch state {
+		case fieldMalformed:
+			findings = append(findings, violation{
+				field:   field + ".image",
+				message: field + ".image must be a string when set",
+			})
+		case fieldPresent:
+			container.Image = image
+		}
+
+		var envFindings []violation
+		container.Env, envFindings = observeContainerEnv(field, object)
+		findings = append(findings, envFindings...)
+
+		containers = append(containers, container)
+	}
+
+	return containers, findings
+}
+
+// observeContainerEnv parses one container's env var list. Entries
+// without a plain value — valueFrom-sourced or valueless — record an
+// empty value; malformed entries are findings.
+func observeContainerEnv(containerField string, object map[string]any) (map[string]string, []violation) {
+	entries, state := observedSlice(object, "env")
+	if state != fieldPresent {
+		if state == fieldMalformed {
+			return nil, []violation{{
+				field:   containerField + ".env",
+				message: containerField + ".env must be an array of env var objects when set",
+			}}
+		}
+
+		return nil, nil
+	}
+
+	env := make(map[string]string, len(entries))
+	var findings []violation
+
+	for i, entry := range entries {
+		field := fmt.Sprintf("%s.env[%d]", containerField, i)
+
+		entryObject, ok := entry.(map[string]any)
+		if !ok {
+			findings = append(findings, violation{
+				field:   field,
+				message: field + " must be an env var object",
+			})
+
+			continue
+		}
+
+		name, state := observedString(entryObject, "name")
+		switch state {
+		case fieldAbsent:
+			findings = append(findings, violation{
+				field:   field + ".name",
+				message: field + ".name is required",
+			})
+
+			continue
+		case fieldMalformed:
+			findings = append(findings, violation{
+				field:   field + ".name",
+				message: field + ".name must be a string when set",
+			})
+
+			continue
+		}
+
+		value, state := observedString(entryObject, "value")
+		switch state {
+		case fieldMalformed:
+			findings = append(findings, violation{
+				field:   field + ".value",
+				message: field + ".value must be a string when set",
+			})
+
+			continue
+		case fieldPresent:
+			env[name] = value
+		default:
+			env[name] = ""
+		}
+	}
+
+	return env, findings
+}
+
+// findContainer returns the parsed container with the given name, or
+// nil. A blank name matches nothing.
+func findContainer(containers []containerObservation, name string) *containerObservation {
+	if name == "" {
+		return nil
+	}
+
+	for i := range containers {
+		if containers[i].Name == name {
+			return &containers[i]
+		}
+	}
+
+	return nil
+}
+
 // conditionTypePattern is the condition type grammar from the framework
 // condition schema; a type is valid when it matches and is not overlong.
 var conditionTypePattern = regexp.MustCompile(

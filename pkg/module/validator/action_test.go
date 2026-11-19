@@ -152,6 +152,14 @@ func testDefinition() v1alpha1.PlatformModuleDefinition {
 		Kind:    "MockModule",
 	}
 	definition.Spec.Controller.Deployment.Name = "mock-controller"
+	definition.Spec.Controller.Deployment.Container = &v1alpha1.ContainerDefinition{
+		Name:  v1alpha1.DefaultMainContainerName,
+		Image: testControllerImage,
+	}
+	definition.Spec.Controller.Deployment.InitContainer = &v1alpha1.ContainerTarget{
+		Name: testInitContainerName,
+	}
+	definition.Spec.RelatedImages = []string{testRelatedImageName}
 
 	return definition
 }
@@ -343,7 +351,7 @@ func TestValidateDeadline(t *testing.T) {
 	g.Expect(result.Passed()).To(BeFalse())
 
 	// The report retains the latest cycle's complete observation.
-	g.Expect(result.Checks).To(HaveLen(7))
+	g.Expect(result.Checks).To(HaveLen(10))
 	g.Expect(check(result, CheckModuleExists).Status).To(Equal(StatusFail))
 	g.Expect(check(result, CheckModuleReady).Status).To(Equal(StatusSkipped))
 	g.Expect(check(result, CheckDeployment).Status).To(Equal(StatusPass))
