@@ -1,6 +1,6 @@
 # Architecture
 
-The tools binary provides three module commands. `cmd/` wires Cobra
+The tools binary provides four module commands. `cmd/` wires Cobra
 commands to action functions. `pkg/` holds the reusable services and
 never imports Cobra.
 
@@ -12,6 +12,7 @@ never imports Cobra.
 | `cmd/module` | `module` command group |
 | `cmd/module/lint` | `module lint` command, report output, exit classification |
 | `cmd/module/deploy` | `module deploy` command, report output, exit classification |
+| `cmd/module/generate` | `module generate` command, result output, exit classification |
 | `cmd/module/mock` | `module mock` command, option validation and cluster connection |
 | `pkg/module` | Facade wiring the default linter (`NewLinter`) |
 | `pkg/module/api` | Related-image types and the platform status object and list |
@@ -22,6 +23,8 @@ never imports Cobra.
 | `pkg/module/renderer/kustomize` | Kustomize backend |
 | `pkg/module/renderer/source` | Manifest path resolution shared by backends |
 | `pkg/module/linter` | Lint action: load → render → checks |
+| `pkg/module/generator` | Generate action: strict discovery → minimal document → create-once publish |
+| `pkg/module/generator/values` | Helm values boundary: file plus ordered set expressions → JSON literals |
 | `pkg/module/linter/checks` | Check composition (`And`) |
 | `pkg/module/linter/checks/{types,deployments,crd}` | Manifest checks |
 | `pkg/module/deployer` | Deploy orchestration: staged Load/Render/Deploy/Wait |
@@ -46,6 +49,27 @@ load (loader.LoadFromPath, decode + defaults)
 ```
 
 No cluster access at any point.
+
+## generate pipeline
+
+`Generator` infers one definition from a local source, offline:
+
+```
+resolve  source directory, backend detection, output destination
+         (Helm destinations inside the chart need a .helmignore rule)
+values   optional file plus ordered set expressions → JSON literals
+render   bootstrap pass (neutral release name, empty GVK)
+discover one CRD with one served storage version → GVK and name;
+         one Deployment → manager/sole main container, mandatory
+         named init selection
+render   final pass under the inferred name and GVK; drift rechecked
+validate reserved-resource guard plus the lint checks
+publish  minimal document (loader-defaulted fields omitted) to
+         stdout, or a create-once 0600 file
+```
+
+The emitted document omits exactly the fields the loader defaults, so
+reloading it yields the definition the generator validated.
 
 ## deploy pipeline
 

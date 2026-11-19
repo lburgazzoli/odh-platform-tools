@@ -134,11 +134,13 @@ cmd/                    binary + Cobra commands (no business logic)
   main.go               root command, exit-code contract
   module/lint           module lint command + reports
   module/deploy         module deploy command + reports
+  module/generate       module generate command + result output
   module/mock           module mock command + flag validation
 pkg/
   module/api            related images and shared platform status types
   module/api/v1alpha1   versioned APIs, Scheme, generated code only
   module/loader         decode (unknown fields dropped) + default definitions
+  module/generator      generate action (strict discovery, document, publish)
   module/renderer       shared render engine (helm/, kustomize/, source/)
   module/linter         lint action + checks/{types,deployments,crd}
   module/deployer       deploy orchestration (adapt/, cluster/, images/)

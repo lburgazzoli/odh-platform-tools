@@ -75,6 +75,121 @@ The loader uses Viper's default decoding and keeps text such as `${VARIABLE}`
 literal. File linting and image-reference validation are outside this format
 migration.
 
+## odh-platform-tools module generate
+
+Renders the local Helm chart or Kustomize tree at `SOURCE_DIR` offline and
+infers a minimal `PlatformModuleDefinition` from the rendered objects, then
+validates it with the same checks as `module lint` before writing anything.
+No cluster access; the inherited kubeconfig/context flags are accepted and
+ignored.
+
+```
+odh-platform-tools module generate <SOURCE_DIR> [--output <path|stdout>] ...
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name` | — | Module name; defaults to the lowercase CRD kind |
+| `--init-container` | — | Controller init container name; required when the rendered Deployment has init containers |
+| `--values` | — | Ordered Helm set expression, each preserved verbatim including commas; repeatable (Helm sources only) |
+| `--values-file` | — | Helm values file; a single nonempty occurrence (Helm sources only) |
+| `--related-images-file` | — | YAML file of related image sources; only the names are copied |
+| `--output` | `stdout` | `stdout` or a file path created once with 0600 permissions |
+
+`--values-file` may be given once and must be nonempty; `--name`,
+`--init-container`, and `--output` reject explicit empty values. Repeating
+`--values` is intended and applied in order.
+
+### Discovery
+
+Discovery is strict; ambiguous sources fail (exit 2) instead of guessing:
+
+- The source must render exactly one `CustomResourceDefinition`, and that
+  CRD must declare exactly one served storage version — it supplies the
+  module GVK. Missing, multiple, or dual-storage CRDs fail.
+- The module name is the lowercase CRD kind. `--name` overrides it and is
+  also the fallback when inference cannot run; an explicit name must be a
+  valid DNS label acceptable as a Helm release name.
+- The source must render exactly one Deployment. Its main container is the
+  unique container named `manager`, or the only regular container; two
+  regular containers without a `manager` fail.
+- Whenever the Deployment has init containers, `--init-container` must name
+  one of them exactly.
+
+Helm sources are rendered twice: a bootstrap pass under a neutral release
+name discovers the CRD and Deployment, then the final pass renders under the
+inferred name and GVK and the result is rechecked, so charts that bind
+Deployment names or images to `.Release.Name` infer correctly. Bootstrap
+failures mention `--name`; charts whose discovery depends on the release
+name in other ways may still need an explicit `--name`. Not every chart can
+be inferred without one.
+
+Main and init container images are copied into the definition unchanged;
+they are never rewritten to `{{VARIABLE}}` related-image tokens.
+
+### Values
+
+`--values-file` loads first, then each `--values` flag in order; later
+entries override earlier ones. Expressions use Helm `set` syntax — including
+commas and escapes, which reach the parser verbatim. Values are JSON
+compatible literals and persist in `spec.manifests.helm.values` of the
+generated file: booleans, numbers, nested mappings, lists, and explicit
+nulls keep their shapes. Integers are stored exactly as authored; reloading
+a definition still follows the existing loader behavior where out-of-int64
+numbers degrade to float64.
+
+A values file that is not a mapping, or a flag that conflicts with a file
+entry's type, fails with exit 2; the file's contents never appear in the
+diagnostic. Values options are rejected for Kustomize sources (exit 2).
+
+```sh
+odh-platform-tools module generate chart \
+  --values-file values-prod.yaml \
+  --values replicas=3 \
+  --values 'gateway.host=example.com'
+```
+
+The file loads first, then each `--values` flag in order: `replicas=3`
+overrides the file's `replicas`, and later flags override earlier ones.
+Whatever wins is stored in plaintext in the generated file.
+
+### Related images
+
+`--related-images-file` reads the same YAML format as `module deploy` but
+copies only the entry names — sorted and deduplicated — into
+`spec.relatedImages`. Values and the file path are never stored. Deployment
+resolves the names the unchanged way, from the environment or a
+`--related-images-file` passed again to `module deploy`.
+
+### Output
+
+`--output stdout` (the default) writes the document to stdout and nothing
+else; file successes write no stdout. Relative manifest paths in the
+document are resolved against the definition file's directory, so save
+stdout in the working directory of the invocation — or adjust `path`
+afterwards — before linting or deploying.
+
+A file path must have an existing parent directory; the file is created once
+with mode 0600 (subject to umask) and never overwritten. An existing file —
+or a path whose symlink target exists — fails with exit 1, leaving the
+original bytes untouched.
+
+For Helm sources, a destination inside the chart must be excluded by the
+chart's existing `.helmignore`; this protects charts whose templates consume
+chart files (for example through `.Files`), which would otherwise render
+their own definition. The command never edits ignore files. Shell
+redirection (`> chart/gen.yaml`) bypasses this guard and is discouraged.
+Kustomize sources have no ignore policy and allow colocated output.
+
+The generated file is an editable starting point. It is not synchronized
+with the manifests or image files afterwards; there is no merge, force, or
+sync mode.
+
+Generation failures print one classified diagnostic to stderr. Native
+libraries may load external bases or schemas referenced by local sources
+and print their own warnings, potentially including supplied values; no
+network or diagnostic sandbox is promised.
+
 ## odh-platform-tools module mock
 
 Runs the mock controller in the foreground until the command is cancelled.
@@ -109,7 +224,7 @@ in the [mock walkthrough](mock.md).
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | Runtime, connection, apply, wait, timeout, cancellation failures; lint error-severity findings |
+| 1 | Runtime, connection, apply, wait, timeout, cancellation failures; lint error-severity findings; generation render, validation, reserved-resource, or output failures |
 | 2 | Usage, invalid options, definition, or image-file errors |
 
 Cancellation (SIGINT/SIGTERM) is classified as exit 1.

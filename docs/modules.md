@@ -44,6 +44,45 @@ For Kustomize: `manifests.format: kustomize` and optionally
 `manifests.kustomize.path`. An empty `path` uses the definition file's own
 directory in both backends.
 
+## Generating a definition
+
+`module generate` infers this file from an existing chart or Kustomize tree
+instead of writing it by hand, then the normal lint and deploy workflow
+applies unchanged:
+
+```sh
+# Helm: write next to (not inside) the chart
+odh-platform-tools module generate examples/helm/chart \
+  --output examples/helm/generated.yaml
+odh-platform-tools module lint --config examples/helm/generated.yaml
+
+# Kustomize: colocated output is allowed
+odh-platform-tools module generate examples/kustomize \
+  --output examples/kustomize/generated.yaml
+odh-platform-tools module lint --config examples/kustomize/generated.yaml
+```
+
+Both invocations produce a definition whose `manifests` path resolves
+relative to the generated file, so lint works from any directory. To deploy,
+follow the [`module deploy`](cli.md#odh-platform-tools-module-deploy)
+instructions — the platform version, connection inputs, and any
+`--related-images-file` are still required.
+
+Discovery is strict: the source must render exactly one CRD with a single
+served storage version (it supplies the module GVK and, lowercased, the
+default name) and exactly one controller Deployment whose main container is
+the unique `manager` or the only regular container. Init containers require
+an explicit `--init-container` name. Value overrides passed with
+`--values-file`/`--values` are persisted in the generated `helm.values`, and
+`--related-images-file` copies only the image source names. See the
+[CLI reference](cli.md#odh-platform-tools-module-generate) for flags,
+policies, and failure classes.
+
+The generated file is a starting point: edit it freely (extra env, an
+`{{VARIABLE}}` image token, a different instance name) and keep it in sync
+with the manifests yourself — regeneration never merges into an existing
+file.
+
 ## Fields
 
 | Field | Notes |
