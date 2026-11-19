@@ -24,9 +24,16 @@ env:
   # (Podman) and loaded into Kind. The run-unique tag keeps concurrent
   # runs from sharing a reference.
   IMAGE: quay.io/lburgazzoli/odh-platform-tools:ci-${{ github.run_id }}
+  # The related-image source deploy resolves into the rendered
+  # controller package; must stay identical to IMAGE (workflow env
+  # vars cannot reference each other).
+  RELATED_IMAGE_MOCK_CONTROLLER: quay.io/lburgazzoli/odh-platform-tools:ci-${{ github.run_id }}
   CLUSTER: module-pipeline
   # An explicit kubeconfig keeps the tools and kubectl on the same
-  # cluster regardless of any default kubeconfig on the runner.
+  # cluster regardless of any default kubeconfig on the runner. Kind
+  # selects the new cluster's context when it writes this file, so
+  # kubectl and the module commands need no --kubeconfig or --context
+  # flags.
   KUBECONFIG: ${{ github.workspace }}/.kind/kubeconfig
   # Kind runs go-run style like the module commands; $KIND must stay
   # unquoted so the invocation splits into words. Pinning the version
@@ -66,19 +73,24 @@ jobs:
         run: |
           mkdir -p "$(dirname "$KUBECONFIG")"
           podman save --format docker-archive --output tools.tar "$IMAGE"
-          $KIND create cluster --name "$CLUSTER" --kubeconfig "$KUBECONFIG"
-          $KIND load image-archive tools.tar --name "$CLUSTER"
+          $KIND create cluster \
+            --name "$CLUSTER" \
+            --kubeconfig "$KUBECONFIG"
+          $KIND load image-archive \
+            --name "$CLUSTER" \
+            tools.tar
           rm tools.tar
 
       - name: Create the target namespaces
         run: |
-          kubectl --context "kind-$CLUSTER" create namespace odh-helm-ci
-          kubectl --context "kind-$CLUSTER" create namespace odh-kustomize-ci
+          kubectl create namespace odh-helm-ci
+          kubectl create namespace odh-kustomize-ci
 
       - name: Generate a definition from the Helm example
         run: |
           mkdir -p .generated
-          $ODH_CLI module generate examples/helm/chart \
+          $ODH_CLI module generate \
+            examples/helm/chart \
             --output .generated/helm-module.yaml
 
       - name: Lint the generated and checked-in definitions
@@ -87,29 +99,31 @@ jobs:
           # is an artifact for verification here; the deploy step below
           # uses the checked-in definitions, whose manifest paths are
           # relative.
-          $ODH_CLI module lint --config .generated/helm-module.yaml
-          $ODH_CLI module lint --config examples/kustomize/module.yaml
+          $ODH_CLI module lint \
+            --config .generated/helm-module.yaml
+          $ODH_CLI module lint \
+            --config examples/kustomize/module.yaml
 
       - name: Deploy both controller packages
         run: |
-          RELATED_IMAGE_MOCK_CONTROLLER="$IMAGE" $ODH_CLI module deploy \
+          $ODH_CLI module deploy \
             --config examples/helm/chart/module.yaml \
             --platform-version 2.19.0 \
-            --kubeconfig "$KUBECONFIG" --context "kind-$CLUSTER" \
-            --namespace odh-helm-ci --wait
+            --namespace odh-helm-ci \
+            --wait
 
-          RELATED_IMAGE_MOCK_CONTROLLER="$IMAGE" $ODH_CLI module deploy \
+          $ODH_CLI module deploy \
             --config examples/kustomize/module.yaml \
             --platform-version 2.19.0 \
-            --kubeconfig "$KUBECONFIG" --context "kind-$CLUSTER" \
-            --namespace odh-kustomize-ci --wait
+            --namespace odh-kustomize-ci \
+            --wait
 
       - name: Apply the module instances
         run: |
-          kubectl --kubeconfig "$KUBECONFIG" --context "kind-$CLUSTER" \
-            apply -f examples/helm/instance.yaml
-          kubectl --kubeconfig "$KUBECONFIG" --context "kind-$CLUSTER" \
-            apply -f examples/kustomize/instance.yaml
+          kubectl apply \
+            --filename examples/helm/instance.yaml
+          kubectl apply \
+            --filename examples/kustomize/instance.yaml
 
       - name: Validate both running modules
         run: |
@@ -117,14 +131,16 @@ jobs:
           # CI cluster; the default is 30s.
           $ODH_CLI module validate \
             --config examples/helm/chart/module.yaml \
-            --kubeconfig "$KUBECONFIG" --context "kind-$CLUSTER" \
-            --namespace odh-helm-ci --timeout 120s
+            --namespace odh-helm-ci \
+            --timeout 120s
 
           $ODH_CLI module validate \
             --config examples/kustomize/module.yaml \
-            --kubeconfig "$KUBECONFIG" --context "kind-$CLUSTER" \
-            --namespace odh-kustomize-ci --timeout 120s
+            --namespace odh-kustomize-ci \
+            --timeout 120s
 
       - name: Delete the Kind cluster
         if: always()
-        run: $KIND delete cluster --name "$CLUSTER"
+        run: |
+          $KIND delete cluster \
+            --name "$CLUSTER"
