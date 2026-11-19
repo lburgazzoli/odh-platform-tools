@@ -42,11 +42,9 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install Kind and kubectl
+      - name: Install kubectl
         run: |
-          curl -sfSLO https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
           curl -sfSLO https://dl.k8s.io/release/v1.37.0/bin/linux/amd64/kubectl
-          install -m 0755 kind-linux-amd64 /usr/local/bin/kind
           install -m 0755 kubectl /usr/local/bin/kubectl
 
       - name: Build the tools image
@@ -54,13 +52,16 @@ jobs:
 
       - name: Create the Kind cluster and load the image
         run: |
+          # Kind runs go-run style like the module commands. Pinning the
+          # version also fixes the default node image (kindest/node
+          # v1.37.0, digest-pinned by kind itself), which matches the
+          # Kubernetes line this repository tests against — no --image
+          # needed.
           mkdir -p "$(dirname "$KUBECONFIG")"
           podman save --format docker-archive --output tools.tar "$IMAGE"
-          KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster \
-            --name "$CLUSTER" \
-            --kubeconfig "$KUBECONFIG" \
-            --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
-          KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive tools.tar --name "$CLUSTER"
+          KIND_EXPERIMENTAL_PROVIDER=podman go run sigs.k8s.io/kind@v0.33.0 create cluster \
+            --name "$CLUSTER" --kubeconfig "$KUBECONFIG"
+          KIND_EXPERIMENTAL_PROVIDER=podman go run sigs.k8s.io/kind@v0.33.0 load image-archive tools.tar --name "$CLUSTER"
           rm tools.tar
 
       - name: Create the target namespaces
@@ -120,4 +121,4 @@ jobs:
 
       - name: Delete the Kind cluster
         if: always()
-        run: KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name "$CLUSTER"
+        run: KIND_EXPERIMENTAL_PROVIDER=podman go run sigs.k8s.io/kind@v0.33.0 delete cluster --name "$CLUSTER"
