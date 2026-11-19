@@ -68,29 +68,27 @@ jobs:
 
       - name: Resolve the image reference
         run: |
-          # A deterministic UUID (util-linux uuidgen --sha1) over the
-          # run identity — repository, run, attempt, and matrix leg —
-          # so the ttl.sh reference identifies this specific run: the
-          # same inputs always produce the same UUID, and a re-run
-          # attempt gets a fresh one. The namespace is the RFC 4122
-          # DNS namespace, used as a fixed salt. The :1h tag is the
-          # TTL. IMAGE and the related-image source deploy resolves
-          # are written once from the same variable, so they cannot
-          # drift apart.
-          id="$(uuidgen --sha1 \
-            --namespace 6ba7b811-9dad-11d1-80b4-00c04fd430c8 \
-            --name "$GITHUB_REPOSITORY/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/${{ matrix.example.name }}")"
+          # A random UUID keeps concurrent runs and legs from sharing a
+          # ttl.sh reference; the :1h tag is the TTL. IMAGE and the
+          # related-image source deploy resolves are written once from
+          # the same variable, so they cannot drift apart. The UUID is
+          # lowercased because image names must be (macOS uuidgen
+          # prints uppercase; Linux already lowercase).
+          id="$(uuidgen | tr 'A-Z' 'a-z')"
           echo "IMAGE_ID=$id" >> "$GITHUB_ENV"
           echo "IMAGE=ttl.sh/$id:1h" >> "$GITHUB_ENV"
           echo "RELATED_IMAGE_MOCK_CONTROLLER=ttl.sh/$id:1h" >> "$GITHUB_ENV"
 
       - name: Build and push the tools image
         run: |
-          make image \
+          make container-build \
             IMAGE_REGISTRY=ttl.sh \
             IMAGE_NAME="$IMAGE_ID" \
             IMAGE_TAG=1h
-          podman push "$IMAGE"
+          make container-push \
+            IMAGE_REGISTRY=ttl.sh \
+            IMAGE_NAME="$IMAGE_ID" \
+            IMAGE_TAG=1h
 
       - name: Create the Kind cluster
         run: |
