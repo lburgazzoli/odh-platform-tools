@@ -292,30 +292,30 @@ module prerequisites.
 
 ### Layout
 
-The workflow is a single job. The source is checked out into
-`github.workspace/source/` — also when the chart is at the repository root —
-and generation writes into a fixed `.generated/` sibling beside it, never
-inside `source/`. The generated definition's manifest path is relative to
-the generated file's directory, so it keeps resolving on the same runner
-for every later step; nothing is passed between jobs or machines.
-
-The live steps (Kind, prerequisites, namespace, deploy, instance, validate,
-cleanup) are gated on `if: github.event_name == 'workflow_dispatch'`, which
-a `pull_request` event can never satisfy — so PR runs execute generation
-and lint only, without a cluster and without secrets. Every step that
-invokes the tools or Kind defines its own shell function: functions,
+The workflow is a single job, manual dispatch only. The source is checked
+out into `github.workspace/source/` — also when the chart is at the
+repository root — and generation writes into a fixed `.generated/` sibling
+beside it, never inside `source/`. The generated definition's manifest path
+is relative to the generated file's directory, so it keeps resolving for
+every later step; nothing is passed between jobs or machines. Every step
+that invokes the tools or Kind defines its own shell function: functions,
 installed tools, and `$GITHUB_ENV` entries never cross step boundaries.
 
-### PR runs
+### Pull request runs
 
-PR runs — fork PRs included — execute generation and lint only: no cluster,
-no registry-write secrets, no image publication. Checkout uses
+The template ships manual-only; whether the offline gate also runs on PRs
+is the adapter's decision. To enable it, add `pull_request:` to the
+triggers and gate every cluster step with
+`if: github.event_name == 'workflow_dispatch'` — a `pull_request` event
+can never satisfy that gate, so PR runs execute generation and lint only.
+PR runs — fork PRs included — must use no cluster, no registry-write
+secrets, and no image publication. Checkout uses
 `persist-credentials: false`. Never use `pull_request_target`.
 
 ### Manual runs
 
-Manual runs repeat the same offline gate with fresh inputs, then use a
-disposable Kind cluster: install prerequisite APIs and the target
+Manual runs drive the full sequence with fresh inputs: generate and lint,
+then a disposable Kind cluster — install prerequisite APIs and the target
 namespace, deploy with `--wait`, apply the instance manifest separately,
 validate read-only, and delete the run-owned cluster. The runner is
 ephemeral — a failed run discards the whole machine, cluster included.

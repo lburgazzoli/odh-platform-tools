@@ -43,8 +43,9 @@ cluster targeting, and the CI workflow layout that every recipe assumes:
 ## Workflow template
 
 - [module-tck.yaml](resources/templates/module-tck.yaml) — the one
-  GitHub Actions template to adapt: PR runs generate and lint only; manual
-  runs additionally use a disposable Kind cluster. See
+  GitHub Actions template to adapt: manual dispatch drives the full
+  sequence on a disposable Kind cluster; running the offline gate on PRs
+  is an adapter decision documented in the template. See
   [Module onboarding](resources/cmd/module.md) for the adaptation walkthrough.
 
 ## Hard rules

@@ -3,25 +3,26 @@
 # .github/workflows/module-tck.yaml and fill in the REQUIRED values in
 # the env block below.
 #
-#   pull_request:      fresh generate + offline lint. No cluster, no
-#                      secrets, fork-safe.
-#   workflow_dispatch: additionally deploys on a disposable Kind
-#                      cluster, applies the module instance, validates
-#                      read-only, and deletes the cluster.
+# Manual dispatch drives the full sequence: generate a fresh
+# definition, lint it offline, deploy the controller package on a
+# disposable Kind cluster, apply the module instance separately,
+# validate read-only, and delete the cluster.
 #
-# The live steps are gated on the workflow_dispatch event, which a
-# pull_request event can never satisfy.
-#
-# Trust note for manual runs: the live steps execute your module's
-# controller code on the Kind cluster. Kind is a development tool,
-# not a security sandbox, and passing lint says nothing about
-# trustworthiness — run it on reviewed source and images only.
+# Trust note: the live steps execute your module's controller code on
+# the Kind cluster. Kind is a development tool, not a security
+# sandbox, and passing lint says nothing about trustworthiness — run
+# it on reviewed source and images only.
 
 name: module TCK
 
 on:
-  pull_request:
   workflow_dispatch:
+  # To also run the offline gate (generate + lint) on pull requests,
+  # add the trigger and gate every step from "Create the Kind
+  # cluster" down with:
+  #   if: github.event_name == 'workflow_dispatch'
+  # A pull_request event can never satisfy that gate, so PR runs
+  # stay offline: no cluster, no secrets, fork-safe.
 
 permissions:
   contents: read
@@ -156,7 +157,6 @@ jobs:
           odh module lint --config .generated/module.yaml
 
       - name: Create the Kind cluster
-        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           kind_cli() {
@@ -166,7 +166,6 @@ jobs:
           kind_cli create cluster --name "$CLUSTER"
 
       - name: Install prerequisite CRDs
-        if: github.event_name == 'workflow_dispatch'
         run: |
           # Replace with the APIs your controller watches but does not
           # own, or delete this step when it has none. Prerequisite,
@@ -184,11 +183,9 @@ jobs:
             crd/servicemonitors.monitoring.coreos.com --timeout=60s
 
       - name: Create the target namespace
-        if: github.event_name == 'workflow_dispatch'
         run: kubectl create namespace "$NAMESPACE"
 
       - name: Deploy the controller package
-        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           odh() {
@@ -209,14 +206,12 @@ jobs:
           odh module deploy "${args[@]}"
 
       - name: Apply the module instance
-        if: github.event_name == 'workflow_dispatch'
         run: |
           # The instance is applied separately from the controller
           # package, by design: deploy never creates the module CR.
           kubectl apply --filename "source/$INSTANCE_MANIFEST"
 
       - name: Validate the running module
-        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           odh() {
@@ -230,7 +225,6 @@ jobs:
             --timeout 5m
 
       - name: Delete the Kind cluster
-        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           kind_cli() {
