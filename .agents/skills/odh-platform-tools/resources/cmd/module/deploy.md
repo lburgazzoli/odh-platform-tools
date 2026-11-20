@@ -22,12 +22,18 @@ defined in [the module onboarding](../module.md); read it first.
 - Prerequisite APIs the package depends on (for example cert-manager)
   must already be installed — deploy applies only what the definition
   renders plus the definition owner and platform ConfigMap.
-- RBAC for the invoking identity: create/update on cluster-scoped
-  `CustomResourceDefinition` and `PlatformModuleDefinition` objects,
-  and create/update on every rendered package resource in the target
-  namespace (Deployments, ServiceAccounts, Roles, RoleBindings,
-  ClusterRoles, ClusterRoleBindings, ConfigMaps, and the module's own
-  CRD).
+- RBAC for the invoking identity. Applies are server-side applies, so
+  the required verbs are `get`, `create`, and `patch` — never only
+  `create`/`update`: CRD establishment polling gets the
+  `CustomResourceDefinition`, and with `--wait` the rollout
+  observation gets the controller Deployments. Concretely: `get`,
+  `create`, and `patch` on the cluster-scoped
+  `CustomResourceDefinition` and `PlatformModuleDefinition` objects;
+  `get`, `create`, and `patch` on every rendered package resource —
+  namespaced kinds (Deployments, ServiceAccounts, Roles,
+  RoleBindings, ConfigMaps) in the target namespace, and
+  cluster-scoped kinds (ClusterRoles, ClusterRoleBindings, and the
+  module's own CRD) cluster-wide.
 - The controller image referenced by the definition must be pullable
   by the cluster's nodes. Private registries need an explicitly
   chosen credential approach — do not embed credentials in the
