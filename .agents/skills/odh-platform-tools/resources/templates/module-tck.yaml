@@ -75,11 +75,6 @@ env:
   HELM_SETS: |-
     image.fullRef=quay.io/example/example-controller:v1.0.0
 
-  # Optional (manual runs): prerequisite manifests applied before
-  # deploy, one per line — a URL or a path relative to the repo root
-  # (for example CRDs your controller watches unconditionally).
-  PREREQUISITE_MANIFESTS: ""
-
   # Pinned Kind version this template was reviewed against.
   KIND_REF: "v0.33.0"
 
@@ -170,22 +165,23 @@ jobs:
           mkdir -p "$(dirname "$KUBECONFIG")"
           kind_cli create cluster --name "$CLUSTER"
 
-      - name: Apply prerequisite manifests
+      - name: Install prerequisite CRDs
         if: github.event_name == 'workflow_dispatch'
         run: |
-          set -euo pipefail
-          if [ -n "${PREREQUISITE_MANIFESTS:-}" ]; then
-            while IFS= read -r item; do
-              [ -n "$item" ] || continue
-              case "$item" in
-                http://* | https://*) ;;
-                *) item="source/$item" ;;
-              esac
-              # Server-side apply tolerates large CRD manifests that
-              # client-side apply rejects.
-              kubectl apply --server-side --filename "$item"
-            done <<< "$PREREQUISITE_MANIFESTS"
-          fi
+          # Replace with the APIs your controller watches but does not
+          # own, or delete this step when it has none. Prerequisite,
+          # not convenience: without a watched CRD the controller's
+          # informer never syncs — it runs but reconciles nothing.
+          # Prerequisites live in your repository, checked out under
+          # source/, so the cluster gets exactly what you reviewed —
+          # not something fetched from elsewhere. Server-side apply
+          # tolerates large CRD manifests that client-side apply
+          # rejects, and waiting for Established keeps deploy from
+          # racing the API.
+          kubectl apply --server-side \
+            --filename source/config/prerequisites/servicemonitor-crds.yaml
+          kubectl wait --for=condition=Established \
+            crd/servicemonitors.monitoring.coreos.com --timeout=60s
 
       - name: Create the target namespace
         if: github.event_name == 'workflow_dispatch'
