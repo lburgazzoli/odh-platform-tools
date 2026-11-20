@@ -47,8 +47,8 @@ defined in [the module onboarding](../module.md); read it first.
 ## Invocation
 
 Use the pinned `go run` form with an explicitly configured
-`ODH_TOOLS_REF` (a released version or commit accepted by Go — never
-`main` or `latest`):
+`ODH_TOOLS_REF` (a released version or commit accepted by Go; `main` only
+while the tools iterate without releases):
 
 ```sh
 go run "github.com/lburgazzoli/odh-platform-tools/cmd@${ODH_TOOLS_REF:?pin ODH_TOOLS_REF}" \

@@ -41,24 +41,27 @@ demonstrating the contract, never the real module.
 ### Pinned go run
 
 The tools run with `go run` from their module path — no installed binary
-and no clone of the tools repository required. The reference must be pinned:
+and no clone of the tools repository required. The reference must be chosen
+explicitly:
 
 ```sh
-ODH_TOOLS_REF=<pinned-release-tag-or-commit-sha>
+ODH_TOOLS_REF=<release-tag-or-commit-sha>
 go run "github.com/lburgazzoli/odh-platform-tools/cmd@${ODH_TOOLS_REF}" module --help
 ```
 
-`ODH_TOOLS_REF` must be set explicitly to a released version tag or commit
-SHA that Go accepts. Never default it to `main` or `latest`, and never
-invent a release that was not confirmed to exist. If the user has not
-chosen a pin, ask.
+`ODH_TOOLS_REF` should be a released version tag or commit SHA that Go
+accepts. While the tools have no releases and are iterating, `main` is the
+working default — but a moving ref makes CI results and failure reports
+irreproducible, so pin a tag or commit once releases exist. Never invent a
+release that was not confirmed to exist. If the user has not chosen a ref,
+ask.
 
 A shell function keeps later examples short without uncontrolled word
 splitting:
 
 ```sh
 odh() {
-  go run "github.com/lburgazzoli/odh-platform-tools/cmd@${ODH_TOOLS_REF:?ODH_TOOLS_REF must be set to a pinned release or commit}" "$@"
+  go run "github.com/lburgazzoli/odh-platform-tools/cmd@${ODH_TOOLS_REF:?ODH_TOOLS_REF must be set to a release, commit, or main while iterating}" "$@"
 }
 ```
 
@@ -289,26 +292,19 @@ module prerequisites.
 
 ### Layout
 
-Both jobs check out the same revision into `github.workspace/source/` —
-also when the chart is at the repository root. Generation writes into a
-unique nonhidden sibling under the workspace, such as
-`generated-<unique>/module.yaml`, never inside `source/`. The producer job
-passes the generated directory's relative basename as a job output; the
-consumer job restores that exact directory beside `source/` — not
-flattened, not relocated — because the generated definition's manifest path
-is relative to the generated file's directory and must keep resolving.
-Never pass producer absolute paths between jobs.
+The workflow is a single job. The source is checked out into
+`github.workspace/source/` — also when the chart is at the repository root —
+and generation writes into a fixed `.generated/` sibling beside it, never
+inside `source/`. The generated definition's manifest path is relative to
+the generated file's directory, so it keeps resolving on the same runner
+for every later step; nothing is passed between jobs or machines.
 
-The live source tree checked out in the second job must match the effective
-source used offline in the first: committed source configuration plus
-persisted Helm values, with no producer-only edits. Any user-requested
-source transformation must be reproducibly applied in both jobs, or
-transported with its relative layout.
-
-Each job independently sets up the same compatible Go version — one that
-satisfies both the tools pin and the selected Kind version. Functions,
-installed tools, `$GITHUB_ENV` entries, and local paths do not cross job
-boundaries.
+The live steps (Kind, prerequisites, namespace, deploy, instance, validate,
+cleanup) are gated on `if: github.event_name == 'workflow_dispatch'`, which
+a `pull_request` event can never satisfy — so PR runs execute generation
+and lint only, without a cluster and without secrets. Every step that
+invokes the tools or Kind defines its own shell function: functions,
+installed tools, and `$GITHUB_ENV` entries never cross step boundaries.
 
 ### PR runs
 
@@ -321,7 +317,8 @@ no registry-write secrets, no image publication. Checkout uses
 Manual runs repeat the same offline gate with fresh inputs, then use a
 disposable Kind cluster: install prerequisite APIs and the target
 namespace, deploy with `--wait`, apply the instance manifest separately,
-validate read-only, and clean up the run-owned cluster unconditionally.
+validate read-only, and delete the run-owned cluster. The runner is
+ephemeral — a failed run discards the whole machine, cluster included.
 
 Before a credential-bearing manual run, require reviewed and trusted
 source, images, and prerequisite manifests. Kind is not a security sandbox,

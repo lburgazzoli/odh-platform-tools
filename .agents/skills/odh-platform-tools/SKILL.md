@@ -49,8 +49,9 @@ cluster targeting, and the CI workflow layout that every recipe assumes:
 
 ## Hard rules
 
-- Pin the tools: `ODH_TOOLS_REF` must be an explicitly chosen release or
-  commit accepted by Go — never `main`, `latest`, or an invented version.
+- Pin the tools: `ODH_TOOLS_REF` must be an explicitly chosen release tag or
+  commit accepted by Go — `main` only while the tools iterate without
+  releases, never an invented version.
 - Generate fresh in every run, including CI. Never treat a committed
   definition as the CI input.
 - Never create a cluster, deploy, or use credentials without explicit user
