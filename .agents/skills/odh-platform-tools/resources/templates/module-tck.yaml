@@ -1,0 +1,457 @@
+# GitHub Actions workflow template for the OpenDataHub platform module
+# TCK, from the odh-platform-tools skill. Copy this file into your module
+# repository as .github/workflows/module-tck.yaml and fill in the
+# configuration block below before the first run: the offline job fails
+# fast while any REQUIRED value is still empty or contains a
+# <placeholder>.
+#
+# What it does:
+#   - pull_request (fork PRs included): generates a fresh
+#     PlatformModuleDefinition from your source and lints it offline.
+#     No cluster, no secrets, no image publication.
+#   - workflow_dispatch (manual only): additionally installs the
+#     controller package on a disposable Kind cluster, applies the
+#     module instance separately, validates the running module
+#     read-only, and deletes the cluster afterwards.
+#
+# Adaptation checklist:
+#   1. Fill in every REQUIRED value in the `env:` block.
+#   2. Review the pinned action versions and the tools/Kind refs.
+#      Pin the actions to commit SHAs after auditing them if your
+#      policy requires it.
+#   3. Confirm the image strategy (see the HELM_SETS comment block).
+#   4. Verify the tools pin supports the commands and flags used here:
+#      `go list -m -json github.com/lburgazzoli/odh-platform-tools@<ref>`
+#      reports its GoVersion, and
+#      `go run github.com/lburgazzoli/odh-platform-tools/cmd@<ref> module generate --help`
+#      must show the flags below. If it does not, choose a newer pin.
+#
+# Trust boundary (manual runs): a workflow_dispatch run executes your
+# module's controller code and every prerequisite manifest you list on
+# the Kind cluster. Kind is a development tool, not a security sandbox,
+# and passing lint says nothing about the trustworthiness of the code.
+# Run this only on reviewed source, with reviewed images and
+# prerequisites, on the disposable cluster this workflow owns. The
+# template never targets a shared or production cluster, never uses
+# pull_request_target, and never exposes secrets to pull requests.
+
+name: module TCK
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# Runs queue instead of cancelling each other: every run owns a
+# uniquely named cluster and cleans up after itself, so a cancelled
+# predecessor could only orphan its cluster.
+concurrency:
+  group: module-tck-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # ------------------------------------------------------------------
+  # Configuration contract. REQUIRED values must be filled in before
+  # the first run; the validation steps exit with a configuration
+  # error while any of them is empty or still a <placeholder>.
+  # ------------------------------------------------------------------
+
+  # REQUIRED: pinned odh-platform-tools release tag or commit SHA.
+  # Never main or latest: a moving ref makes CI results and failure
+  # reports irreproducible.
+  ODH_TOOLS_REF: "<pinned-release-tag-or-commit-sha>"
+
+  # REQUIRED: Go version, set up independently in both jobs. Must
+  # satisfy the tools pin's Go requirement and the Kind pin's.
+  GO_VERSION: "1.27"
+
+  # REQUIRED: manifest backend of the module source.
+  #   helm      — MODULE_SOURCE is a Helm chart directory
+  #   kustomize — MODULE_SOURCE is a Kustomize tree
+  MANIFEST_FORMAT: "helm"
+
+  # REQUIRED: module source directory relative to the repository root.
+  # Use "." when the chart or Kustomize tree is the repository root.
+  MODULE_SOURCE: "config/chart"
+
+  # REQUIRED for manual runs: semantic version of the target platform.
+  PLATFORM_VERSION: "3.5.0"
+
+  # REQUIRED for manual runs: target namespace. The deployer never
+  # creates namespaces; this workflow creates exactly this one on the
+  # disposable cluster.
+  NAMESPACE: "my-module-system"
+
+  # REQUIRED for manual runs: module instance manifest, relative to
+  # the repository root, applied separately after deploy.
+  INSTANCE_MANIFEST: "config/samples/instance.yaml"
+
+  # Optional: related images YAML input (relatedImages entries with
+  # name and value), relative to the repository root. Generation
+  # copies only the names into the definition; deploy resolves the
+  # current values from the same file. Leave empty when the module
+  # declares no related images. Never put credentials in this file.
+  RELATED_IMAGES_FILE: "related-images.yaml"
+
+  # Optional: module name override (default: the lowercase CRD kind)
+  # and instance name override (for CRDs mandating a singleton name).
+  # Leave empty to accept the inferred defaults.
+  MODULE_NAME: ""
+  INSTANCE_NAME: ""
+
+  # Optional: init container name. Generation requires it whenever the
+  # rendered Deployment has init containers.
+  INIT_CONTAINER: ""
+
+  # Optional (Helm only): Helm values file, relative to the repository
+  # root. Loaded before every set expression.
+  HELM_VALUES_FILE: ""
+
+  # Optional (Helm only): ordered `module generate --values` set
+  # expressions, one per line, applied after the values file; later
+  # lines override earlier ones. Each line reaches the parser verbatim,
+  # including commas and escapes.
+  #
+  # Image strategy: this template CONSUMES EXISTING IMAGES. For Helm
+  # sources, set the controller image with a set expression here (for
+  # example image.fullRef=...); for Kustomize sources the image
+  # reference must already be in the tree. Operand images belong in
+  # RELATED_IMAGES_FILE, not here: generation copies their names only,
+  # and deploy injects their values as RELATED_IMAGE_* env vars on the
+  # controller. To build images in CI instead, insert your module's
+  # real build steps before the generate step and point the values at
+  # the built reference — there is no universal build recipe. The Kind
+  # nodes pull directly from the registry, so private images need an
+  # explicit, deliberately chosen pull-secret approach in the live
+  # job only — never credentials in the repository or in PR runs.
+  HELM_SETS: |-
+    image.fullRef=quay.io/example/example-controller:v1.0.0
+
+  # Optional (manual runs only): image references pulled with podman
+  # before the cluster is created, one per line. Fails fast when a
+  # reference is wrong or not publicly pullable from the runner. This
+  # is evidence, not a guarantee: the nodes pull independently.
+  IMAGE_PREFLIGHT: |-
+    quay.io/example/example-controller:v1.0.0
+
+  # Optional (manual runs only): prerequisite manifests applied before
+  # deploy, one per line: a URL, or a path relative to the repository
+  # root. Use this for APIs your module watches unconditionally (for
+  # example CRDs other controllers consume). For CRD prerequisites,
+  # waiting for their Established condition before deploy is
+  # recommended.
+  PREREQUISITE_MANIFESTS: ""
+
+  # Pinned Kind version this template was reviewed against.
+  KIND_REF: "v0.33.0"
+
+jobs:
+  offline:
+    name: Generate and lint (offline)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      generated-dir: ${{ steps.meta.outputs.generated-dir }}
+    steps:
+      - name: Check out the module source
+        uses: actions/checkout@v4
+        with:
+          path: source
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Resolve run-local names
+        id: meta
+        run: |
+          set -euo pipefail
+          # Unique and nonhidden per invocation: a fresh name for every
+          # run and attempt keeps the create-once generation output
+          # honest, and nonhidden keeps upload-artifact from excluding
+          # the directory (it skips hidden files by default).
+          echo "generated-dir=generated-r${GITHUB_RUN_ID}a${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate configuration
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "module-tck configuration error: $*" >&2
+            exit 2
+          }
+          require() {
+            value=$1
+            name=$2
+            [ -n "$value" ] || fail "$name must be set"
+            case "$value" in
+              *'<'*|*'>'*) fail "$name still contains a placeholder" ;;
+            esac
+          }
+          require "$ODH_TOOLS_REF" ODH_TOOLS_REF
+          require "$GO_VERSION" GO_VERSION
+          require "$MANIFEST_FORMAT" MANIFEST_FORMAT
+          require "$MODULE_SOURCE" MODULE_SOURCE
+          case "$MANIFEST_FORMAT" in
+            helm | kustomize) ;;
+            *) fail "MANIFEST_FORMAT must be helm or kustomize" ;;
+          esac
+          if [ "$MANIFEST_FORMAT" = kustomize ]; then
+            [ -z "${HELM_VALUES_FILE:-}" ] || fail "HELM_VALUES_FILE is Helm-only"
+            [ -z "${HELM_SETS:-}" ] || fail "HELM_SETS is Helm-only"
+          fi
+          echo "offline configuration OK; live-only values are validated in the live job"
+
+      - name: Generate the module definition
+        env:
+          GENERATED_DIR: ${{ steps.meta.outputs.generated-dir }}
+        run: |
+          set -euo pipefail
+          odh() {
+            go run "github.com/lburgazzoli/odh-platform-tools/cmd@$ODH_TOOLS_REF" "$@"
+          }
+          if [ "$MODULE_SOURCE" = "." ]; then
+            source_dir="source"
+          else
+            source_dir="source/$MODULE_SOURCE"
+          fi
+          if [ ! -d "$source_dir" ]; then
+            echo "module-tck configuration error: $source_dir does not exist" >&2
+            exit 2
+          fi
+          # Optional flags are appended conditionally: the CLI rejects
+          # explicit empty values, and Kustomize sources reject Helm
+          # values options outright.
+          args=("$source_dir" --output "$GENERATED_DIR/module.yaml")
+          if [ -n "${MODULE_NAME:-}" ]; then
+            args+=(--name "$MODULE_NAME")
+          fi
+          if [ -n "${INSTANCE_NAME:-}" ]; then
+            args+=(--instance-name "$INSTANCE_NAME")
+          fi
+          if [ -n "${INIT_CONTAINER:-}" ]; then
+            args+=(--init-container "$INIT_CONTAINER")
+          fi
+          if [ -n "${RELATED_IMAGES_FILE:-}" ]; then
+            args+=(--related-images-file "source/$RELATED_IMAGES_FILE")
+          fi
+          if [ "$MANIFEST_FORMAT" = helm ]; then
+            if [ -n "${HELM_VALUES_FILE:-}" ]; then
+              args+=(--values-file "source/$HELM_VALUES_FILE")
+            fi
+            if [ -n "${HELM_SETS:-}" ]; then
+              while IFS= read -r expression; do
+                [ -n "$expression" ] || continue
+                args+=(--values "$expression")
+              done <<< "$HELM_SETS"
+            fi
+          fi
+          # Fresh generation every run: the directory is created here,
+          # the output file must not exist yet (create-once), and a
+          # committed definition is never reused as the input.
+          mkdir -p "$GENERATED_DIR"
+          odh module generate "${args[@]}"
+
+      - name: Lint the generated definition
+        env:
+          GENERATED_DIR: ${{ steps.meta.outputs.generated-dir }}
+        run: |
+          set -euo pipefail
+          odh() {
+            go run "github.com/lburgazzoli/odh-platform-tools/cmd@$ODH_TOOLS_REF" "$@"
+          }
+          # Failure fails the job: no go run wrapper semantics are
+          # interpreted here, and nothing masks a nonzero exit.
+          odh module lint --config "$GENERATED_DIR/module.yaml"
+          # Anchors the artifact's least common ancestor at the
+          # workspace root so the generated directory is uploaded
+          # unflattened (see the upload step).
+          touch artifact-root.marker
+
+      - name: Upload the generated definition
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-definition
+          retention-days: 1
+          if-no-files-found: error
+          # The nonhidden marker file pins the artifact root at the
+          # workspace (least common ancestor of the two paths), so the
+          # generated directory keeps its exact relative name and is
+          # restored beside source/ unflattened. The definition is
+          # nonsecret by construction; no values files travel with it.
+          path: |
+            artifact-root.marker
+            ${{ steps.meta.outputs.generated-dir }}
+
+  live:
+    name: Deploy and validate (disposable Kind)
+    needs: offline
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Run-owned unique cluster identity: cleanup deletes exactly this
+      # cluster and nothing else.
+      CLUSTER: module-tck-r${{ github.run_id }}a${{ github.run_attempt }}
+      # Private run-local kubeconfig: Kind selects the new cluster's
+      # context when writing this file, so the tools and kubectl stay
+      # on the run's cluster regardless of any default kubeconfig.
+      KUBECONFIG: ${{ github.workspace }}/.kind/kubeconfig
+      KIND_EXPERIMENTAL_PROVIDER: podman
+    steps:
+      - name: Check out the module source
+        uses: actions/checkout@v4
+        with:
+          path: source
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Same Go version as the offline job: runner state, installed
+          # tools, and environment do not cross job boundaries.
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Validate live configuration
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "module-tck configuration error: $*" >&2
+            exit 2
+          }
+          require() {
+            value=$1
+            name=$2
+            [ -n "$value" ] || fail "$name must be set for manual runs"
+            case "$value" in
+              *'<'*|*'>'*) fail "$name still contains a placeholder" ;;
+            esac
+          }
+          require "$PLATFORM_VERSION" PLATFORM_VERSION
+          require "$NAMESPACE" NAMESPACE
+          require "$INSTANCE_MANIFEST" INSTANCE_MANIFEST
+
+      - name: Pull the referenced images
+        run: |
+          set -euo pipefail
+          if [ -n "${IMAGE_PREFLIGHT:-}" ]; then
+            while IFS= read -r image; do
+              [ -n "$image" ] || continue
+              echo "podman pull $image"
+              podman pull "$image"
+            done <<< "$IMAGE_PREFLIGHT"
+          fi
+
+      - name: Create the Kind cluster
+        run: |
+          set -euo pipefail
+          kind_cli() {
+            go run "sigs.k8s.io/kind@$KIND_REF" "$@"
+          }
+          mkdir -p "$(dirname "$KUBECONFIG")"
+          kind_cli create cluster --name "$CLUSTER"
+
+      - name: Apply prerequisite manifests
+        run: |
+          set -euo pipefail
+          if [ -n "${PREREQUISITE_MANIFESTS:-}" ]; then
+            while IFS= read -r item; do
+              [ -n "$item" ] || continue
+              case "$item" in
+                http://* | https://*) ;;
+                *) item="source/$item" ;;
+              esac
+              # Server-side apply tolerates large CRD manifests that
+              # client-side apply rejects.
+              kubectl apply --server-side --filename "$item"
+            done <<< "$PREREQUISITE_MANIFESTS"
+          fi
+
+      - name: Create the target namespace
+        run: kubectl create namespace "$NAMESPACE"
+
+      - name: Download the generated definition
+        uses: actions/download-artifact@v4
+        with:
+          name: module-definition
+          path: .
+
+      - name: Verify the downloaded definition
+        env:
+          GENERATED_DIR: ${{ needs.offline.outputs.generated-dir }}
+        run: |
+          set -euo pipefail
+          # Restored beside source/ with its exact relative name, so
+          # its manifest paths resolve against this job's checkout of
+          # the same revision. Fail fast when the layout is wrong.
+          test -f "$GENERATED_DIR/module.yaml"
+
+      - name: Deploy the controller package
+        env:
+          GENERATED_DIR: ${{ needs.offline.outputs.generated-dir }}
+        run: |
+          set -euo pipefail
+          odh() {
+            go run "github.com/lburgazzoli/odh-platform-tools/cmd@$ODH_TOOLS_REF" "$@"
+          }
+          args=(
+            --config "$GENERATED_DIR/module.yaml"
+            --platform-version "$PLATFORM_VERSION"
+            --namespace "$NAMESPACE"
+            --wait
+            --wait-timeout 3m
+            --timeout 10m
+          )
+          if [ -n "${RELATED_IMAGES_FILE:-}" ]; then
+            args+=(--related-images-file "source/$RELATED_IMAGES_FILE")
+          fi
+          # Not atomic, no rollback: a failed deploy can leave partial
+          # writes behind. The whole cluster is disposable and deleted
+          # afterwards either way. --wait covers the Deployment
+          # rollout only; module readiness is proven by the validate
+          # step, never by this one.
+          odh module deploy "${args[@]}"
+
+      - name: Apply the module instance
+        run: |
+          set -euo pipefail
+          # The instance is applied separately from the controller
+          # package, by design: deploy never creates the module CR.
+          kubectl apply --filename "source/$INSTANCE_MANIFEST"
+
+      - name: Validate the running module
+        env:
+          GENERATED_DIR: ${{ needs.offline.outputs.generated-dir }}
+        run: |
+          set -euo pipefail
+          odh() {
+            go run "github.com/lburgazzoli/odh-platform-tools/cmd@$ODH_TOOLS_REF" "$@"
+          }
+          # Read-only, with bounded polling: a larger budget for a
+          # cold CI cluster, never an infinite retry.
+          odh module validate \
+            --config "$GENERATED_DIR/module.yaml" \
+            --namespace "$NAMESPACE" \
+            --timeout 5m
+
+      - name: Delete the Kind cluster
+        if: always()
+        run: |
+          set -euo pipefail
+          kind_cli() {
+            go run "sigs.k8s.io/kind@$KIND_REF" "$@"
+          }
+          # Deletes exactly the run-owned cluster. Runs after partial
+          # setup or failure without masking the original failure:
+          # this is a separate step, and earlier failures stay visible
+          # in theirs. Hard runner loss or forced cancellation can
+          # still prevent this step from finishing; an orphaned cluster
+          # must then be deleted manually.
+          if kind_cli get clusters | grep -qx "$CLUSTER"; then
+            kind_cli delete cluster --name "$CLUSTER"
+          else
+            echo "cluster $CLUSTER was not created; nothing to delete"
+          fi
