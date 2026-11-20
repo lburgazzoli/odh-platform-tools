@@ -223,7 +223,6 @@ jobs:
             --timeout 120s
 
       - name: Delete the Kind cluster
-        if: always()
         run: |
           $KIND delete cluster \
             --name "$CLUSTER"
